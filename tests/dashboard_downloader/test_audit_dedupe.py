@@ -29,8 +29,8 @@ def test_deduped_ingest_allows_cleanup(tmp_path: Path, monkeypatch):
         merged_path = tmp_path / "merged_repeat_customers.csv"
         merged_path.write_text(
             """Store Code,Mobile No.,Status
-A001,12345,Yes
-A001,12345,No
+A001,9876543210,Yes
+A001,9876543210,No
 """,
             encoding="utf-8",
         )

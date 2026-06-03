@@ -475,6 +475,8 @@ exit 0
     env.update(
         {
             "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_MAX_ATTEMPTS": "3",
+            "ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS": "0",
             "DAILY_MAX_ATTEMPTS": "1",
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
@@ -503,8 +505,9 @@ exit 0
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "tcp_connectivity_preflight_failed_summary exit_code=7" in log_text
+    assert log_text.count("tcp_connectivity_preflight_failed_summary exit_code=7") == 3
     assert "failure_class=connectivity_preflight_failure" in log_text
+    assert "retry_decision=exhausted" in log_text
     assert "orders_sync_run_profiler skipped because tcp_connectivity_preflight failed" in log_text
     assert "orders_sync_run_profiler_rc=7" in log_text
     assert "Running Script 1: orders_sync_run_profiler" not in log_text
@@ -659,6 +662,8 @@ exit 0
     env.update(
         {
             "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS": "0",
             "DAILY_MAX_ATTEMPTS": "1",
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
@@ -1595,3 +1600,117 @@ def test_rapid_orders_reports_invocations_do_not_run_concurrently(tmp_path: Path
     finally:
         os.killpg(owner.pid, signal.SIGKILL)
         owner.wait()
+
+
+def _run_cron_with_preflight(
+    tmp_path: Path,
+    preflight_body: str,
+    *,
+    preflight_attempts: str = "3",
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    scripts_dir = tmp_path / "scripts"
+    logs_dir = tmp_path / "logs"
+    tmp_dir = tmp_path / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_executable(scripts_dir / "orders_sync_connectivity_preflight.sh", preflight_body)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\nprintf 'orders profiler ran\\n' >> \"${TMPDIR:-/tmp}/orders-ran.log\"\nexit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\nexit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/pending-args.log\"\nexit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_MAX_ATTEMPTS": preflight_attempts,
+            "ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    return result, log_files[-1].read_text(encoding="utf-8")
+
+
+def _transient_then_success_preflight(classification: str, failure_class: str) -> str:
+    return f'''#!/usr/bin/env bash
+COUNT_FILE="${{TMPDIR:-/tmp}}/preflight-count"
+count=0
+[[ -f "${{COUNT_FILE}}" ]] && count=$(cat "${{COUNT_FILE}}")
+count=$((count + 1))
+printf '%s' "${{count}}" > "${{COUNT_FILE}}"
+if [[ "${{count}}" -eq 1 ]]; then
+  echo 'orders_sync_preflight_host_result target_host=example.test status=failed failure_class={failure_class} exit_code=1'
+  echo 'orders_sync_preflight_summary classification={classification} failure_class={failure_class} exit_code=1'
+  exit 1
+fi
+echo 'orders_sync_preflight_host_result target_host=example.test status=passed failure_class=none exit_code=0'
+echo 'orders_sync_preflight_summary classification=tcp_ok_app_ok failure_class=none exit_code=0'
+exit 0
+'''
+
+
+def test_cron_retries_dns_preflight_failure_then_runs_profiler(tmp_path: Path) -> None:
+    result, log_text = _run_cron_with_preflight(
+        tmp_path,
+        _transient_then_success_preflight("dns_resolution_failed", "dns_resolution_failure"),
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "preflight-count").read_text(encoding="utf-8") == "2"
+    assert (tmp_path / "orders-ran.log").read_text(encoding="utf-8") == "orders profiler ran\n"
+    assert "classification=dns_resolution_failed failure_class=dns_resolution_failed exit_code=1 retry_decision=retry" in log_text
+    assert "attempt=2/3 status=passed classification=tcp_ok_app_ok retry_decision=not_needed" in log_text
+
+
+def test_cron_retries_tcp_timeout_preflight_failure_then_runs_profiler(tmp_path: Path) -> None:
+    result, log_text = _run_cron_with_preflight(
+        tmp_path,
+        _transient_then_success_preflight("tcp_connection_timeout", "tcp_connection_timeout"),
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "preflight-count").read_text(encoding="utf-8") == "2"
+    assert (tmp_path / "orders-ran.log").read_text(encoding="utf-8") == "orders profiler ran\n"
+    assert "classification=tcp_connection_timeout failure_class=tcp_connection_timeout exit_code=1 retry_decision=retry" in log_text
+
+
+def test_cron_does_not_retry_deterministic_preflight_failure(tmp_path: Path) -> None:
+    result, log_text = _run_cron_with_preflight(
+        tmp_path,
+        "#!/usr/bin/env bash\n"
+        "printf 'called\\n' >> \"${TMPDIR:-/tmp}/preflight-calls.log\"\n"
+        "echo 'orders_sync_preflight_summary classification=deterministic_configuration_failed failure_class=deterministic_configuration_failure detail=invalid_http_scheme exit_code=2'\n"
+        "exit 2\n",
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "preflight-calls.log").read_text(encoding="utf-8") == "called\n"
+    assert not (tmp_path / "orders-ran.log").exists()
+    assert "classification=deterministic_configuration_failed" in log_text
+    assert "retry_decision=fail_fast" in log_text
+    assert "attempt=2/3" not in log_text

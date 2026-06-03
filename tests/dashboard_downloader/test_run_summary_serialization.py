@@ -53,29 +53,6 @@ def test_run_aggregator_surfaces_dashboard_data_quality_threshold_breaches() -> 
         {
             "phase": "ingest",
             "status": "warning",
-            "message": (
-                "rows skipped due to missing required values: "
-                "repeat_customers/mobile_no/A001-2026-05-29-2"
-            ),
-            "bucket": "repeat_customers",
-            "skipped_required_rows": {
-                "total": 2,
-                "details": [
-                    {
-                        "bucket": "repeat_customers",
-                        "column": "mobile_no",
-                        "store_code": "A001",
-                        "report_date": "2026-05-29",
-                        "count": 2,
-                    }
-                ],
-            },
-        }
-    )
-    aggregator.record_log_event(
-        {
-            "phase": "ingest",
-            "status": "warning",
             "message": "failed to coerce csv row",
             "bucket": "nonpackage_all",
             "row_index": 7,
@@ -103,17 +80,14 @@ def test_run_aggregator_surfaces_dashboard_data_quality_threshold_breaches() -> 
     assert data_quality["counts"] == {
         "navigation_failures": 3,
         "invalid_csv_downloads": 1,
-        "skipped_required_rows": 2,
         "row_coercion_failures": 1,
     }
     assert {breach["code"] for breach in data_quality["breaches"]} == {
         "navigation_failures",
         "invalid_csv_downloads",
-        "skipped_required_rows",
         "row_coercion_failures",
     }
     assert "Data quality warning thresholds:" in record["summary_text"]
-    assert "rows skipped due to missing required fields: 2 observed" in record["summary_text"]
 
 
 def _record_terminal_bootstrap_retry(aggregator: RunAggregator) -> None:
@@ -210,3 +184,47 @@ def test_run_aggregator_preserves_error_for_partial_bucket_failure_after_bootstr
     assert record["overall_status"] == "error"
     assert record["metrics_json"]["bootstrap_retry_telemetry"]["recovered_count"] == 1
     assert record["phases_json"]["download"]["error"] == 1
+
+
+def test_repeat_customer_identity_exclusions_do_not_mark_run_as_warning() -> None:
+    aggregator = RunAggregator(run_id="run-repeat-customers", run_env="test", store_codes=["A001"])
+
+    aggregator.record_log_event(
+        {
+            "phase": "ingest",
+            "status": "info",
+            "message": "legacy skipped-required payload",
+            "bucket": "repeat_customers",
+            "skipped_required_rows": {
+                "total": 2,
+                "details": [
+                    {
+                        "bucket": "repeat_customers",
+                        "column": "mobile_no",
+                        "store_code": "A001",
+                        "count": 2,
+                        "mobile_no": "customer-sensitive-value",
+                    }
+                ],
+            },
+        }
+    )
+    aggregator.record_log_event(
+        {
+            "phase": "ingest",
+            "status": "info",
+            "message": "repeat-customer rows excluded by identity validation",
+            "bucket": "repeat_customers",
+            "skipped_repeat_customer_identity_rows": {
+                "total": 2,
+                "details": [{"store_code": "A001", "count": 2}],
+            },
+        }
+    )
+
+    record = aggregator.build_record(finished_at=datetime.now(timezone.utc))
+
+    assert record["overall_status"] == "ok"
+    assert record["metrics_json"]["data_quality_warnings"]["counts"] == {}
+    assert "mobile" not in record["summary_text"].lower()
+    assert "customer-sensitive-value" not in str(record)

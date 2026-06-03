@@ -18,7 +18,9 @@ def test_report_cli_includes_mtd_same_day_fulfillment_subcommand() -> None:
     assert parsed.report_command == "mtd-same-day-fulfillment"
 
 
-def test_report_cli_invokes_mtd_same_day_fulfillment_runner_with_common_args(monkeypatch) -> None:
+def test_report_cli_invokes_mtd_same_day_fulfillment_runner_with_common_args(
+    monkeypatch,
+) -> None:
     captured: list[list[str] | None] = []
 
     def _fake_runner(argv: list[str] | None = None) -> None:
@@ -56,7 +58,9 @@ def test_report_cli_invokes_daily_sales_runner_with_common_args(monkeypatch) -> 
     assert captured == [["--env", "stage"]]
 
 
-def test_report_cli_invokes_pending_deliveries_runner_with_upstream_args(monkeypatch) -> None:
+def test_report_cli_invokes_pending_deliveries_runner_with_upstream_args(
+    monkeypatch,
+) -> None:
     captured: list[list[str] | None] = []
 
     def _fake_runner(argv: list[str] | None = None) -> None:
@@ -117,6 +121,58 @@ def test_recovery_cli_invokes_runner_with_common_args(monkeypatch) -> None:
     assert captured == [["--report-date", "2026-04-30", "--env", "dev"]]
 
 
+def test_crm_order_line_items_rebuild_aliases_forward_to_rebuild_runner(
+    monkeypatch,
+) -> None:
+    captured: list[list[str] | None] = []
+
+    def _fake_runner(argv: list[str] | None = None) -> None:
+        captured.append(argv)
+
+    monkeypatch.setattr("app.crm_downloader.order_line_items_rebuild.run", _fake_runner)
+
+    exit_code = app_main.main(
+        [
+            "crm",
+            "order-line-items-rebuild",
+            "--source",
+            "uc",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-02-15",
+            "--window-days",
+            "45",
+            "--stores",
+            "UC001",
+            "--dry-run",
+            "--resume",
+            "--run-id",
+            "alias-run",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == [
+        [
+            "--source",
+            "uc",
+            "--end-date",
+            "2025-02-15",
+            "--start-date",
+            "2025-01-01",
+            "--window-size",
+            "45",
+            "--stores",
+            "UC001",
+            "--dry-run",
+            "--resume",
+            "--run-id",
+            "alias-run",
+        ]
+    ]
+
+
 def test_pending_deliveries_direct_cli_accepts_upstream_args(monkeypatch) -> None:
     import app.reports.pending_deliveries.main as pending_main
 
@@ -151,7 +207,9 @@ def test_pending_deliveries_direct_cli_accepts_upstream_args(monkeypatch) -> Non
     ]
 
 
-def test_pending_deliveries_cli_forwards_degraded_upstream_context_end_to_end(monkeypatch) -> None:
+def test_pending_deliveries_cli_forwards_degraded_upstream_context_end_to_end(
+    monkeypatch,
+) -> None:
     import app.reports.pending_deliveries.main as pending_main
     import app.reports.pending_deliveries.pipeline as pending_pipeline
 

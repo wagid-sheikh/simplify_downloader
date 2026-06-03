@@ -51,6 +51,10 @@ Recommended variables for the cron env file:
 | `TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS` | DB-backed Python deadline for one TD-leads store worker; defaults to `240`. |
 | `TD_LEADS_GATHER_TIMEOUT_SECONDS` | DB-backed Python deadline for the complete TD-leads worker collection; defaults to `270`. Pending workers are cancelled before failed-run summary persistence and notification delivery; keep this below the shell watchdog configured for the deployment workload. |
 | `TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS` | DB-backed Python deadline for draining cancelled TD-leads workers after the overall gather times out; defaults to `10`. Expiry is logged and failed-summary persistence continues while the shell watchdog remains the final process boundary. |
+| `ORDERS_PREFLIGHT_MAX_ATTEMPTS` | Maximum connectivity-preflight attempts before the orders profiler is skipped; defaults to `3`. The bound prevents preflight retries from accumulating across cron windows. |
+| `ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS` | Initial delay between transient connectivity-preflight attempts; defaults to `10`. |
+| `ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER` | Multiplier applied after each transient connectivity-preflight retry delay; defaults to `2`. |
+| `ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS` | Maximum delay between transient connectivity-preflight attempts; defaults to `60`. |
 | `ORDERS_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for the orders profiler step; defaults to `5400`. Timed-out attempts are retryable until `ORDERS_MAX_ATTEMPTS` is exhausted. |
 | `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
 | `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |
@@ -156,3 +160,16 @@ headful browser prompts.
 
 Following these guardrails keeps the daily, weekly, and monthly pipelines aligned
 and prevents configuration drift between environments.
+
+### Orders-sync connectivity preflight retries
+
+Before launching `orders_sync_run_profiler`, the orders/reports cron wrapper runs the
+DNS, TCP/443, and optional app-layer HTTP connectivity preflight for every required
+host. DNS resolution failures, TCP connection failures and timeouts, and temporary
+app-layer HTTP failures are transient classes eligible for the bounded retry envelope.
+Malformed deterministic preflight configuration fails fast without retry. Each attempt
+logs host-level outcomes, the failure class, the retry decision, and the final
+classification. The profiler launches only after every required host passes. If the
+envelope is exhausted, the wrapper skips the profiler, passes
+`--orders-sync-upstream-status failed` to both downstream reports, runs those reports,
+and exits non-zero because orders sync remains a required step.

@@ -8,6 +8,15 @@
 
 ---
 
+### DL-027
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Silently exclude `repeat_customers` rows with missing, blank, malformed, or invalid normalized `mobile_no` values until corrected at source. These exclusions are intentionally not operator-alert conditions.
+- **Context:** `mobile_no` remains required for repeat-customer identity, but recurring source-data exclusions do not require warning-level telemetry or dashboard email correction instructions.
+- **Evidence:** `app/common/ingest/schemas.py`, `app/common/ingest/service.py`, `app/dashboard_downloader/notifications.py`, and `tests/dashboard_downloader/*`.
+- **Implications:** Excluded rows are not persisted or reported. If informational telemetry is retained, it contains aggregate counts and store codes only, never customer-sensitive row values, and it does not mark the overall dashboard run as warning.
+- **Follow-up:** Preserve silent exclusion semantics unless operators explicitly adopt a new alerting policy.
+
 ### DL-026
 - **Date:** 2026-06-02
 - **Status:** Active
@@ -51,12 +60,12 @@
 
 ### DL-021
 - **Date:** 2026-05-30
-- **Status:** Active
+- **Status:** Superseded by DL-027
 - **Decision:** Keep skipping `repeat_customers` rows missing required `mobile_no`, exclude them from repeat-customer reporting until corrected, and notify operators using store-level skipped-row counts only.
 - **Context:** A missing mobile number breaks the repeat-customer ingest identity, but notification emails must remain actionable without leaking customer-sensitive row data.
 - **Evidence:** `app/dashboard_downloader/config.py`, `app/common/ingest/service.py`, `app/dashboard_downloader/notifications.py`, and `tests/dashboard_downloader/test_notifications.py`.
-- **Implications:** Dashboard data-quality notifications list affected store codes and row counts, instruct operators to correct missing mobile numbers in the source dashboard, and require a dashboard pipeline rerun before corrected rows enter repeat-customer reporting.
-- **Follow-up:** Preserve the safe store-count-only notification boundary if future dashboard data-quality warnings add row-level diagnostics.
+- **Implications:** Historical only. DL-027 removes this operator-notification behavior while retaining silent exclusion from repeat-customer reporting.
+- **Follow-up:** See DL-027.
 
 ### DL-020
 - **Date:** 2026-05-20
@@ -222,6 +231,16 @@
     reference and actor/timestamp metadata.
 - **Follow-up:** Ensure any internal admin UI/input forms enforce these enum
   values and append-style note behavior rather than free-form overwrite.
+
+
+### DL-003
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Add a dedicated operator-triggered historical rebuild path for `order_line_items` that replays authoritative TD/UC CRM snapshots in bounded windows instead of attempting SQL-only duplicate cleanup.
+- **Context:** Historical repeated line-item rows cannot be safely classified from database shape alone because duplicate line items may be legitimate source data.
+- **Evidence:** `app/crm_downloader/order_line_items_rebuild.py`, `scripts/run_local_order_line_items_rebuild.sh`, and `tests/crm_downloader/test_order_line_items_rebuild.py`.
+- **Implications:** Operators should use one full-range `python -m app crm rebuild-order-line-items --source td|uc|both ...` command (or the `order-line-items-rebuild` alias) with `--dry-run` first, then rerun without dry-run; they should not run one command per window. The rebuild splits the requested range into CRM-safe source windows capped at 30 days (or a lower source/store limit), accepts date/window aliases (`--from-date`, `--to-date`, `--window-days`), uses `store_master.start_date` when no explicit start date is supplied, persists window progress for `--resume`, retries retryable failed windows, and reports missing windows at completion. Only `complete_with_rows` and `complete_empty` outcomes replace rows; incomplete source windows preserve existing data and emit resumable checkpoints.
+- **Follow-up:** Keep future dedupe/remediation requests on this replay-based path unless code and docs intentionally define a new source-authoritative contract.
 
 ### DL-001
 - **Date:** Date unknown (reconstructed from repository state)

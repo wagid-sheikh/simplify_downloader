@@ -1030,7 +1030,7 @@ def test_send_email_does_not_retry_recipient_resolution_failure(monkeypatch) -> 
     assert result.failure.exception_type == "NoRecipients"
     assert result.failure.attempt_count == 1
 
-def test_dashboard_notification_summary_includes_data_quality_threshold_text() -> None:
+def test_dashboard_notification_summary_omits_repeat_customer_mobile_correction_text() -> None:
     from app.dashboard_downloader.notifications import _append_dashboard_data_quality_warnings
 
     summary = _append_dashboard_data_quality_warnings(
@@ -1071,9 +1071,8 @@ def test_dashboard_notification_summary_includes_data_quality_threshold_text() -
     assert "Dashboard data quality warnings:" in summary
     assert "invalid CSV downloads discarded: 1 observed (threshold 1)" in summary
     assert "rows skipped due to missing required fields: 3 observed (threshold 1)" in summary
-    assert "affected stores and row counts: A001=2, B002=1" in summary
-    assert "correct missing mobile numbers in the source dashboard" in summary
-    assert "excluded from repeat-customer reporting until corrected" in summary
+    assert "affected stores and row counts" not in summary
+    assert "mobile" not in summary.lower()
     assert "customer-sensitive-value" not in summary
 
 

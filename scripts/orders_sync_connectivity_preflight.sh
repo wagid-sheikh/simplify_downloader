@@ -15,26 +15,34 @@ HTTP_EXPECTED_CLASSES="${ORDERS_SYNC_APP_LAYER_PREFLIGHT_EXPECTED_CLASSES:-2xx,3
 HTTP_SCHEME="${ORDERS_SYNC_APP_LAYER_PREFLIGHT_SCHEME:-https}"
 HTTP_PATH="${ORDERS_SYNC_APP_LAYER_PREFLIGHT_PATH:-/}"
 
-if ! [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  TIMEOUT_SECONDS=5
-fi
-if ! [[ "${TARGET_PORT}" =~ ^[0-9]+$ ]]; then
-  TARGET_PORT=443
-fi
-if ! [[ "${HTTP_ENABLED}" =~ ^[01]$ ]]; then
-  HTTP_ENABLED=1
-fi
-case "${HTTP_METHOD}" in
-  HEAD|GET|head|get) ;;
-  *) HTTP_METHOD="HEAD" ;;
-esac
-if [[ "${HTTP_PATH}" != /* ]]; then
-  HTTP_PATH="/${HTTP_PATH}"
-fi
-
 log_preflight() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
 }
+
+fail_configuration() {
+  log_preflight "orders_sync_preflight_summary classification=deterministic_configuration_failed failure_class=deterministic_configuration_failure detail=$1 exit_code=2"
+  return 2
+}
+
+validate_configuration() {
+  [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { fail_configuration "invalid_timeout_seconds"; return 2; }
+  [[ "${TARGET_PORT}" =~ ^[0-9]+$ ]] || { fail_configuration "invalid_target_port"; return 2; }
+  (( 10#${TARGET_PORT} >= 1 && 10#${TARGET_PORT} <= 65535 )) || { fail_configuration "invalid_target_port"; return 2; }
+  [[ "${HTTP_ENABLED}" =~ ^[01]$ ]] || { fail_configuration "invalid_http_enabled"; return 2; }
+  [[ "${HTTP_EXPECTED_CLASSES}" =~ ^[1-5]xx(,[1-5]xx)*$ ]] || { fail_configuration "invalid_http_expected_classes"; return 2; }
+  case "${HTTP_METHOD}" in
+    HEAD|GET|head|get) ;;
+    *) fail_configuration "invalid_http_method"; return 2 ;;
+  esac
+  case "${HTTP_SCHEME}" in
+    https|http) ;;
+    *) fail_configuration "invalid_http_scheme"; return 2 ;;
+  esac
+}
+
+if [[ "${HTTP_PATH}" != /* ]]; then
+  HTTP_PATH="/${HTTP_PATH}"
+fi
 
 check_target() {
   local target_host="$1"
@@ -104,6 +112,7 @@ except socket.gaierror as exc:
         "tcp_connectivity_preflight_dns_failed "
         f"{base_fields} "
         f"latency_ms={elapsed_ms(dns_start)} "
+        f"failure_class=dns_resolution_failure "
         f"error={clean(exc)}",
         file=sys.stderr,
     )
@@ -117,6 +126,7 @@ print(
 )
 
 last_error = ""
+saw_tcp_timeout = False
 for family, socktype, proto, _canonname, sockaddr in addresses:
     tcp_start = time.monotonic()
     try:
@@ -132,15 +142,18 @@ for family, socktype, proto, _canonname, sockaddr in addresses:
             break
     except OSError as exc:
         last_error = str(exc)
+        saw_tcp_timeout = saw_tcp_timeout or isinstance(exc, socket.timeout)
 else:
+    failure_class = "tcp_connection_timeout" if saw_tcp_timeout else "tcp_connection_failure"
     print(
         "tcp_connectivity_preflight_tcp_failed "
         f"{base_fields} "
         f"latency_ms={elapsed_ms(tcp_start) if addresses else 0} "
+        f"failure_class={failure_class} "
         f"error={clean(last_error or 'no_addresses_attempted')}",
         file=sys.stderr,
     )
-    raise SystemExit(11)
+    raise SystemExit(13 if saw_tcp_timeout else 11)
 
 if not http_enabled:
     print(f"app_layer_preflight_http_skipped {base_fields} reason=disabled")
@@ -179,6 +192,7 @@ except Exception as exc:  # noqa: BLE001 - this is an operator-facing diagnostic
         f"method={http_method} "
         f"expected_classes={','.join(sorted(expected_classes))} "
         f"latency_ms={elapsed_ms(http_start)} "
+        f"failure_class=app_layer_http_connectivity_failure "
         f"error={clean(type(exc).__name__ + ':' + str(exc))}",
         file=sys.stderr,
     )
@@ -208,6 +222,7 @@ print(
     f"response_class={response_class} "
     f"expected_classes={','.join(sorted(expected_classes))} "
     f"latency_ms={elapsed_ms(http_start)} "
+    "failure_class=app_layer_http_connectivity_failure "
     "error=unexpected_response_class",
     file=sys.stderr,
 )
@@ -219,8 +234,12 @@ main() {
   local rc=0
   local target_rc=0
   local classification="tcp_ok_app_ok"
+  local saw_dns_failure=0
   local saw_tcp_failure=0
+  local saw_tcp_timeout=0
   local saw_app_failure=0
+
+  validate_configuration || return $?
 
   if [[ "$#" -eq 0 ]]; then
     set -- \
@@ -242,25 +261,44 @@ main() {
     check_target "$1" || target_rc=$?
     if [[ "${target_rc}" -ne 0 ]]; then
       rc=1
-      if [[ "${target_rc}" -eq 12 ]]; then
-        saw_app_failure=1
-      else
-        saw_tcp_failure=1
-      fi
+      case "${target_rc}" in
+        10) saw_dns_failure=1 ;;
+        12) saw_app_failure=1 ;;
+        11) saw_tcp_failure=1 ;;
+        13) saw_tcp_failure=1; saw_tcp_timeout=1 ;;
+        *) saw_tcp_failure=1 ;;
+      esac
+      log_preflight "orders_sync_preflight_host_result target_host=$1 status=failed failure_class=$(
+        case "${target_rc}" in
+          10) printf dns_resolution_failure ;;
+          11) printf tcp_connection_failure ;;
+          12) printf app_layer_http_connectivity_failure ;;
+          13) printf tcp_connection_timeout ;;
+          *) printf unknown_preflight_failure ;;
+        esac
+      ) exit_code=${target_rc}"
+    else
+      log_preflight "orders_sync_preflight_host_result target_host=$1 status=passed failure_class=none exit_code=0"
     fi
     shift
   done
 
   if [[ "${rc}" -ne 0 ]]; then
-    if [[ "${saw_tcp_failure}" -eq 1 && "${saw_app_failure}" -eq 1 ]]; then
+    if [[ "${saw_app_failure}" -eq 1 && ( "${saw_dns_failure}" -eq 1 || "${saw_tcp_failure}" -eq 1 ) ]]; then
       classification="tcp_and_app_layer_failed"
     elif [[ "${saw_app_failure}" -eq 1 ]]; then
-      classification="app_layer_failed"
+      classification="app_layer_http_connectivity_failed"
+    elif [[ "${saw_tcp_failure}" -eq 1 ]]; then
+      if [[ "${saw_tcp_timeout}" -eq 1 ]]; then
+        classification="tcp_connection_timeout"
+      else
+        classification="tcp_connection_failed"
+      fi
     else
-      classification="tcp_failed"
+      classification="dns_resolution_failed"
     fi
-    log_preflight "orders_sync_preflight_summary classification=${classification} exit_code=${rc}"
-    if [[ "${classification}" = "app_layer_failed" || "${classification}" = "tcp_and_app_layer_failed" ]]; then
+    log_preflight "orders_sync_preflight_summary classification=${classification} failure_class=${classification} exit_code=${rc}"
+    if [[ "${classification}" = "app_layer_http_connectivity_failed" || "${classification}" = "tcp_and_app_layer_failed" ]]; then
       log_preflight "app_layer_preflight_failed_summary exit_code=${rc}"
     else
       log_preflight "tcp_connectivity_preflight_failed_summary exit_code=${rc}"
@@ -268,7 +306,7 @@ main() {
     return "${rc}"
   fi
 
-  log_preflight "orders_sync_preflight_summary classification=${classification} exit_code=0"
+  log_preflight "orders_sync_preflight_summary classification=${classification} failure_class=none exit_code=0"
   log_preflight "tcp_connectivity_preflight_succeeded classification=${classification}"
   return 0
 }

@@ -65,11 +65,10 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
   - persist run summary,
   - trigger notifications.
 
-#### Repeat-customer missing-mobile data-quality handling
-- `repeat_customers.mobile_no` is required for ingest identity. Rows missing `mobile_no` remain skipped rather than being persisted with an invalid dedupe key.
+#### Repeat-customer mobile identity handling
+- `repeat_customers.mobile_no` is required for ingest identity. Rows with missing, blank, malformed, or invalid normalized `mobile_no` values remain silently skipped rather than being persisted with an invalid dedupe key.
 - Skipped rows are excluded from repeat-customer reporting until corrected at the source and reingested.
-- Dashboard data-quality notifications expose only affected store codes and skipped-row counts; they must not include customer-sensitive row payloads or mobile numbers.
-- **Operator action:** correct the missing mobile numbers in the source dashboard, then rerun the dashboard pipeline so corrected rows can enter repeat-customer reporting.
+- These exclusions are intentionally not dashboard warning-threshold or operator-notification conditions. If aggregate informational telemetry is retained, it contains only counts and store codes; it must not include customer-sensitive row payloads or mobile values.
 
 ### 4) CRM order-sync pipelines
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
@@ -239,6 +238,18 @@ forwarding shortcut during rollout. It prints the explicit helper commands for b
 infer a pipeline from environment variables. Operators should prefer the explicit
 helper commands above.
 
+For order-sync profiler, the orders/reports wrapper first runs a bounded connectivity
+preflight retry envelope before Playwright starts. Every attempt checks all required
+hosts and records host-level DNS, TCP, and optional app-layer HTTP outcomes. DNS
+resolution failures, TCP connection failures/timeouts, and temporary app-layer HTTP
+failures are retryable; deterministic preflight configuration failures fail fast. The
+profiler launches only when all required hosts pass. Exhausted retries preserve degraded
+report generation: the profiler is skipped, downstream reports receive
+`--orders-sync-upstream-status failed`, and the wrapper exits non-zero after the reports
+run. `ORDERS_PREFLIGHT_MAX_ATTEMPTS`, `ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS`,
+`ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER`, and
+`ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS` keep that envelope bounded.
+
 For order-sync profiler, the run additionally:
 - computes date windows per store,
 - runs TD/UC sync workers,
@@ -340,6 +351,28 @@ Operational notes:
 - Keep DB reads/writes via shared async session helpers.
 - Keep pipeline telemetry structured (`log_event`, run IDs, phase/status).
 - Treat DB notification metadata as runtime contract for email behavior.
+
+### Operator-triggered `order_line_items` historical rebuild
+
+The dedicated historical rebuild command is `python -m app crm rebuild-order-line-items` (alias: `python -m app crm order-line-items-rebuild`). It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
+
+Typical invocations:
+
+```bash
+poetry run python -m app crm rebuild-order-line-items --source td --stores TD001 --start-date 2024-01-01 --end-date 2025-03-31 --dry-run
+poetry run python -m app crm rebuild-order-line-items --source both --start-date 2024-01-01 --end-date 2025-03-31 --resume
+bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --start-date 2024-01-01 --end-date 2025-03-31 --resume
+```
+
+Operational behavior and limitations:
+
+- Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
+- CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`. `--end-date` and `--to-date` are equivalent.
+- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items` or staging tables.
+- TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
+- Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
+- Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; the rebuild reports any missing windows at completion.
+- The default source fetchers rely on valid CRM browser storage-state/auth context. If CRM auth has expired, refresh normal TD/UC sessions first and rerun the rebuild.
 
 ## Legacy markdown status (triaged)
 

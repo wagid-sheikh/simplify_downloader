@@ -84,10 +84,10 @@ Container paths:
    - Zero-value orders stay visible in descriptive order reporting but are excluded from missing-payment, pending-payment, and recovery action checks.
    - User-facing labels should say `Order Amount`.
 
-9. **Repeat-customer missing-mobile contract**
-   - `repeat_customers.mobile_no` remains required. Rows missing a mobile number are skipped during ingest and excluded from repeat-customer reporting until corrected at the source.
-   - Dashboard data-quality notifications list only affected store codes and skipped-row counts. Do not expose customer-sensitive row data in notification content.
-   - Operators should correct missing mobile numbers in the source dashboard and rerun the dashboard pipeline.
+9. **Repeat-customer mobile identity contract**
+   - `repeat_customers.mobile_no` remains required for record identity. Rows with missing, blank, malformed, or invalid normalized mobile values are silently skipped during ingest and excluded from repeat-customer reporting until corrected at the source.
+   - These exclusions are not operator-alert conditions: do not emit warning-level telemetry, increment dashboard warning-threshold metrics, or append correction instructions to notification summaries solely because they occurred.
+   - If aggregate informational telemetry is retained, include only counts and store codes. Do not expose customer-sensitive row data or mobile values in logs or notification content.
 
 
 ## Change discipline (required)

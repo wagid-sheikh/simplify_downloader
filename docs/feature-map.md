@@ -31,7 +31,7 @@ Practical map of where to work for major capabilities.
   - `app/common/ingest/{schemas.py,models.py,service.py}`
   - `app/common/{audit.py,cleanup.py}`
 - **Related tests:** `tests/dashboard_downloader/*`, `tests/crm_downloader/*` (shared contracts).
-- **Notes/Risks:** Dedupe and coercion behavior impacts data quality and audit counts. `repeat_customers` rows missing required `mobile_no` values are skipped and excluded from repeat-customer reporting until source correction. Dashboard data-quality notifications list affected store codes and skipped-row counts only; operators must correct mobile numbers in the source dashboard and rerun the pipeline.
+- **Notes/Risks:** Dedupe and coercion behavior impacts data quality and audit counts. `repeat_customers` rows with missing, blank, malformed, or invalid normalized `mobile_no` values are silently skipped and excluded from repeat-customer reporting until source correction. These exclusions do not raise dashboard warnings or operator-facing notification text; any retained informational telemetry is aggregate-only and must not expose customer-sensitive values.
 
 ## 4) Store dashboard summary persistence
 
@@ -96,6 +96,18 @@ Practical map of where to work for major capabilities.
   - `app/crm_downloader/orders_sync_window.py`
 - **Dependencies:** `orders_sync_log`, `pipeline_run_summaries`, notification profiles.
 - **Notes/Risks:** Concurrency + retry + status rollups can produce subtle operational edge cases.
+
+
+## 7.1) `order_line_items` historical rebuild
+
+- **Purpose:** Operator-triggered, source-authoritative rebuild of `order_line_items` for historical TD/UC windows without SQL-only deduplication.
+- **Primary paths:**
+  - `app/crm_downloader/order_line_items_rebuild.py`
+  - `app/crm_downloader/td_orders_sync/garment_ingest.py`
+  - `app/crm_downloader/uc_orders_sync/gst_publish.py`
+  - `scripts/run_local_order_line_items_rebuild.sh`
+- **CLI:** `poetry run python -m app crm rebuild-order-line-items --source td|uc|both --end-date YYYY-MM-DD [--start-date YYYY-MM-DD] [--window-size N] [--stores ...] [--dry-run] [--resume]` (aliases: `order-line-items-rebuild`, `--from-date`, `--to-date`, `--window-days`).
+- **Notes/Risks:** Operators run one full-range command; the rebuild internally expands the range into CRM-safe windows capped at 30 days unless a lower source/store limit applies. If `--start-date` is omitted, the start comes from `store_master.start_date`. Only `complete_with_rows` and `complete_empty` snapshots replace local rows; `incomplete_or_failed` preserves existing rows. Structured checkpoints and `order_line_items_rebuild_progress` are the resume contract, and the command reports missing windows after the run. The command depends on valid CRM auth/session state for live source fetching.
 
 ## 8) Daily/weekly/monthly/pending reporting
 
