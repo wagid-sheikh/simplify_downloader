@@ -354,7 +354,7 @@ Operational notes:
 
 ### Operator-triggered `order_line_items` historical rebuild
 
-The dedicated historical rebuild command is `python -m app crm rebuild-order-line-items`. It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
+The dedicated historical rebuild command is `python -m app crm rebuild-order-line-items` (alias: `python -m app crm order-line-items-rebuild`). It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
 
 Typical invocations:
 
@@ -367,7 +367,7 @@ bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --
 Operational behavior and limitations:
 
 - Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
-- CRM source fetch windows are capped at 30 days. A lower operator `--window-size` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date` is omitted, each store starts at `store_master.start_date`.
+- CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`. `--end-date` and `--to-date` are equivalent.
 - `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items` or staging tables.
 - TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
 - Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.

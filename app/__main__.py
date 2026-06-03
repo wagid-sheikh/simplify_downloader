@@ -21,7 +21,9 @@ async def _run_server() -> int:
             # Some environments (e.g. Windows) do not support custom signal handlers.
             pass
 
-    print("[app] Running in server mode. Waiting for pipeline invocations...", flush=True)
+    print(
+        "[app] Running in server mode. Waiting for pipeline invocations...", flush=True
+    )
     await stop_event.wait()
     print("[app] Shutdown signal received. Exiting server mode.", flush=True)
     return 0
@@ -43,13 +45,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app", description="Application entrypoint")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("server", help="Run in idle server mode (does not start pipelines)")
+    subparsers.add_parser(
+        "server", help="Run in idle server mode (does not start pipelines)"
+    )
 
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run the single-session dashboard pipeline once and exit"
     )
-    pipeline_parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="Skip DB writes")
-    pipeline_parser.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
+    pipeline_parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", help="Skip DB writes"
+    )
+    pipeline_parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        type=str,
+        default=None,
+        help="Override generated run id",
+    )
     pipeline_parser.add_argument(
         "--run-migrations",
         dest="run_migrations",
@@ -58,7 +70,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     report_parser = subparsers.add_parser("report", help="Run report pipelines")
-    report_subparsers = report_parser.add_subparsers(dest="report_command", required=True)
+    report_subparsers = report_parser.add_subparsers(
+        dest="report_command", required=True
+    )
 
     def _add_common_report_args(
         report_subparser: argparse.ArgumentParser,
@@ -72,7 +86,9 @@ def _build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Report date (YYYY-MM-DD)",
         )
-        report_subparser.add_argument("--env", dest="env", type=str, default=None, help="Override run environment")
+        report_subparser.add_argument(
+            "--env", dest="env", type=str, default=None, help="Override run environment"
+        )
         report_subparser.add_argument(
             "--force",
             dest="force",
@@ -100,29 +116,46 @@ def _build_parser() -> argparse.ArgumentParser:
         include_orders_sync_upstream=True,
     )
     _add_common_report_args(
-        report_subparsers.add_parser("pending-deliveries", help="Run pending deliveries report"),
+        report_subparsers.add_parser(
+            "pending-deliveries", help="Run pending deliveries report"
+        ),
         include_orders_sync_upstream=True,
     )
     _add_common_report_args(
-        report_subparsers.add_parser("mtd-same-day-fulfillment", help="Run MTD same-day fulfillment report")
+        report_subparsers.add_parser(
+            "mtd-same-day-fulfillment", help="Run MTD same-day fulfillment report"
+        )
     )
 
     crm_parser = subparsers.add_parser("crm", help="Run CRM maintenance commands")
     crm_subparsers = crm_parser.add_subparsers(dest="crm_command", required=True)
     oli_rebuild = crm_subparsers.add_parser(
         "rebuild-order-line-items",
+        aliases=["order-line-items-rebuild"],
         help="Rebuild order_line_items from authoritative CRM snapshots",
     )
     oli_rebuild.add_argument("--source", choices=("td", "uc", "both"), required=True)
-    oli_rebuild.add_argument("--stores", nargs="*", default=None, help="Optional store codes")
+    oli_rebuild.add_argument(
+        "--stores", nargs="*", default=None, help="Optional store codes"
+    )
     oli_rebuild.add_argument(
         "--start-date",
+        "--from-date",
+        dest="start_date",
         default=None,
         help="Start date (YYYY-MM-DD); defaults to store_master.start_date",
     )
-    oli_rebuild.add_argument("--end-date", required=True, help="End date (YYYY-MM-DD)")
+    oli_rebuild.add_argument(
+        "--end-date",
+        "--to-date",
+        dest="end_date",
+        required=True,
+        help="End date (YYYY-MM-DD)",
+    )
     oli_rebuild.add_argument(
         "--window-size",
+        "--window-days",
+        dest="window_size",
         type=int,
         default=None,
         help="Requested window size in days; CRM fetches are capped at 30 days",
@@ -131,14 +164,26 @@ def _build_parser() -> argparse.ArgumentParser:
     oli_rebuild.add_argument("--resume", action="store_true")
     oli_rebuild.add_argument("--run-id", default=None)
 
-    recovery_parser = subparsers.add_parser("recovery", help="Run recovery maintenance commands")
-    recovery_subparsers = recovery_parser.add_subparsers(dest="recovery_command", required=True)
+    recovery_parser = subparsers.add_parser(
+        "recovery", help="Run recovery maintenance commands"
+    )
+    recovery_subparsers = recovery_parser.add_subparsers(
+        dest="recovery_command", required=True
+    )
     recovery_mark_pending = recovery_subparsers.add_parser(
         "mark-aged-pending-deliveries",
         help="Mark >30 day pending deliveries as TO_BE_RECOVERED",
     )
-    recovery_mark_pending.add_argument("--report-date", dest="report_date", type=str, default=None, help="Report date (YYYY-MM-DD)")
-    recovery_mark_pending.add_argument("--env", dest="env", type=str, default=None, help="Override run environment")
+    recovery_mark_pending.add_argument(
+        "--report-date",
+        dest="report_date",
+        type=str,
+        default=None,
+        help="Report date (YYYY-MM-DD)",
+    )
+    recovery_mark_pending.add_argument(
+        "--env", dest="env", type=str, default=None, help="Override run environment"
+    )
 
     return parser
 
@@ -160,7 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_pipeline(parsed)
 
     if parsed.command == "crm":
-        if parsed.crm_command == "rebuild-order-line-items":
+        if parsed.crm_command in {
+            "rebuild-order-line-items",
+            "order-line-items-rebuild",
+        }:
             from app.crm_downloader.order_line_items_rebuild import run as rebuild_run
 
             rebuild_args = ["--source", parsed.source, "--end-date", parsed.end_date]
@@ -198,27 +246,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_args.extend(["--report-date", parsed.report_date])
         if parsed.env:
             report_args.extend(["--env", parsed.env])
-        orders_sync_upstream_status = getattr(parsed, "orders_sync_upstream_status", None)
-        orders_sync_upstream_run_id = getattr(parsed, "orders_sync_upstream_run_id", None)
+        orders_sync_upstream_status = getattr(
+            parsed, "orders_sync_upstream_status", None
+        )
+        orders_sync_upstream_run_id = getattr(
+            parsed, "orders_sync_upstream_run_id", None
+        )
         if orders_sync_upstream_status:
-            report_args.extend(["--orders-sync-upstream-status", orders_sync_upstream_status])
+            report_args.extend(
+                ["--orders-sync-upstream-status", orders_sync_upstream_status]
+            )
         if orders_sync_upstream_run_id:
-            report_args.extend(["--orders-sync-upstream-run-id", orders_sync_upstream_run_id])
+            report_args.extend(
+                ["--orders-sync-upstream-run-id", orders_sync_upstream_run_id]
+            )
         # --force is retained at this wrapper for backward compatibility, but
         # operational reports now regenerate on every invocation.
 
         if parsed.report_command == "daily-sales":
-            from app.reports.daily_sales_report.main import main as daily_sales_report_main
+            from app.reports.daily_sales_report.main import (
+                main as daily_sales_report_main,
+            )
 
             daily_sales_report_main(report_args)
             return 0
         if parsed.report_command == "pending-deliveries":
-            from app.reports.pending_deliveries.main import main as pending_deliveries_main
+            from app.reports.pending_deliveries.main import (
+                main as pending_deliveries_main,
+            )
 
             pending_deliveries_main(report_args)
             return 0
         if parsed.report_command == "mtd-same-day-fulfillment":
-            from app.reports.mtd_same_day_fulfillment.main import main as mtd_same_day_fulfillment_main
+            from app.reports.mtd_same_day_fulfillment.main import (
+                main as mtd_same_day_fulfillment_main,
+            )
 
             mtd_same_day_fulfillment_main(report_args)
             return 0
