@@ -8,6 +8,9 @@ import json
 import math
 import os
 import random
+import shlex
+import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -175,9 +178,131 @@ class WindowStateTimeoutError(RuntimeError):
     """Raised when loading the last successful window state exceeds the bound."""
 
 
+STORE_LOCK_METADATA_FILES = (
+    "pid",
+    "pgid",
+    "started_at",
+    "started_at_epoch",
+    "host",
+    "cwd",
+    "command",
+    "run_id",
+    "store_code",
+)
+STORE_LOCK_HANDLE_FILE = "lock"
+
+
 def _store_lock_path(store_code: str) -> Any:
     lock_dir = default_download_dir() / "orders_sync_run_profiler_locks"
     return lock_dir / f"{store_code}.lock"
+
+
+def _store_lock_handle_path(store_code: str) -> Any:
+    return _store_lock_path(store_code) / STORE_LOCK_HANDLE_FILE
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pgid_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_store_lock_metadata(lock_path: Any) -> dict[str, Any]:
+    metadata: dict[str, str] = {}
+    errors: list[str] = []
+    for name in STORE_LOCK_METADATA_FILES:
+        metadata_file = lock_path / name
+        try:
+            value = metadata_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            errors.append(f"missing:{name}")
+            continue
+        except OSError as exc:
+            errors.append(f"unreadable:{name}:{exc}")
+            continue
+        value = value.rstrip("\n")
+        if not value or "\n" in value:
+            errors.append(f"malformed:{name}")
+            continue
+        metadata[name] = value
+
+    owner_pid_alive: bool | None = None
+    owner_pgid_alive: bool | None = None
+    pid_value = metadata.get("pid")
+    pgid_value = metadata.get("pgid")
+    if pid_value is not None:
+        try:
+            owner_pid_alive = _process_alive(int(pid_value))
+        except ValueError:
+            errors.append("malformed:pid")
+    if pgid_value is not None:
+        try:
+            owner_pgid_alive = _pgid_alive(int(pgid_value))
+        except ValueError:
+            errors.append("malformed:pgid")
+
+    return {
+        "owner_metadata": metadata,
+        "owner_metadata_errors": errors,
+        "owner_pid_alive": owner_pid_alive,
+        "owner_pgid_alive": owner_pgid_alive,
+    }
+
+
+def _build_store_lock_metadata(*, run_id: str | None, store_code: str) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    command = shlex.join([sys.executable, *sys.argv])
+    return {
+        "pid": str(os.getpid()),
+        "pgid": str(os.getpgid(0)),
+        "started_at": now.isoformat(),
+        "started_at_epoch": str(now.timestamp()),
+        "host": socket.gethostname(),
+        "cwd": os.getcwd(),
+        "command": command,
+        "run_id": run_id or "unknown",
+        "store_code": store_code,
+    }
+
+
+def _write_store_lock_metadata(lock_path: Any, *, run_id: str | None, store_code: str) -> None:
+    metadata = _build_store_lock_metadata(run_id=run_id, store_code=store_code)
+    for name, value in metadata.items():
+        metadata_file = lock_path / name
+        temp_file = lock_path / f".{name}.tmp"
+        temp_file.write_text(f"{value}\n", encoding="utf-8")
+        os.replace(temp_file, metadata_file)
+
+
+def _cleanup_store_lock_metadata(lock_path: Any) -> None:
+    for name in (*STORE_LOCK_METADATA_FILES, STORE_LOCK_HANDLE_FILE):
+        try:
+            (lock_path / name).unlink()
+        except FileNotFoundError:
+            pass
+    for temp_file in lock_path.glob(".*.tmp"):
+        try:
+            temp_file.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        lock_path.rmdir()
+    except OSError:
+        pass
 
 
 def _resolve_positive_timeout_seconds(env_name: str, default: float) -> float:
@@ -194,6 +319,8 @@ async def store_lock(
 ) -> Iterable[None]:
     lock_path = _store_lock_path(store_code)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.mkdir(exist_ok=True)
+    lock_handle_path = _store_lock_handle_path(store_code)
     resolved_timeout = (
         _resolve_positive_timeout_seconds(STORE_LOCK_TIMEOUT_ENV, DEFAULT_STORE_LOCK_TIMEOUT_SECONDS)
         if timeout_seconds is None
@@ -211,21 +338,43 @@ async def store_lock(
             timeout_seconds=resolved_timeout,
         )
 
-    handle = open(lock_path, "w", encoding="utf-8")
+    handle: Any | None = None
     start_monotonic = time.monotonic()
     acquired = False
     try:
         while True:
+            lock_path.mkdir(exist_ok=True)
+            handle = open(lock_handle_path, "w", encoding="utf-8")
             try:
                 await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    handle_stat = os.fstat(handle.fileno())
+                    path_stat = lock_handle_path.stat()
+                except FileNotFoundError:
+                    await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+                    handle.close()
+                    handle = None
+                    await asyncio.sleep(STORE_LOCK_RETRY_INTERVAL_SECONDS)
+                    continue
+                if (handle_stat.st_dev, handle_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+                    # A previous owner cleaned up the directory between open() and flock(); retry on the live path.
+                    await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+                    handle.close()
+                    handle = None
+                    await asyncio.sleep(STORE_LOCK_RETRY_INTERVAL_SECONDS)
+                    continue
                 acquired = True
                 break
             except OSError as exc:
+                if handle is not None:
+                    handle.close()
+                    handle = None
                 if exc.errno not in {errno.EACCES, errno.EAGAIN}:
                     raise
                 elapsed = time.monotonic() - start_monotonic
                 if elapsed >= resolved_timeout:
                     elapsed_ms = int(elapsed * 1000)
+                    owner_snapshot = _read_store_lock_metadata(lock_path)
                     if logger is not None:
                         log_event(
                             logger=logger,
@@ -238,11 +387,13 @@ async def store_lock(
                             timeout_seconds=resolved_timeout,
                             elapsed_ms=elapsed_ms,
                             failure_reason="store_lock_timeout",
+                            **owner_snapshot,
                         )
                     raise StoreLockTimeoutError(
                         store_code=store_code, lock_path=str(lock_path), timeout_seconds=resolved_timeout
                     )
                 await asyncio.sleep(min(STORE_LOCK_RETRY_INTERVAL_SECONDS, resolved_timeout - elapsed))
+        _write_store_lock_metadata(lock_path, run_id=run_id, store_code=store_code)
         elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
         if logger is not None:
             log_event(
@@ -258,10 +409,12 @@ async def store_lock(
         yield
     finally:
         try:
-            if acquired:
+            if acquired and handle is not None:
+                _cleanup_store_lock_metadata(lock_path)
                 await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
         finally:
-            handle.close()
+            if handle is not None:
+                handle.close()
 
 
 def _coerce_dict(raw: Any) -> Mapping[str, Any]:
