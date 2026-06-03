@@ -29,6 +29,8 @@ from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
     resolve_window_settings,
+    has_timeout_navigation_failure,
+    should_retry_window_status,
 )
 from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
 from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
@@ -1091,8 +1093,7 @@ TIMEOUT_NAVIGATION_RETRY_TOKENS = (
 
 
 def _has_timeout_navigation_failure(*messages: str | None) -> bool:
-    combined = " ".join(message for message in messages if message).lower()
-    return any(token in combined for token in TIMEOUT_NAVIGATION_RETRY_TOKENS)
+    return has_timeout_navigation_failure(*messages)
 
 
 def _should_retry_window_status(
@@ -1102,11 +1103,12 @@ def _should_retry_window_status(
     status_note: str | None,
     skip_reason: str | None = None,
 ) -> bool:
-    if status == "failed":
-        return True
-    if status not in {"skipped", "partial"}:
-        return False
-    return _has_timeout_navigation_failure(error_message, status_note, skip_reason)
+    return should_retry_window_status(
+        status=status,
+        error_message=error_message,
+        status_note=status_note,
+        skip_reason=skip_reason,
+    )
 
 
 def _should_promote_retryable_status_to_failed(

@@ -11,6 +11,20 @@ from app.dashboard_downloader.db_tables import orders_sync_log
 DEFAULT_BACKFILL_DAYS = 90
 DEFAULT_WINDOW_DAYS = 90
 DEFAULT_OVERLAP_DAYS = 2
+CRM_SOURCE_MAX_WINDOW_DAYS = 30
+
+TIMEOUT_NAVIGATION_RETRY_TOKENS = (
+    "timeout",
+    "timed out",
+    "navigation failed",
+    "session load",
+    "session-load",
+    "session timeout",
+    "archive orders navigation failed",
+    "loading archive orders page",
+    "page.goto",
+    "net::err",
+)
 
 
 def resolve_window_settings(
@@ -66,11 +80,7 @@ async def fetch_last_success_window_end(
             sa.select(sa.func.max(orders_sync_log.c.to_date))
             .where(orders_sync_log.c.pipeline_id == pipeline_id)
             .where(orders_sync_log.c.store_code == store_code)
-            .where(
-                orders_sync_log.c.status.in_(
-                    ["success", "success_with_warnings"]
-                )
-            )
+            .where(orders_sync_log.c.status.in_(["success", "success_with_warnings"]))
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -103,3 +113,83 @@ def resolve_orders_sync_start_date(
         return store_start_date
     desired_window = max(backfill_days, window_days)
     return end_date - timedelta(days=desired_window - 1)
+
+
+def resolve_crm_source_window_days(
+    *,
+    sync_config: Mapping[str, Any],
+    source: str | None = None,
+    requested_window_days: int | None = None,
+    default_window_days: int = CRM_SOURCE_MAX_WINDOW_DAYS,
+) -> int:
+    """Resolve a CRM-source-safe window size.
+
+    CRM source fetches must not exceed 30 days. Operators may request a
+    smaller window, and store/source config may set a smaller limit. Configured
+    values above the hard cap are intentionally capped instead of trusted.
+    """
+    _, configured_window, _ = resolve_window_settings(
+        sync_config=sync_config,
+        window_days=requested_window_days or default_window_days,
+    )
+    candidates = [configured_window, CRM_SOURCE_MAX_WINDOW_DAYS]
+    if source:
+        normalized = source.strip().lower()
+        for key in (
+            f"{normalized}_order_line_items_rebuild_window_days",
+            f"{normalized}_crm_source_window_days",
+            f"{normalized}_source_window_days",
+        ):
+            raw_value = sync_config.get(key)
+            if raw_value is not None:
+                try:
+                    candidates.append(int(raw_value))
+                except (TypeError, ValueError):
+                    continue
+    for key in (
+        "order_line_items_rebuild_window_days",
+        "crm_source_window_days",
+        "source_window_days",
+    ):
+        raw_value = sync_config.get(key)
+        if raw_value is not None:
+            try:
+                candidates.append(int(raw_value))
+            except (TypeError, ValueError):
+                continue
+    return max(1, min(value for value in candidates if value and value > 0))
+
+
+def build_non_overlapping_windows(
+    *, start_date: date, end_date: date, window_days: int
+) -> list[tuple[date, date]]:
+    if window_days < 1:
+        raise ValueError("window_days must be at least 1")
+    if start_date > end_date:
+        return []
+    windows: list[tuple[date, date]] = []
+    current = start_date
+    while current <= end_date:
+        window_end = min(current + timedelta(days=window_days - 1), end_date)
+        windows.append((current, window_end))
+        current = window_end + timedelta(days=1)
+    return windows
+
+
+def has_timeout_navigation_failure(*messages: str | None) -> bool:
+    combined = " ".join(message for message in messages if message).lower()
+    return any(token in combined for token in TIMEOUT_NAVIGATION_RETRY_TOKENS)
+
+
+def should_retry_window_status(
+    *,
+    status: str,
+    error_message: str | None,
+    status_note: str | None,
+    skip_reason: str | None = None,
+) -> bool:
+    if status == "failed":
+        return True
+    if status not in {"skipped", "partial"}:
+        return False
+    return has_timeout_navigation_failure(error_message, status_note, skip_reason)
