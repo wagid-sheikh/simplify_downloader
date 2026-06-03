@@ -138,6 +138,10 @@ ORDERS_SYNC_PROFILER_RUN_ID=""
 ORDERS_SYNC_PROFILER_STATUS="unknown"
 RUN_LOCK_ACQUIRED=0
 TIMEOUT_HANDLING_IN_PROGRESS=0
+PRESERVE_LOCAL_LOCK=0
+ACTIVE_CHILD_PID=""
+ACTIVE_CHILD_PGID=""
+ACTIVE_STEP_NAME=""
 
 
 log() {
@@ -428,6 +432,8 @@ cleanup() {
   if [[ "${RUN_LOCK_ACQUIRED}" -eq 1 ]]; then
     if [[ "${TIMEOUT_HANDLING_IN_PROGRESS}" -eq 1 ]]; then
       log "WARNING: Timeout process-group handling is incomplete or failed verification; preserving local lock for explicit operator recovery."
+    elif [[ "${PRESERVE_LOCAL_LOCK}" -eq 1 ]]; then
+      log "WARNING: Child process-group termination verification failed; preserving local lock for explicit operator recovery."
     else
       remove_lock_artifacts
     fi
@@ -448,8 +454,52 @@ on_exit() {
 
 on_signal() {
   local sig="$1"
-  log "Signal trap triggered: ${sig}"
-  exit 1
+  local exit_code=1
+  local active_pid="${ACTIVE_CHILD_PID:-}"
+  local active_pgid="${ACTIVE_CHILD_PGID:-}"
+  local active_step="${ACTIVE_STEP_NAME:-}"
+  local termination_result="no_active_child"
+
+  case "${sig}" in
+    INT) exit_code=130 ;;
+    TERM) exit_code=143 ;;
+  esac
+
+  # Avoid recursively entering signal handling while we are terminating/reaping
+  # the active step process group.
+  trap '' INT TERM
+
+  log "Signal trap triggered: signal=${sig} active_step=${active_step:-<none>} active_child_pid=${active_pid:-<none>} active_child_pgid=${active_pgid:-<none>}"
+
+  if [[ -n "${active_pgid}" ]] && process_group_is_alive "${active_pgid}"; then
+    if terminate_child_process_group "${active_pgid}" "${active_pid}"; then
+      termination_result="terminated_and_verified"
+    else
+      termination_result="termination_verification_failed"
+      PRESERVE_LOCAL_LOCK=1
+    fi
+  elif [[ -n "${active_pgid}" ]]; then
+    termination_result="already_gone"
+  fi
+
+  if [[ -n "${active_pid}" ]]; then
+    wait "${active_pid}" 2>/dev/null || true
+  fi
+
+  if [[ -n "${active_pgid}" ]]; then
+    if process_group_is_alive "${active_pgid}"; then
+      termination_result="${termination_result}_process_group_still_alive"
+      PRESERVE_LOCAL_LOCK=1
+    else
+      PRESERVE_LOCAL_LOCK=0
+    fi
+  fi
+
+  log "Signal handling result: signal=${sig} active_step=${active_step:-<none>} active_child_pid=${active_pid:-<none>} active_child_pgid=${active_pgid:-<none>} result=${termination_result} preserve_local_lock=${PRESERVE_LOCAL_LOCK}"
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PGID=""
+  ACTIVE_STEP_NAME=""
+  exit "${exit_code}"
 }
 
 trap on_err ERR
@@ -492,7 +542,7 @@ extract_report_date_from_cmd() {
   echo "${report_date}"
 }
 
-run_step() {
+run_step_with_retries() {
   local step_name="$1"
   local step_cmd="$2"
   local max_attempts="${3:-1}"
@@ -553,9 +603,15 @@ run_step() {
     fi
     rc=0
 
-    python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${step_cmd}" > "${attempt_log_file}" 2>&1 &
+    # Start a tiny session-leading wrapper so $! remains the process-group
+    # leader while the wrapper tees step output as it is produced. A naive
+    # outer pipeline would make $! point at tee and break watchdog PGID kills.
+    python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1], "cron-step-output-wrapper", sys.argv[2], sys.argv[3], sys.argv[4]])' 'bash -c "$1" 2>&1 | tee -a "$2" >> "$3"; exit "${PIPESTATUS[0]}"' "${step_cmd}" "${attempt_log_file}" "${LOG_FILE}" &
     child_pid=$!
     child_pgid="${child_pid}"
+    ACTIVE_CHILD_PID="${child_pid}"
+    ACTIVE_CHILD_PGID="${child_pgid}"
+    ACTIVE_STEP_NAME="${step_name}"
     timed_out=0
     log "${step_name}: child_pid=${child_pid} child_pgid=${child_pgid} runtime_limit_seconds=${runtime_limit_seconds}"
     while pid_is_alive "${child_pid}"; do
@@ -581,19 +637,19 @@ run_step() {
       wait "${child_pid}" || rc=$?
     else
       wait "${child_pid}" 2>/dev/null || true
-      printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" >> "${attempt_log_file}"
+      printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" | tee -a "${attempt_log_file}" >> "${LOG_FILE}"
     fi
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_PGID=""
+    ACTIVE_STEP_NAME=""
 
     if [[ "${rc}" -eq 0 ]]; then
-      cat "${attempt_log_file}" >> "${LOG_FILE}"
       rm -f "${attempt_log_file}" 2>/dev/null || true
       step_end="$(date +%s)"
       duration=$((step_end - step_start))
       log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
       return 0
     else
-      cat "${attempt_log_file}" >> "${LOG_FILE}"
-
       if [[ "${timed_out}" -eq 1 ]]; then
         log "WARNING: ${step_name}: failure_class=step_runtime_timeout; retrying if attempts remain (exit_code=${rc})."
       elif is_deterministic_code_error "${attempt_log_file}"; then
@@ -982,7 +1038,7 @@ run_started_epoch="$(date +%s)"
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
 if run_orders_connectivity_preflight; then
-  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" "${ORDERS_RETRY_JITTER_SECONDS}" "${ORDERS_RETRY_BACKOFF_MULTIPLIER}" "${ORDERS_RETRY_MAX_DELAY_SECONDS}" "${ORDERS_STEP_TIMEOUT_SECONDS}" || orders_rc=$?
+  run_step_with_retries "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" "${ORDERS_RETRY_JITTER_SECONDS}" "${ORDERS_RETRY_BACKOFF_MULTIPLIER}" "${ORDERS_RETRY_MAX_DELAY_SECONDS}" "${ORDERS_STEP_TIMEOUT_SECONDS}" || orders_rc=$?
 else
   orders_rc=$?
   log "Script 1: orders_sync_run_profiler skipped because tcp_connectivity_preflight failed (classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}, orders_sync_run_profiler_rc=${orders_rc})."
@@ -1004,14 +1060,14 @@ if [[ -n "${orders_sync_report_args}" ]]; then
   pending_report_cmd="${pending_report_cmd} ${orders_sync_report_args}"
 fi
 log "orders_sync_downstream_report_args=${orders_sync_report_args:-<none>}"
-run_step "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" 0 1 "${DAILY_RETRY_DELAY_SECONDS}" "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rc=$?
+run_step_with_retries "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" 0 1 "${DAILY_RETRY_DELAY_SECONDS}" "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
-run_step "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" 0 1 "${PENDING_RETRY_DELAY_SECONDS}" "${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}" || pending_rc=$?
+run_step_with_retries "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" 0 1 "${PENDING_RETRY_DELAY_SECONDS}" "${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
   log "Pending deliveries succeeded while daily sales failed; running optional daily rescue pass."
-  run_step \
+  run_step_with_retries \
     "Script 2B: daily_sales_report_rescue" \
     "${daily_report_cmd}" \
     "${DAILY_RESCUE_MAX_ATTEMPTS}" \

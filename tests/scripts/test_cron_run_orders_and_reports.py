@@ -1530,6 +1530,154 @@ def test_zombie_only_process_group_remnants_do_not_retain_orders_reports_lock(
     assert "disappeared after KILL" in _latest_orders_log_text(repo_root)
 
 
+
+def _process_group_has_non_zombie_members(pgid: int) -> bool:
+    result = subprocess.run(
+        ["ps", "-axo", "pgid=,state="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == str(pgid) and not parts[1].startswith("Z"):
+            return True
+    return False
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+def test_cron_signal_terminates_active_orders_process_group_and_releases_lock(
+    tmp_path: Path, sig: signal.Signals
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "pgid=$(ps -o pgid= -p $$ | awk '{$1=$1; print}')\n"
+        "printf '%s' \"${pgid}\" > \"${TMPDIR:-/tmp}/orders-pgid\"\n"
+        "(trap '' TERM INT; while :; do sleep 1; done) &\n"
+        "printf '%s' \"$!\" > \"${TMPDIR:-/tmp}/orders-descendant-pid\"\n"
+        "trap '' TERM INT\n"
+        "while :; do sleep 1; done\n",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "30",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(repo_root),
+        }
+    )
+
+    proc = subprocess.Popen(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_orders_path(repo_root / "orders-pgid")
+        pgid = int((repo_root / "orders-pgid").read_text(encoding="utf-8"))
+        descendant_pid = int((repo_root / "orders-descendant-pid").read_text(encoding="utf-8"))
+        proc.send_signal(sig)
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        if (repo_root / "orders-pgid").exists():
+            stale_pgid = int((repo_root / "orders-pgid").read_text(encoding="utf-8"))
+            if _process_group_has_non_zombie_members(stale_pgid):
+                os.killpg(stale_pgid, signal.SIGKILL)
+
+    assert proc.returncode != 0, stderr + stdout
+    assert not _pid_is_non_zombie_alive(descendant_pid)
+    assert not _process_group_has_non_zombie_members(pgid)
+    assert not (repo_root / "tmp" / "cron_run_orders_and_reports.lock").exists()
+    log_text = _latest_orders_log_text(repo_root)
+    assert f"Signal trap triggered: signal={sig.name.removeprefix('SIG')}" in log_text
+    assert "active_step=Script 1: orders_sync_run_profiler" in log_text
+    assert "active_child_pid=" in log_text
+    assert f"active_child_pgid={pgid}" in log_text
+    assert "Signal handling result:" in log_text
+    assert "result=terminated_and_verified" in log_text
+    assert "preserve_local_lock=0" in log_text
+
+
+def test_cron_signal_preserves_lock_when_active_child_verification_fails(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    source_path = scripts_dir / "cron_run_orders_and_reports.sh"
+    source = source_path.read_text(encoding="utf-8")
+    source = _replace_orders_process_group_helper(
+        source,
+        "process_group_is_alive() {\n  return 0\n}\n",
+    )
+    _write_executable(source_path, source)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "pgid=$(ps -o pgid= -p $$ | awk '{$1=$1; print}')\n"
+        "printf '%s' \"${pgid}\" > \"${TMPDIR:-/tmp}/orders-pgid\"\n"
+        "(trap '' TERM INT; while :; do sleep 1; done) &\n"
+        "printf '%s' \"$!\" > \"${TMPDIR:-/tmp}/orders-descendant-pid\"\n"
+        "trap '' TERM INT\n"
+        "while :; do sleep 1; done\n",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "30",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(repo_root),
+        }
+    )
+
+    proc = subprocess.Popen(
+        [str(source_path)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_orders_path(repo_root / "orders-pgid")
+        pgid = int((repo_root / "orders-pgid").read_text(encoding="utf-8"))
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        if (repo_root / "orders-pgid").exists():
+            stale_pgid = int((repo_root / "orders-pgid").read_text(encoding="utf-8"))
+            if _process_group_has_non_zombie_members(stale_pgid):
+                os.killpg(stale_pgid, signal.SIGKILL)
+
+    assert proc.returncode != 0, stderr + stdout
+    assert not _process_group_has_non_zombie_members(pgid)
+    assert (repo_root / "tmp" / "cron_run_orders_and_reports.lock").is_dir()
+    log_text = _latest_orders_log_text(repo_root)
+    assert "Signal trap triggered: signal=TERM" in log_text
+    assert "active_step=Script 1: orders_sync_run_profiler" in log_text
+    assert f"active_child_pgid={pgid}" in log_text
+    assert "Signal handling result:" in log_text
+    assert "termination_verification_failed_process_group_still_alive" in log_text
+    assert "preserve_local_lock=1" in log_text
+    assert "Child process-group termination verification failed; preserving local lock" in log_text
+
+
 def _write_orders_lock_metadata(
     lock_dir: Path,
     *,
@@ -1637,6 +1785,70 @@ def _latest_orders_log_text(repo_root: Path) -> str:
     log_files = sorted((repo_root / "logs").glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     return log_files[-1].read_text(encoding="utf-8")
+
+
+def test_cron_streams_long_running_step_output_before_child_exits(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "for i in 1 2 3 4; do\n"
+        "  printf 'orders profiler progress %s\\n' \"${i}\"\n"
+        "  if [[ \"${i}\" -eq 1 ]]; then touch \"${TMPDIR:-/tmp}/orders-progress-one\"; fi\n"
+        "  sleep 1\n"
+        "done\n"
+        "touch \"${TMPDIR:-/tmp}/orders-profiler-exited\"\n"
+        "exit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(repo_root),
+        }
+    )
+    proc = subprocess.Popen(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_orders_path(repo_root / "orders-progress-one")
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            assert proc.poll() is None
+            log_text = _latest_orders_log_text(repo_root)
+            if "orders profiler progress 1" in log_text:
+                assert not (repo_root / "orders-profiler-exited").exists()
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("progress output did not stream to cron log before child exit")
+
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    assert proc.returncode == 0, stderr + stdout
+    final_log_text = _latest_orders_log_text(repo_root)
+    assert "orders profiler progress 4" in final_log_text
 
 
 def test_dead_orders_reports_owner_lock_is_cleaned_up_and_reacquired(tmp_path: Path) -> None:
