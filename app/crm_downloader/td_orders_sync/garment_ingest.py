@@ -204,6 +204,7 @@ async def ingest_td_garment_rows(
     database_url: str,
     authoritative_order_scope: Sequence[Mapping[str, Any]] | None = None,
     replacement_allowed: bool = True,
+    dry_run: bool = False,
 ) -> TdGarmentIngestResult:
     metadata = sa.MetaData()
     stg_table = stg_td_garments_table(metadata)
@@ -320,7 +321,8 @@ async def ingest_td_garment_rows(
                 **row,
                 "ingest_remarks": remarks,
             }
-            await session.execute(_make_insert(stg_table, stg_values, use_sqlite=use_sqlite))
+            if not dry_run:
+                await session.execute(_make_insert(stg_table, stg_values, use_sqlite=use_sqlite))
 
         deleted_final_rows = 0
         inserted_final_rows = 0
@@ -330,13 +332,22 @@ async def ingest_td_garment_rows(
             if outcome in {"complete_with_rows", "complete_empty"}
         ]
         for order_number in replaceable_orders:
-            delete_result = await session.execute(
-                sa.delete(line_items_table).where(
-                    line_items_table.c.cost_center == cost_center,
-                    line_items_table.c.order_number == order_number,
+            if dry_run:
+                delete_count = await session.scalar(
+                    sa.select(sa.func.count()).select_from(line_items_table).where(
+                        line_items_table.c.cost_center == cost_center,
+                        line_items_table.c.order_number == order_number,
+                    )
                 )
-            )
-            deleted_final_rows += max(int(delete_result.rowcount or 0), 0)
+                deleted_final_rows += int(delete_count or 0)
+            else:
+                delete_result = await session.execute(
+                    sa.delete(line_items_table).where(
+                        line_items_table.c.cost_center == cost_center,
+                        line_items_table.c.order_number == order_number,
+                    )
+                )
+                deleted_final_rows += max(int(delete_result.rowcount or 0), 0)
 
         for order_number, outcome in authoritative_scope.items():
             if outcome != "complete_with_rows":
@@ -369,8 +380,9 @@ async def ingest_td_garment_rows(
                     "is_orphan": is_orphan,
                     "ingest_remarks": remarks,
                 }
-                await session.execute(_make_insert(line_items_table, final_values, use_sqlite=use_sqlite))
                 inserted_final_rows += 1
+                if not dry_run:
+                    await session.execute(_make_insert(line_items_table, final_values, use_sqlite=use_sqlite))
 
         await session.commit()
 

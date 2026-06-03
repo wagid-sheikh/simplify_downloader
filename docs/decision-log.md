@@ -8,6 +8,19 @@
 
 ---
 
+
+### DL-028
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Add an operator-controlled `order_line_items` rebuild workflow that replays authoritative TD/UC snapshots through the existing source-specific replacement services instead of deleting duplicates with SQL.
+- **Context:** Existing repeated line-item rows cannot be classified safely from local database state alone. TD garment snapshots and UC GST order-detail snapshots already distinguish `complete_with_rows`, `complete_empty`, and `incomplete_or_failed`; that source outcome is the only safe replacement gate.
+- **Consequences:**
+  - Operators run bounded store/date windows with `python -m app line-items rebuild`; dry-run reports inspected, complete-empty, incomplete, deletion, insertion, and orphan counts.
+  - Only `complete_with_rows` and `complete_empty` outcomes delete local rows; `incomplete_or_failed` outcomes preserve current local rows and must be retried after source recovery.
+  - Apply mode records source/store/window completion for resumability.
+  - Rollback is backup/PITR or authoritative replay only; the rebuild does not create a row-level undo journal.
+  - SQL-only deduplication migrations remain forbidden for this class of issue.
+
 ### DL-027
 - **Date:** 2026-06-02
 - **Status:** Active

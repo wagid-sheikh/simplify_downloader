@@ -1043,7 +1043,7 @@ def _normalize_line_item_key(*, line_hash: Any, item_name: Any, service: Any, ra
 
 
 async def publish_uc_gst_order_details_to_line_items(
-    *, database_url: str, run_id: str, store_code: str
+    *, database_url: str, run_id: str, store_code: str, dry_run: bool = False
 ) -> PublishMetrics:
     metrics = PublishMetrics()
     metadata = sa.MetaData()
@@ -1201,15 +1201,28 @@ async def publish_uc_gst_order_details_to_line_items(
                 )
                 continue
 
-            delete_result = await session.execute(
-                sa.delete(line_items).where(
-                    sa.and_(
-                        line_items.c.cost_center == selected_cost_center,
-                        line_items.c.order_number == selected_order_number,
+            if dry_run:
+                deleted = int(
+                    await session.scalar(
+                        sa.select(sa.func.count()).select_from(line_items).where(
+                            sa.and_(
+                                line_items.c.cost_center == selected_cost_center,
+                                line_items.c.order_number == selected_order_number,
+                            )
+                        )
+                    )
+                    or 0
+                )
+            else:
+                delete_result = await session.execute(
+                    sa.delete(line_items).where(
+                        sa.and_(
+                            line_items.c.cost_center == selected_cost_center,
+                            line_items.c.order_number == selected_order_number,
+                        )
                     )
                 )
-            )
-            deleted = int(delete_result.rowcount or 0)
+                deleted = int(delete_result.rowcount or 0)
             metrics.deleted_final_rows += deleted
 
             if outcome.snapshot_outcome == "complete_empty":
@@ -1260,7 +1273,8 @@ async def publish_uc_gst_order_details_to_line_items(
                     "is_orphan": parent_order is None,
                     "ingest_remarks": ingest_remarks,
                 }
-                await session.execute(sa.insert(line_items).values(**payload))
+                if not dry_run:
+                    await session.execute(sa.insert(line_items).values(**payload))
                 metrics.inserted += 1
                 metrics.inserted_final_rows += 1
                 if parent_order is None:
@@ -1281,7 +1295,8 @@ async def publish_uc_gst_order_details_to_line_items(
             },
         )
 
-        await session.commit()
+        if not dry_run:
+            await session.commit()
     return metrics
 
 

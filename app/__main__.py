@@ -108,6 +108,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
 
+    rebuild_parser = subparsers.add_parser("line-items", help="Run order line-item maintenance commands")
+    rebuild_subparsers = rebuild_parser.add_subparsers(dest="line_items_command", required=True)
+    rebuild_run = rebuild_subparsers.add_parser("rebuild", help="Rebuild order_line_items from authoritative CRM snapshots")
+    rebuild_run.add_argument("--source", choices=["TD", "UC"], required=True)
+    rebuild_run.add_argument("--from-date", required=True)
+    rebuild_run.add_argument("--to-date", required=True)
+    rebuild_run.add_argument("--store-code", action="append", dest="store_codes")
+    rebuild_run.add_argument("--window-days", type=int, default=7)
+    rebuild_run.add_argument("--store-batch-size", type=int, default=1)
+    rebuild_run.add_argument("--run-id")
+    rebuild_run.add_argument("--dry-run", action="store_true")
+    rebuild_run.add_argument("--no-resume", action="store_true")
+
     recovery_parser = subparsers.add_parser("recovery", help="Run recovery maintenance commands")
     recovery_subparsers = recovery_parser.add_subparsers(dest="recovery_command", required=True)
     recovery_mark_pending = recovery_subparsers.add_parser(
@@ -124,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
 
     # Preserve existing CLI behaviour for legacy commands (e.g. run-weekly, db upgrade).
-    if args and args[0] not in {"server", "pipeline", "report", "recovery"}:
+    if args and args[0] not in {"server", "pipeline", "report", "recovery", "line-items"}:
         return pipeline_cli.main(args)
 
     parser = _build_parser()
@@ -135,6 +148,32 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if parsed.command == "pipeline":
         return _run_pipeline(parsed)
+
+    if parsed.command == "line-items":
+        if parsed.line_items_command == "rebuild":
+            from app.crm_downloader.line_item_rebuild import main as line_item_rebuild_main
+
+            rebuild_args = [
+                "--source",
+                parsed.source,
+                "--from-date",
+                parsed.from_date,
+                "--to-date",
+                parsed.to_date,
+                "--window-days",
+                str(parsed.window_days),
+                "--store-batch-size",
+                str(parsed.store_batch_size),
+            ]
+            for store_code in parsed.store_codes or []:
+                rebuild_args.extend(["--store-code", store_code])
+            if parsed.run_id:
+                rebuild_args.extend(["--run-id", parsed.run_id])
+            if parsed.dry_run:
+                rebuild_args.append("--dry-run")
+            if parsed.no_resume:
+                rebuild_args.append("--no-resume")
+            return line_item_rebuild_main(rebuild_args)
 
     if parsed.command == "recovery":
         recovery_args: list[str] = []

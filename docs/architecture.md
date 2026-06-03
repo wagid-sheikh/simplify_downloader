@@ -71,6 +71,14 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - These exclusions are intentionally not dashboard warning-threshold or operator-notification conditions. If aggregate informational telemetry is retained, it contains only counts and store codes; it must not include customer-sensitive row payloads or mobile values.
 
 ### 4) CRM order-sync pipelines
+
+#### Operator-controlled order line-item rebuild
+- Rebuild entrypoint: `poetry run python -m app line-items rebuild --source TD|UC --from-date YYYY-MM-DD --to-date YYYY-MM-DD [--store-code CODE ...] [--window-days N] [--store-batch-size N] [--dry-run]`.
+- The rebuild is bounded by operator-selected store batches and inclusive date windows. Each store/window emits `JsonLogger`/`log_event` telemetry with `run_id`, source, store, window, phase, status, and the dry-run/apply counters.
+- Replacement must use the source-specific snapshot replacement services: TD goes through `ingest_td_garment_rows`; UC goes through the GST archive order-detail line-item publisher. Do not implement SQL-only duplicate deletion for historical line items because repeated rows cannot be safely classified without replaying authoritative CRM snapshots.
+- Only authoritative `complete_with_rows` and `complete_empty` outcomes are replaceable. `incomplete_or_failed` outcomes are preserved locally and counted for retry rather than deleted. `complete_empty` is a real authoritative zero-row snapshot and therefore deletes existing local rows for that order.
+- Dry-run reports inspected orders, complete-empty orders, incomplete orders, rows scheduled for deletion, rows scheduled for insertion, and orphan rows without mutating staging/final line-item tables.
+- Apply mode records completed source/store/window entries in `order_line_item_rebuild_progress`, so a resumed run skips completed windows. Rollback is intentionally limited: the workflow does not archive deleted rows; operators must restore from database backup/PITR or rerun a prior authoritative snapshot if rollback is required.
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
 - UC dashboard readiness is DB-driven through `store_master.sync_config.urls.home`; the current dashboard host is `storepanel.ucleanlaundry.com`. The deprecated `store.ucleanlaundry.com/dashboard` value must be migrated rather than hardcoded as an application fallback.
 - TD sync: `app/crm_downloader/td_orders_sync/main.py`.

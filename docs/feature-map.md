@@ -97,6 +97,19 @@ Practical map of where to work for major capabilities.
 - **Dependencies:** `orders_sync_log`, `pipeline_run_summaries`, notification profiles.
 - **Notes/Risks:** Concurrency + retry + status rollups can produce subtle operational edge cases.
 
+
+## 7a) Operator line-item rebuild
+
+- **Purpose:** Rebuild `order_line_items` from authoritative TD/UC source snapshots after source-specific replacement paths are available, without SQL-only deduplication.
+- **Primary paths:**
+  - `app/crm_downloader/line_item_rebuild.py`
+  - `app/crm_downloader/td_orders_sync/garment_ingest.py`
+  - `app/crm_downloader/uc_orders_sync/gst_publish.py`
+- **Invocation:** `poetry run python -m app line-items rebuild --source TD --from-date 2025-01-01 --to-date 2025-01-31 --window-days 3 --store-batch-size 1 --dry-run`; remove `--dry-run` to apply. Use repeated `--store-code` flags for a scoped store list.
+- **Contract:** Process bounded store/date batches; fetch source snapshots with the same completeness outcomes used by routine sync; delete/replace only `complete_with_rows` and `complete_empty`; preserve `incomplete_or_failed` rows for retry; emit dry-run counts for inspected, complete-empty, incomplete, deletion, insertion, and orphan rows.
+- **Resume/Rollback:** Apply mode persists completed source/store/window rows in `order_line_item_rebuild_progress` and skips them on resume. The workflow does not provide row-level undo; rollback requires database backup/PITR or replaying an authoritative source snapshot.
+- **Notes/Risks:** Never replace this with a SQL-only dedupe migration; local duplicates alone do not prove which source rows were authoritative.
+
 ## 8) Daily/weekly/monthly/pending reporting
 
 - **Purpose:** Generate PDFs and persist/send report artifacts.
