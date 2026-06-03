@@ -560,6 +560,7 @@ run_step_with_retries() {
   local report_date
   local sleep_seconds
   local jitter_seconds
+  local failed_stores
   local child_pid
   local child_pgid
   local now
@@ -652,6 +653,18 @@ run_step_with_retries() {
     else
       if [[ "${timed_out}" -eq 1 ]]; then
         log "WARNING: ${step_name}: failure_class=step_runtime_timeout; retrying if attempts remain (exit_code=${rc})."
+      elif [[ "${step_name}" = "Script 1: orders_sync_run_profiler" ]] && is_profiler_store_lock_timeout_failure "${attempt_log_file}"; then
+        step_end="$(date +%s)"
+        duration=$((step_end - step_start))
+        failed_stores="$(extract_profiler_store_lock_failed_stores "${attempt_log_file}")"
+        if [[ -z "${failed_stores}" ]]; then
+          failed_stores="unknown"
+        fi
+        log "ERROR: ${step_name}: failure_class=profiler_store_lock_timeout; retry_skipped=true; deterministic operational lock failure detected; failed_stores=${failed_stores}; skipping remaining orders_sync_run_profiler retries (exit_code=${rc}, duration=${duration}s)."
+        log "ERROR: ${step_name}: retry_skipped_reason=profiler_store_lock_timeout"
+        log "ERROR: ORDERS SYNC OPERATOR ACTION: Timed out acquiring orders profiler store lock for failed_stores=${failed_stores}. Another profiler/store job may be running or stale; downstream reports will continue with orders-sync upstream status failed."
+        rm -f "${attempt_log_file}" 2>/dev/null || true
+        return "${rc}"
       elif is_deterministic_code_error "${attempt_log_file}"; then
         step_end="$(date +%s)"
         duration=$((step_end - step_start))
@@ -742,6 +755,99 @@ is_deterministic_code_error() {
   fi
 
   return 1
+}
+
+is_profiler_store_lock_timeout_failure() {
+  local output_file="$1"
+
+  if [[ ! -f "${output_file}" ]]; then
+    return 1
+  fi
+
+  output_matches_pattern "${output_file}" "store_lock_timeout|Timed out acquiring orders profiler store lock"
+}
+
+extract_profiler_store_lock_failed_stores() {
+  local output_file="$1"
+
+  if [[ ! -f "${output_file}" ]]; then
+    return 0
+  fi
+
+  python3 - "${output_file}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lock_patterns = ("store_lock_timeout", "Timed out acquiring orders profiler store lock")
+stores: list[str] = []
+
+
+def add_store(value):
+    store = str(value or "").strip()
+    if store and store not in stores:
+        stores.append(store)
+
+
+def contains_lock_timeout(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (dict, list)):
+        try:
+            value = json.dumps(value, default=str)
+        except TypeError:
+            value = str(value)
+    text = str(value)
+    return any(pattern in text for pattern in lock_patterns)
+
+
+def scan_event(event):
+    if not isinstance(event, dict) or not contains_lock_timeout(event):
+        return
+
+    for key in ("store_code", "store", "failed_store", "store_id"):
+        if key in event:
+            add_store(event.get(key))
+
+    failed_stores = event.get("failed_stores")
+    if isinstance(failed_stores, list):
+        for store in failed_stores:
+            add_store(store)
+
+    store_totals = event.get("store_totals")
+    if isinstance(store_totals, dict):
+        for store_code, payload in store_totals.items():
+            if contains_lock_timeout(payload):
+                add_store(store_code)
+
+
+try:
+    raw_text = path.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    raw_text = ""
+
+for raw_line in raw_text.splitlines():
+    line = raw_line.strip()
+    if line.startswith("{"):
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            parsed = None
+        scan_event(parsed)
+    if any(pattern in line for pattern in lock_patterns):
+        for pattern in (
+            r'"store_code"\s*:\s*"([^"]+)"',
+            r'"store"\s*:\s*"([^"]+)"',
+            r"store_code=([^ ]+)",
+            r"store=([^ ]+)",
+        ):
+            for match in re.finditer(pattern, line):
+                add_store(match.group(1).strip('[],"'))
+
+print(",".join(stores))
+PY
 }
 
 
