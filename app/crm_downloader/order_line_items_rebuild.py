@@ -172,6 +172,49 @@ class SourceSnapshot:
     line_item_rows: list[Mapping[str, Any]] = field(default_factory=list)
     order_snapshots: list[Mapping[str, Any]] = field(default_factory=list)
     zero_snapshot_class: ZeroSnapshotClass | None = None
+    garments_fetch_completeness: str | None = None
+    source_fetch_error_class: str | None = None
+    endpoint_health: Mapping[str, Any] = field(default_factory=dict)
+    endpoint_error_diagnostics: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TdGarmentsFetchIncomplete(RuntimeError):
+    store_code: str
+    window_start: date
+    window_end: date
+    garments_fetch_completeness: str
+    source_fetch_error_class: str | None = None
+    endpoint_health: Mapping[str, Any] = field(default_factory=dict)
+    endpoint_error_diagnostics: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def retryable(self) -> bool:
+        error_class = str(self.source_fetch_error_class or "").lower()
+        health_text = json.dumps(dict(self.endpoint_health or {}), default=str).lower()
+        return any(
+            token in f"{error_class} {health_text}"
+            for token in (
+                "timeout",
+                "budget",
+                "pagination_budget",
+                "wall_time",
+                "total_timeout",
+                "read_timeout",
+                "connect_timeout",
+            )
+        )
+
+    def __str__(self) -> str:
+        retry_hint = "; timeout retryable" if self.retryable else ""
+        return (
+            "TD garments fetch incomplete for store "
+            f"{self.store_code.upper().strip()} window "
+            f"{self.window_start.isoformat()}..{self.window_end.isoformat()}; "
+            f"garments_fetch_completeness={self.garments_fetch_completeness}; "
+            f"source_fetch_error_class={self.source_fetch_error_class or 'unknown'}"
+            f"{retry_hint}"
+        )
 
 
 @dataclass(frozen=True)
@@ -277,6 +320,55 @@ def _zero_snapshot_message(zero_snapshot_class: ZeroSnapshotClass) -> str:
     if zero_snapshot_class == "source_fetch_auth_failure":
         return "zero_authoritative_orders_detected_source_fetch_auth_failure"
     return "zero_authoritative_orders_detected_unknown_ambiguous_empty"
+
+
+def _garments_health_from_result(result: Any) -> Mapping[str, Any]:
+    endpoint_health = getattr(result, "endpoint_health", None) or {}
+    health = (
+        endpoint_health.get("/garments/details")
+        if isinstance(endpoint_health, Mapping)
+        else None
+    )
+    return health if isinstance(health, Mapping) else {}
+
+
+def _garments_endpoint_diagnostics_from_result(result: Any) -> Mapping[str, Any]:
+    diagnostics = getattr(result, "endpoint_error_diagnostics", None) or {}
+    endpoint_diagnostics = (
+        diagnostics.get("/garments/details")
+        if isinstance(diagnostics, Mapping)
+        else None
+    )
+    return endpoint_diagnostics if isinstance(endpoint_diagnostics, Mapping) else {}
+
+
+def _source_fetch_error_class(result: Any, health: Mapping[str, Any]) -> str | None:
+    endpoint_errors = getattr(result, "endpoint_errors", None) or {}
+    endpoint_error = (
+        endpoint_errors.get("/garments/details")
+        if isinstance(endpoint_errors, Mapping)
+        else None
+    )
+    return (
+        getattr(result, "source_fetch_error_class", None)
+        or health.get("final_error_class")
+        or endpoint_error
+    )
+
+
+def _td_garments_incomplete_log_fields(exc: BaseException) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for attr in (
+        "garments_fetch_completeness",
+        "source_fetch_error_class",
+        "endpoint_health",
+        "endpoint_error_diagnostics",
+    ):
+        if hasattr(exc, attr):
+            fields[attr] = getattr(exc, attr)
+    if hasattr(exc, "retryable"):
+        fields["retryable"] = bool(getattr(exc, "retryable"))
+    return fields
 
 
 class SnapshotFetcher(Protocol):
@@ -562,6 +654,39 @@ async def rebuild_window(
     snapshot = await fetch_snapshot(
         source=source, store=store, window=window, run_id=run_id, logger=logger
     )
+    td_replacement_allowed = True
+    if source == "td":
+        td_completeness = (snapshot.garments_fetch_completeness or "complete").lower()
+        td_replacement_allowed = td_completeness == "complete"
+        if not td_replacement_allowed:
+            exc = TdGarmentsFetchIncomplete(
+                store_code=store.store_code,
+                window_start=window.start,
+                window_end=window.end,
+                garments_fetch_completeness=td_completeness,
+                source_fetch_error_class=snapshot.source_fetch_error_class,
+                endpoint_health=snapshot.endpoint_health,
+                endpoint_error_diagnostics=snapshot.endpoint_error_diagnostics,
+            )
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_td_source_snapshot",
+                status="error",
+                message="TD garments source snapshot is not authoritative",
+                run_id=run_id,
+                source="td",
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                window_start=window.start.isoformat(),
+                window_end=window.end.isoformat(),
+                dry_run=dry_run,
+                garments_fetch_completeness=td_completeness,
+                source_fetch_error_class=snapshot.source_fetch_error_class,
+                endpoint_health=snapshot.endpoint_health,
+                endpoint_error_diagnostics=snapshot.endpoint_error_diagnostics,
+                retryable=exc.retryable,
+            )
+            raise exc
     if dry_run:
         metrics = await _dry_run_metrics(
             source=source,
@@ -575,7 +700,7 @@ async def rebuild_window(
         result = await ingest_td_garment_rows(
             rows=snapshot.line_item_rows,
             authoritative_order_scope=snapshot.order_snapshots,
-            replacement_allowed=True,
+            replacement_allowed=td_replacement_allowed,
             store_code=store.store_code,
             cost_center=store.cost_center,
             run_id=run_id,
@@ -702,7 +827,9 @@ async def default_fetch_snapshot(
 
         td_store = store.raw_store
         if td_store is None:
-            raise ValueError("TD rebuild stores must include the raw TdStore auth config")
+            raise ValueError(
+                "TD rebuild stores must include the raw TdStore auth config"
+            )
 
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
@@ -726,16 +853,90 @@ async def default_fetch_snapshot(
                 result = await client.fetch_reports(
                     from_date=window.start, to_date=window.end
                 )
+                garments_health = _garments_health_from_result(result)
+                raw_completeness = garments_health.get("garments_fetch_completeness")
+                assume_complete_for_legacy_result = raw_completeness is None and not (
+                    getattr(result, "endpoint_errors", None)
+                    or getattr(result, "source_fetch_status", None)
+                )
+                effective_completeness = (
+                    "complete"
+                    if assume_complete_for_legacy_result
+                    else raw_completeness
+                )
+                garments_fetch_completeness = (
+                    str(effective_completeness or "unknown").strip().lower()
+                )
+                source_fetch_error_class = _source_fetch_error_class(
+                    result, garments_health
+                )
+                endpoint_diagnostics = _garments_endpoint_diagnostics_from_result(
+                    result
+                )
                 auth_failed_endpoints = td_api_fetch_auth_failure_endpoints(result)
                 if auth_failed_endpoints:
+                    if hasattr(logger, "info"):
+                        log_event(
+                            logger=logger,
+                            phase="order_line_items_rebuild_td_source_snapshot",
+                            status="error",
+                            message="TD garments source snapshot is not authoritative",
+                            run_id=run_id,
+                            source="td",
+                            store_code=store.store_code,
+                            cost_center=store.cost_center,
+                            window_start=window.start.isoformat(),
+                            window_end=window.end.isoformat(),
+                            garments_fetch_completeness=garments_fetch_completeness,
+                            source_fetch_error_class=source_fetch_error_class,
+                            endpoint_health=garments_health,
+                            endpoint_error_diagnostics=endpoint_diagnostics,
+                        )
                     raise TdApiUnauthorizedError(
                         store_code=store.store_code,
                         failed_endpoints=auth_failed_endpoints,
-                        error_class=getattr(result, "source_fetch_error_class", None),
+                        error_class=source_fetch_error_class,
                     )
+                if garments_fetch_completeness != "complete":
+                    exc = TdGarmentsFetchIncomplete(
+                        store_code=store.store_code,
+                        window_start=window.start,
+                        window_end=window.end,
+                        garments_fetch_completeness=garments_fetch_completeness,
+                        source_fetch_error_class=source_fetch_error_class,
+                        endpoint_health=garments_health,
+                        endpoint_error_diagnostics=endpoint_diagnostics,
+                    )
+                    if hasattr(logger, "info"):
+                        log_event(
+                            logger=logger,
+                            phase="order_line_items_rebuild_td_source_snapshot",
+                            status="error",
+                            message="TD garments source snapshot is not authoritative",
+                            run_id=run_id,
+                            source="td",
+                            store_code=store.store_code,
+                            cost_center=store.cost_center,
+                            window_start=window.start.isoformat(),
+                            window_end=window.end.isoformat(),
+                            garments_fetch_completeness=garments_fetch_completeness,
+                            source_fetch_error_class=source_fetch_error_class,
+                            endpoint_health=garments_health,
+                            endpoint_error_diagnostics=endpoint_diagnostics,
+                            retryable=exc.retryable,
+                        )
+                    raise exc
                 return SourceSnapshot(
                     line_item_rows=result.garments_rows,
                     order_snapshots=result.garment_order_snapshots,
+                    garments_fetch_completeness=(
+                        None
+                        if assume_complete_for_legacy_result
+                        else garments_fetch_completeness
+                    ),
+                    source_fetch_error_class=source_fetch_error_class,
+                    endpoint_health=garments_health,
+                    endpoint_error_diagnostics=endpoint_diagnostics,
                 )
             finally:
                 await browser.close()
@@ -1499,6 +1700,7 @@ async def run_rebuild(
                     )
                 except Exception as exc:
                     failure_class = classify_rebuild_failure(exc)
+                    source_fetch_fields = _td_garments_incomplete_log_fields(exc)
                     if not dry_run:
                         await _write_progress(
                             database_url=database_url,
@@ -1529,6 +1731,7 @@ async def run_rebuild(
                             attempt_no=attempt_no,
                             failure_class=failure_class,
                             error_message=str(exc),
+                            **source_fetch_fields,
                             dry_run=dry_run,
                         )
                         continue
@@ -1548,6 +1751,7 @@ async def run_rebuild(
                             attempt_no=attempt_no,
                             failure_class=failure_class,
                             error_message=str(exc),
+                            **source_fetch_fields,
                             dry_run=dry_run,
                         )
                         raise
@@ -1566,6 +1770,7 @@ async def run_rebuild(
                         attempt_no=attempt_no,
                         failure_class=failure_class,
                         error_message=str(exc),
+                        **source_fetch_fields,
                         dry_run=dry_run,
                     )
                     break
