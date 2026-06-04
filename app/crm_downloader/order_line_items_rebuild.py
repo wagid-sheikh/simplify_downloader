@@ -43,6 +43,88 @@ SnapshotOutcome = Literal[
     "complete_with_rows", "complete_empty", "incomplete_or_failed"
 ]
 
+FailureClass = Literal[
+    "retryable_transient_failure",
+    "systemic_setup_failure",
+    "store_specific_failure",
+    "window_data_failure",
+]
+
+
+SYSTEMIC_SETUP_ERROR_TOKENS = (
+    "browser executable",
+    "executable_path",
+    "executable doesn't exist",
+    "executable does not exist",
+    "playwright install",
+    "playwright dependencies",
+    "missing dependencies",
+    "host system is missing dependencies",
+    "browsertype.launch",
+    "browser_type.launch",
+    "database_url is required",
+    "missing required",
+    "mandatory config",
+    "invalid mandatory config",
+    "missing cost_center",
+    "cost_center is required",
+    "store_master.start_date is not set",
+    "no such table",
+    "no such column",
+    "undefined table",
+    "undefined column",
+    "relation does not exist",
+    "column does not exist",
+)
+
+STORE_SPECIFIC_ERROR_TOKENS = (
+    "401",
+    "403",
+    "auth failed",
+    "authentication failed",
+    "authorization failed",
+    "unauthorized",
+    "forbidden",
+    "login required",
+    "not authenticated",
+    "storage state",
+    "storage_state",
+    "session expired",
+)
+
+
+def classify_rebuild_failure(exc: BaseException) -> FailureClass:
+    """Classify rebuild failures before deciding whether to retry or stop.
+
+    Systemic setup failures are deterministic environment/code/config/schema
+    problems. Continuing across every store/window just repeats the same broken
+    setup, so the rebuild must stop immediately. Source/store/data failures can
+    leave other windows recoverable and remain isolated to window-level handling.
+    """
+    if should_retry_exception(exc):
+        return "retryable_transient_failure"
+
+    message = f"{type(exc).__module__}.{type(exc).__name__} {exc}".lower()
+    if isinstance(exc, TypeError):
+        return "systemic_setup_failure"
+    if isinstance(exc, (ModuleNotFoundError, ImportError)) and "playwright" in message:
+        return "systemic_setup_failure"
+    if isinstance(exc, (sa.exc.ProgrammingError, sa.exc.OperationalError)) and any(
+        token in message for token in SYSTEMIC_SETUP_ERROR_TOKENS
+    ):
+        return "systemic_setup_failure"
+    if isinstance(exc, (AttributeError, KeyError, ValueError)) and any(
+        token in message for token in SYSTEMIC_SETUP_ERROR_TOKENS
+    ):
+        return "systemic_setup_failure"
+    if isinstance(exc, RuntimeError) and any(
+        token in message for token in SYSTEMIC_SETUP_ERROR_TOKENS
+    ):
+        return "systemic_setup_failure"
+    if any(token in message for token in STORE_SPECIFIC_ERROR_TOKENS):
+        return "store_specific_failure"
+    return "window_data_failure"
+
 
 @dataclass(frozen=True)
 class RebuildWindow:
@@ -908,6 +990,7 @@ async def run_rebuild(
                         fetch_snapshot=fetch_snapshot,
                     )
                 except Exception as exc:
+                    failure_class = classify_rebuild_failure(exc)
                     if not dry_run:
                         await _write_progress(
                             database_url=config.database_url,
@@ -919,7 +1002,10 @@ async def run_rebuild(
                             error_message=str(exc),
                             dry_run=False,
                         )
-                    if attempt_no < max_attempts and should_retry_exception(exc):
+                    if (
+                        failure_class == "retryable_transient_failure"
+                        and attempt_no < max_attempts
+                    ):
                         log_event(
                             logger=logger,
                             phase="order_line_items_rebuild_window",
@@ -933,10 +1019,30 @@ async def run_rebuild(
                             window_end=window.end.isoformat(),
                             uc_child_run_id=uc_child_run_id,
                             attempt_no=attempt_no,
+                            failure_class=failure_class,
                             error_message=str(exc),
                             dry_run=dry_run,
                         )
                         continue
+                    if failure_class == "systemic_setup_failure":
+                        log_event(
+                            logger=logger,
+                            phase="order_line_items_rebuild",
+                            status="error",
+                            message="Stopping order_line_items rebuild after systemic setup failure",
+                            run_id=run_id,
+                            source=store.source,
+                            store_code=store.store_code,
+                            cost_center=store.cost_center,
+                            window_start=window.start.isoformat(),
+                            window_end=window.end.isoformat(),
+                            uc_child_run_id=uc_child_run_id,
+                            attempt_no=attempt_no,
+                            failure_class=failure_class,
+                            error_message=str(exc),
+                            dry_run=dry_run,
+                        )
+                        raise
                     log_event(
                         logger=logger,
                         phase="order_line_items_rebuild_window",
@@ -950,6 +1056,7 @@ async def run_rebuild(
                         window_end=window.end.isoformat(),
                         uc_child_run_id=uc_child_run_id,
                         attempt_no=attempt_no,
+                        failure_class=failure_class,
                         error_message=str(exc),
                         dry_run=dry_run,
                     )
