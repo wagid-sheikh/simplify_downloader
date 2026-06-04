@@ -47,9 +47,7 @@ def _write_uc_storage_state(
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     value = (
-        json.dumps({"accessToken": token})
-        if token
-        else json.dumps({"other": "value"})
+        json.dumps({"accessToken": token}) if token else json.dumps({"other": "value"})
     )
     path.write_text(
         json.dumps(
@@ -671,8 +669,7 @@ async def test_default_fetch_snapshot_successful_td_garments_response_is_authori
     assert len(snapshot.line_item_rows) == 1
     assert len(snapshot.order_snapshots) == 1
     assert (
-        snapshot.order_snapshots[0]["garment_snapshot_outcome"]
-        == "complete_with_rows"
+        snapshot.order_snapshots[0]["garment_snapshot_outcome"] == "complete_with_rows"
     )
     assert browser.closed is True
 
@@ -1607,6 +1604,232 @@ async def test_live_resume_ignores_legacy_dry_run_progress_success(
     assert [(row.run_id, bool(row.dry_run)) for row in progress] == [
         ("live-after-legacy-dry", False)
     ]
+
+
+@pytest.mark.asyncio
+async def test_td_complete_garments_fetch_allows_replacement(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) "
+                "VALUES (1,'CC01','TD001','ORD-COMPLETE')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items "
+                "(run_id, cost_center, store_code, order_id, order_number, "
+                "line_item_key, line_item_uid, garment_name, ingest_row_seq) "
+                "VALUES ('old','CC01','TD001',1,'ORD-COMPLETE','old','old','Old',1)"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-COMPLETE",
+                    "line_item_key": "new",
+                    "garment_name": "Replacement",
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-COMPLETE",
+                    "garment_snapshot_outcome": "complete_with_rows",
+                }
+            ],
+            garments_fetch_completeness="complete",
+            endpoint_health={"garments_fetch_completeness": "complete"},
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        run_id="complete-authoritative",
+        fetch_snapshot=fetcher,
+    )
+
+    assert metrics[0].deleted_rows == 1
+    assert metrics[0].inserted_rows == 1
+    rows = await _rows(
+        db_url,
+        "SELECT garment_name FROM order_line_items WHERE order_number='ORD-COMPLETE'",
+    )
+    assert [row.garment_name for row in rows] == ["Replacement"]
+
+
+@pytest.mark.asyncio
+async def test_td_incomplete_garments_fetch_preserves_existing_rows(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("incomplete-authority")
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items "
+                "(run_id, cost_center, store_code, order_number, line_item_key, "
+                "line_item_uid, garment_name, ingest_row_seq) "
+                "VALUES ('old','CC01','TD001','ORD-INCOMPLETE','old','old','Keep',1)"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-INCOMPLETE",
+                    "garment_snapshot_outcome": "complete_empty",
+                }
+            ],
+            garments_fetch_completeness="incomplete",
+            source_fetch_error_class="pagination_budget_exhausted",
+            endpoint_health={
+                "garments_fetch_completeness": "incomplete",
+                "final_error_class": "pagination_budget_exhausted",
+                "resume_from_page": 4,
+            },
+            endpoint_error_diagnostics={"reason": "pagination budget exhausted"},
+        )
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=False,
+            run_id="incomplete-authority",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    rows = await _rows(db_url, "SELECT garment_name FROM order_line_items")
+    assert [row.garment_name for row in rows] == ["Keep"]
+    failed_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("status") == "error"
+    ]
+    assert failed_events[-1]["garments_fetch_completeness"] == "incomplete"
+    assert (
+        failed_events[-1]["source_fetch_error_class"] == "pagination_budget_exhausted"
+    )
+    assert failed_events[-1]["endpoint_health"]["resume_from_page"] == 4
+
+
+@pytest.mark.asyncio
+async def test_td_auth_failed_garments_fetch_fails_window(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("auth-failed-garments")
+
+    async def fetcher(**kwargs):
+        raise rebuild.TdApiUnauthorizedError(
+            store_code="TD001",
+            failed_endpoints=["/garments/details"],
+            error_class="http_401",
+        )
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="auth-failed-garments",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert exc_info.value.completed_window_count == 0
+    assert exc_info.value.missing_windows == ("td:TD001:2025-01-01..2025-01-01",)
+    failed_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("status") == "error"
+    ]
+    assert failed_events[-1]["failure_class"] == "store_specific_failure"
+    assert "http_401" in failed_events[-1]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_td_timeout_incomplete_garments_fetch_is_retryable_and_resumable(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("timeout-incomplete")
+    attempts = 0
+
+    async def fetcher(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return rebuild.SourceSnapshot(
+                line_item_rows=[],
+                order_snapshots=[],
+                garments_fetch_completeness="incomplete",
+                source_fetch_error_class="read_timeout",
+                endpoint_health={
+                    "garments_fetch_completeness": "incomplete",
+                    "final_error_class": "read_timeout",
+                    "resume_from_page": 7,
+                    "timeout_count": 2,
+                },
+                endpoint_error_diagnostics={"timeout_ms": 35000},
+            )
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[],
+            garments_fetch_completeness="complete",
+            endpoint_health={"garments_fetch_completeness": "complete"},
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="timeout-incomplete",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert attempts == 2
+    assert len(metrics) == 1
+    retry_events = [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "Retrying order_line_items rebuild window after retryable failure"
+    ]
+    assert retry_events[-1]["garments_fetch_completeness"] == "incomplete"
+    assert retry_events[-1]["source_fetch_error_class"] == "read_timeout"
+    assert retry_events[-1]["endpoint_health"]["resume_from_page"] == 7
+    assert retry_events[-1]["retryable"] is True
 
 
 @pytest.mark.asyncio
