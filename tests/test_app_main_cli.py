@@ -121,6 +121,19 @@ def test_recovery_cli_invokes_runner_with_common_args(monkeypatch) -> None:
     assert captured == [["--report-date", "2026-04-30", "--env", "dev"]]
 
 
+def test_crm_order_line_items_rebuild_returns_nonzero_when_runner_exits_nonzero(
+    monkeypatch,
+) -> None:
+    def _fake_runner(argv: list[str] | None = None) -> None:
+        raise SystemExit(1)
+
+    monkeypatch.setattr("app.crm_downloader.order_line_items_rebuild.run", _fake_runner)
+
+    exit_code = app_main.main(["crm", "rebuild-order-line-items", "--source", "td"])
+
+    assert exit_code == 1
+
+
 def test_crm_order_line_items_rebuild_aliases_forward_to_rebuild_runner(
     monkeypatch,
 ) -> None:

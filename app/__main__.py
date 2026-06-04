@@ -227,7 +227,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 rebuild_args.append("--resume")
             if parsed.run_id:
                 rebuild_args.extend(["--run-id", parsed.run_id])
-            rebuild_run(rebuild_args)
+            try:
+                rebuild_run(rebuild_args)
+            except SystemExit as exc:
+                if exc.code is None:
+                    return 0
+                if isinstance(exc.code, int):
+                    return exc.code
+                return 1
             return 0
 
     if parsed.command == "recovery":

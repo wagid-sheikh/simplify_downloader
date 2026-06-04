@@ -65,6 +65,27 @@ class SourceSnapshot:
     order_snapshots: list[Mapping[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class OrderLineItemsRebuildIncomplete(Exception):
+    run_id: str
+    expected_window_count: int
+    completed_window_count: int
+    missing_window_count: int
+    missing_windows: tuple[str, ...]
+
+    def __str__(self) -> str:
+        preview = ", ".join(self.missing_windows[:5])
+        suffix = "" if len(self.missing_windows) <= 5 else ", ..."
+        return (
+            "order_line_items rebuild incomplete "
+            f"run_id={self.run_id} "
+            f"completed={self.completed_window_count}/"
+            f"{self.expected_window_count} "
+            f"missing={self.missing_window_count}"
+            f" missing_windows=[{preview}{suffix}]"
+        )
+
+
 @dataclass
 class WindowMetrics:
     source: Source
@@ -132,6 +153,15 @@ def _uc_child_run_id(*, run_id: str, store: RebuildStore, window: RebuildWindow)
     return (
         f"{run_id}:uc:{store.store_code}:{window.start.isoformat()}:"
         f"{window.end.isoformat()}"
+    )
+
+
+def _compact_window_identifier(
+    source: Source, store_code: str, window_start: date, window_end: date
+) -> str:
+    return (
+        f"{source}:{store_code}:{window_start.isoformat()}.."
+        f"{window_end.isoformat()}"
     )
 
 
@@ -986,6 +1016,18 @@ async def run_rebuild(
         dry_run=dry_run,
         resume=resume,
     )
+    if missing_windows:
+        compact_missing_windows = tuple(
+            _compact_window_identifier(source, store_code, window_start, window_end)
+            for source, store_code, window_start, window_end in missing_windows
+        )
+        raise OrderLineItemsRebuildIncomplete(
+            run_id=run_id,
+            expected_window_count=len(expected_windows),
+            completed_window_count=len(successful_windows),
+            missing_window_count=len(missing_windows),
+            missing_windows=compact_missing_windows,
+        )
     return metrics
 
 
@@ -1045,16 +1087,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(list(argv) if argv is not None else None)
-    await run_rebuild(
-        source_selection=args.source,
-        store_codes=normalize_store_codes(args.stores or []),
-        start_date=args.start_date,
-        end_date=args.end_date,
-        window_size_days=args.window_size,
-        dry_run=args.dry_run,
-        resume=args.resume,
-        run_id=args.run_id,
-    )
+    try:
+        await run_rebuild(
+            source_selection=args.source,
+            store_codes=normalize_store_codes(args.stores or []),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            window_size_days=args.window_size,
+            dry_run=args.dry_run,
+            resume=args.resume,
+            run_id=args.run_id,
+        )
+    except OrderLineItemsRebuildIncomplete as exc:
+        raise SystemExit(1) from exc
 
 
 def run(argv: Sequence[str] | None = None) -> None:
