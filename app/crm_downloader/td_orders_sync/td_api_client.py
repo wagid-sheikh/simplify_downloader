@@ -102,6 +102,10 @@ class TdApiClientConfig:
     min_interval_seconds: float = float(os.environ.get("TD_API_MIN_INTERVAL_SECONDS", "0.35"))
     page: int = int(os.environ.get("TD_API_PAGE", "1"))
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
+    # The observed /garments/details HAR uses pageSize=100. Keep garments on
+    # that safer endpoint-specific shape while leaving orders/sales at the
+    # broader generic page size unless operators explicitly override it.
+    garments_page_size: int = int(os.environ.get("TD_API_GARMENTS_PAGE_SIZE", "100"))
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
     default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
     default_total_timeout_ms: int = int(os.environ.get("TD_API_TOTAL_TIMEOUT_MS", os.environ.get("TD_API_TIMEOUT_MS", "20000")))
@@ -348,9 +352,15 @@ class TdApiClient:
             error_diagnostics=error_diagnostics,
             endpoint_health=endpoint_health,
         )
+        garments_params = self._build_base_query_params(
+            from_date=from_date,
+            to_date=to_date,
+            page=self.config.page,
+            page_size=self.config.garments_page_size,
+        )
         garments_payload = await self._fetch_endpoint_rows(
             endpoint=GARMENTS_ENDPOINT,
-            params=common_params,
+            params=garments_params,
             metadata=metadata,
             errors=errors,
             error_diagnostics=error_diagnostics,
@@ -629,6 +639,7 @@ class TdApiClient:
         garments_completeness_basis = "unknown"
         garments_response_parsing_failure = False
         garments_pagination_budget_exhausted = False
+        garments_page_row_counts: list[int] = []
         last_successful_page = page - 1
 
         logger.info(
@@ -881,6 +892,7 @@ class TdApiClient:
             rows_in_page = len(rows)
 
             if is_garments_endpoint:
+                garments_page_row_counts.append(rows_in_page)
                 previous_unique_row_ids = len(garments_unique_row_ids)
                 page_row_ids = [row_id for row in rows if (row_id := _extract_row_id(row))]
                 garments_unique_row_ids.update(page_row_ids)
@@ -1023,6 +1035,11 @@ class TdApiClient:
 
         if is_garments_endpoint:
             garments_expected_total_rows = total_rows_hint
+            garments_expected_page_count = _infer_expected_page_count(
+                reported_total_rows=total_rows_hint,
+                reported_total_pages=total_pages_hint,
+                observed_page_row_counts=garments_page_row_counts,
+            )
             fetched_unique_row_ids = len(garments_unique_row_ids)
             if garments_expected_total_rows is not None:
                 if fetched_unique_row_ids >= garments_expected_total_rows:
@@ -1086,7 +1103,7 @@ class TdApiClient:
                     ),
                     "garments_attempted_page_count": garments_pages_attempted,
                     "garments_completed_page_count": garments_pages_succeeded,
-                    "garments_expected_page_count": total_pages_hint,
+                    "garments_expected_page_count": garments_expected_page_count,
                     "garments_timeout_count": garments_timeout_count,
                     "garments_retry_count": garments_retry_count,
                     "garments_expected_total_rows": garments_expected_total_rows,
@@ -2486,6 +2503,22 @@ def _estimate_remaining_pages(
         estimated_total_pages = math.ceil(reported_total_rows / avg_rows_per_page)
         return max(estimated_total_pages - observed_page, 0)
     return None
+
+
+def _infer_expected_page_count(
+    *,
+    reported_total_rows: int | None,
+    reported_total_pages: int | None,
+    observed_page_row_counts: Sequence[int],
+) -> int | None:
+    if reported_total_pages is not None:
+        return reported_total_pages
+    if reported_total_rows is None:
+        return None
+    effective_page_size = max((count for count in observed_page_row_counts if count > 0), default=0)
+    if effective_page_size <= 0:
+        return None
+    return math.ceil(reported_total_rows / effective_page_size)
 
 
 def _extract_total_rows_hint(payload: Any) -> int | None:

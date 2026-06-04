@@ -47,6 +47,14 @@ def _har_fixture_pages() -> list[dict[str, object]]:
     return json.loads(fixture_path.read_text(encoding="utf-8"))["pages"]
 
 
+def _har_fixture_rows() -> list[dict[str, object]]:
+    return [
+        row
+        for page in _har_fixture_pages()
+        for row in page["response"]["data"]["rows"]  # type: ignore[index]
+    ]
+
+
 def _garment_row(index: int, *, barcode: str | None = None) -> dict[str, object]:
     barcode_value = barcode if barcode is not None else f"*T{2400 + index}-{index}-1170*"
     return {
@@ -169,14 +177,21 @@ def test_extract_row_ids_uses_har_composite_when_barcode_missing() -> None:
 def test_sanitized_garment_details_fixture_matches_har_shape() -> None:
     pages = _har_fixture_pages()
     first_payload = pages[0]["response"]
+    final_payload = pages[-1]["response"]
     rows = _extract_rows(first_payload)
+    all_rows = _har_fixture_rows()
+    forbidden_identifier_fields = {"id", "_id", "api_line_item_id", "apiGarmentId"}
 
     assert first_payload["data"]["count"] == 2227
-    assert len(pages) == 3
-    assert pages[1]["request"]["page"] == 2
-    assert pages[2]["request"]["page"] == 23
-    assert len(rows) == 2
-    assert _extract_row_ids(rows) == {"barcode:*T2401-1-1170*", "barcode:*T2401-10-1170*"}
+    assert len(pages) == 23
+    assert pages[0]["request"]["pageSize"] == 100
+    assert pages[-1]["request"]["page"] == 23
+    assert len(final_payload["data"]["rows"]) == 27
+    assert len(all_rows) == 2227
+    assert len(rows) == 100
+    assert all(forbidden_identifier_fields.isdisjoint(row) for row in all_rows)
+    assert all(str(row.get("barcode") or "").strip() for row in all_rows)
+    assert _extract_row_ids(rows) == {f"barcode:{row['barcode']}" for row in rows}
 
 
 def test_filter_summary_rows_removes_footer_like_rows() -> None:
@@ -1078,6 +1093,9 @@ class _TokenRefreshingClient(TdApiClient):
         super().__init__(**kwargs)
         self.discovery_calls: list[bool] = []
 
+    def _has_cookie_auth_source(self) -> bool:  # type: ignore[override]
+        return True
+
     async def _discover_reporting_token(self, *, force_refresh: bool = False):  # type: ignore[override]
         self.discovery_calls.append(force_refresh)
         if self._auth_state.token_discovery is not None and not force_refresh:
@@ -1205,7 +1223,7 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
         item for item in result.request_metadata if item["endpoint"] == "/reports/order-report" and item["status"] == 401
     ]
     assert len(auth_refresh_items) == 1
-    assert auth_refresh_items[0]["retry_reason"] == "auth_refresh"
+    assert auth_refresh_items[0]["retry_reason"] == "http_401"
 
     sales_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/sales-and-deliveries/sales" and item["status"] == 200)
     assert sales_metadata["query_params"]["startDate"] == ["2026-01-01"]
@@ -1221,7 +1239,7 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert garments_metadata["query_params"]["startDate"] == ["2026-01-01"]
     assert garments_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert garments_metadata["query_params"]["page"] == ["1"]
-    assert garments_metadata["query_params"]["pageSize"] == ["500"]
+    assert garments_metadata["query_params"]["pageSize"] == ["100"]
     assert garments_metadata["query_params"]["token"] == ["fresh-token"]
     assert garments_metadata["auth_shape"] == "legacy"
     assert garments_metadata["primary_auth_shape"] == "legacy"
@@ -2347,6 +2365,55 @@ async def test_garments_row_count_complete_with_duplicate_ids_records_diagnostic
     assert health["garments_fetch_completeness"] == "complete"
     assert health["garments_completeness_basis"] == "parsed_row_count_with_duplicate_row_ids"
     assert health["garments_incomplete_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_garments_har_count_drives_complete_final_page_without_empty_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0, page_size=500, max_pages=30),
+    )
+    pages_by_number = {page["request"]["page"]: page for page in _har_fixture_pages()}
+    requested_pages: list[int] = []
+    requested_page_sizes: list[int] = []
+
+    async def _fake_get_json(**kwargs: object) -> object:
+        params = kwargs["params"]
+        page_number = int(params["page"])  # type: ignore[index]
+        requested_pages.append(page_number)
+        requested_page_sizes.append(int(params["pageSize"]))  # type: ignore[index]
+        return _api_result(pages_by_number[page_number]["response"])
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-03-01", "endDate": "2026-03-30", "page": 1, "pageSize": 500},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert requested_pages == list(range(1, 24))
+    assert set(requested_page_sizes) == {500}
+    assert result["pagination"]["pages_fetched"] == 23
+    assert result["pagination"]["total_rows"] == 2227
+    assert result["pagination"]["reported_total_rows"] == 2227
+    assert len(result["data"]) == 2227
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_incomplete_reason"] is None
+    assert health["garments_expected_total_rows"] == 2227
+    assert health["garments_expected_page_count"] == 23
+    assert health["garments_completed_page_count"] == 23
+    assert health["garments_final_row_count"] == 2227
+    assert health["garments_fetched_unique_row_ids"] == 2227
+    assert health["garments_completeness_basis"] == "unique_row_ids"
 
 
 @pytest.mark.asyncio
