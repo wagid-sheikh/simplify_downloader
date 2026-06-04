@@ -308,6 +308,185 @@ def test_bounded_window_progression() -> None:
         (date(2025, 1, 9), date(2025, 1, 10)),
     ]
 
+@pytest.mark.asyncio
+async def test_preflight_missing_store_master_start_date_fails_before_windows(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT,
+                sync_group TEXT,
+                start_date TEXT
+            )
+        """))
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (store_code, sync_group, start_date) "
+                "VALUES ('TD001', 'TD', NULL)"
+            )
+        )
+        await session.commit()
+    logger = _InMemoryLogger("preflight-missing-start")
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    with pytest.raises(RuntimeError, match="store_master.start_date"):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=None,
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="preflight-missing-start",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert window_seen is False
+    preflight_errors = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "error"
+    ]
+    assert preflight_errors
+    assert preflight_errors[-1]["missing_start_dates"] == [
+        {"source": "td", "store_code": "TD001"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preflight_browser_launch_contract_failure_fails_before_windows(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logger = _InMemoryLogger("preflight-browser-failure")
+    window_seen = False
+
+    async def failing_launch_browser(**_kwargs):
+        raise RuntimeError("launch_browser contract broke")
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    monkeypatch.setattr(rebuild, "launch_browser", failing_launch_browser)
+
+    with pytest.raises(RuntimeError, match="browser launch contract failed"):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="preflight-browser-failure",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert window_seen is False
+    assert [
+        event["status"]
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+    ][-1] == "error"
+
+
+@pytest.mark.asyncio
+async def test_valid_preflight_proceeds_to_window_processing(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("preflight-valid")
+    seen_windows: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen_windows.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot()
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="preflight-valid",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 1
+    assert seen_windows == [(date(2025, 1, 1), date(2025, 1, 1))]
+    assert any(
+        event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("message") == "order_line_items rebuild preflight completed"
+        for event in logger.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_logs_warning_for_missing_storage_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'storage-warning.sqlite'}"
+    await _create_common_tables(db_url)
+    missing_state = tmp_path / "profiles" / "TD001_storage_state.json"
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="TD001",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=missing_state),
+            )
+        ]
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    logger = _InMemoryLogger("preflight-storage-warning")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot()
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="preflight-storage-warning",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    warning_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "warning"
+    ]
+    assert warning_events
+    assert warning_events[0]["missing_storage_states"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "storage_state": str(missing_state),
+            "reason": "storage_state_file_missing",
+        }
+    ]
+
 
 @pytest.mark.asyncio
 async def test_run_rebuild_generates_default_run_id_without_type_error(
