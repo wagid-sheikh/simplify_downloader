@@ -26,7 +26,11 @@ from app.crm_downloader.td_orders_sync.garment_ingest import (
     order_line_items_table,
 )
 from app.crm_downloader.td_orders_sync.main import _load_td_order_stores
-from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient
+from app.crm_downloader.td_orders_sync.td_api_client import (
+    TdApiClient,
+    TdApiUnauthorizedError,
+    td_api_fetch_auth_failure_endpoints,
+)
 from app.crm_downloader.uc_orders_sync.gst_api_extract import collect_gst_orders_via_api
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     publish_uc_gst_order_details_to_line_items,
@@ -612,6 +616,13 @@ async def default_fetch_snapshot(
                 result = await client.fetch_reports(
                     from_date=window.start, to_date=window.end
                 )
+                auth_failed_endpoints = td_api_fetch_auth_failure_endpoints(result)
+                if auth_failed_endpoints:
+                    raise TdApiUnauthorizedError(
+                        store_code=store.store_code,
+                        failed_endpoints=auth_failed_endpoints,
+                        error_class=getattr(result, "source_fetch_error_class", None),
+                    )
                 return SourceSnapshot(
                     line_item_rows=result.garments_rows,
                     order_snapshots=result.garment_order_snapshots,

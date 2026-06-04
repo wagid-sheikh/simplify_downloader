@@ -1664,6 +1664,13 @@ async def test_fetch_reports_preflight_skips_endpoint_calls_when_auth_unavailabl
         "/garments/details": "auth_unavailable",
     }
     assert result.request_metadata[0]["outcome"] == "auth_unavailable"
+    assert result.source_fetch_status == "auth_failed"
+    assert result.source_fetch_error_class == "auth_unavailable"
+    assert result.source_fetch_failed_endpoints == [
+        "/reports/order-report",
+        "/sales-and-deliveries/sales",
+        "/garments/details",
+    ]
 
 
 
@@ -1764,6 +1771,13 @@ async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_t
     }
     assert set(result.endpoint_error_diagnostics.keys()) == set(result.endpoint_errors.keys())
     assert all(bool(diagnostics) for diagnostics in result.endpoint_error_diagnostics.values())
+    assert result.source_fetch_status == "auth_failed"
+    assert result.source_fetch_error_class == "http_401"
+    assert result.source_fetch_failed_endpoints == [
+        "/reports/order-report",
+        "/sales-and-deliveries/sales",
+        "/garments/details",
+    ]
 
 
 @pytest.mark.asyncio
