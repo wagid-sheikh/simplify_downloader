@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -1238,8 +1239,87 @@ def _td_storage_state_auth_status(store: RebuildStore) -> str:
         for cookie in cookies
     )
     if has_unexpired_cookie:
-        return "authorized"
+        # This only proves a persisted cookie is present. TD rebuild preflight
+        # performs the real API-path probe/login/iframe validation in
+        # ``_td_api_auth_readiness_status`` before treating the store as ready.
+        return "storage_cookie_unexpired"
     return "unauthorized"
+
+
+async def _td_api_auth_readiness_status(
+    store: RebuildStore,
+    *,
+    run_id: str,
+    logger: JsonLogger,
+) -> str:
+    """Validate TD auth using the same browser/API handoff as source fetches.
+
+    A storage-state file can exist while the real TD session is stale. The
+    rebuild must therefore exercise the mature TD API path: probe reusable
+    session, refresh/login when necessary, resolve the reports iframe auth
+    source, and validate the endpoint-specific API auth context.
+    """
+    td_store = store.raw_store
+    storage_state_path = _storage_state_path(store)
+    if td_store is None or storage_state_path is None:
+        return "unauthorized"
+
+    from playwright.async_api import async_playwright
+
+    browser = None
+    api_context = None
+    try:
+        async with async_playwright() as playwright:
+            browser = await launch_browser(playwright=playwright, logger=logger)
+            api_context = await prepare_td_api_context_for_store(
+                browser=browser,
+                store=td_store,
+                logger=logger,
+                run_id=run_id,
+                run_start_date=aware_now(get_timezone()).date(),
+                run_end_date=aware_now(get_timezone()).date(),
+                navigate_to_report_iframe=True,
+            )
+            client = TdApiClient(
+                store_code=store.store_code,
+                context=api_context.context,
+                storage_state_path=storage_state_path,
+                run_id=run_id,
+                structured_logger=logger,
+                report_iframe_src=api_context.report_iframe_src,
+            )
+            auth_preparation = await client.prepare_auth_context()
+            if api_context.probe_result and api_context.probe_result.valid:
+                return "session_valid"
+            if api_context.login_performed and api_context.session_reused:
+                return "login_refresh_required"
+            if api_context.report_iframe_src and auth_preparation.ready:
+                return "report_iframe_auth_source_resolved"
+            if api_context.report_iframe_src:
+                return "report_iframe_auth_source_resolved"
+            if auth_preparation.ready:
+                return "session_valid"
+            return "unauthorized"
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_preflight",
+            status="warning",
+            message="TD auth readiness check failed",
+            run_id=run_id,
+            source="td",
+            store_code=store.store_code,
+            auth_readiness="unauthorized",
+            error=str(exc),
+        )
+        return "unauthorized"
+    finally:
+        if api_context is not None:
+            with contextlib.suppress(Exception):
+                await api_context.context.close()
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                await browser.close()
 
 
 def _uc_storage_state_auth_status(store: RebuildStore) -> str:
@@ -1250,18 +1330,25 @@ def _uc_storage_state_auth_status(store: RebuildStore) -> str:
     return "token_detected" if token else "missing_token"
 
 
-def _source_auth_readiness(
+async def _source_auth_readiness(
     stores: Sequence[RebuildStore],
+    *,
+    run_id: str,
+    logger: JsonLogger,
+    skip_auth_preflight: bool = False,
 ) -> tuple[dict[str, str], list[dict[str, str]]]:
     readiness: dict[str, str] = {}
     failures: list[dict[str, str]] = []
     for store in stores:
         key = f"{store.source}:{store.store_code.upper()}"
-        status = (
-            _td_storage_state_auth_status(store)
-            if store.source == "td"
-            else _uc_storage_state_auth_status(store)
-        )
+        if skip_auth_preflight:
+            status = "auth_preflight_skipped"
+        elif store.source == "td":
+            status = await _td_api_auth_readiness_status(
+                store, run_id=run_id, logger=logger
+            )
+        else:
+            status = _uc_storage_state_auth_status(store)
         readiness[key] = status
         if status in {"unauthorized", "missing_token"}:
             failures.append(
@@ -1402,7 +1489,12 @@ async def preflight_rebuild(
             )
 
     missing_storage_states = _storage_state_concerns(hydrated_stores)
-    auth_readiness, auth_failures = _source_auth_readiness(hydrated_stores)
+    auth_readiness, auth_failures = await _source_auth_readiness(
+        hydrated_stores,
+        run_id=run_id,
+        logger=logger,
+        skip_auth_preflight=skip_auth_preflight,
+    )
     if auth_failures and not skip_auth_preflight:
         auth_refs = ", ".join(
             f"{item['source']}:{item['store_code']}={item['status']}"
@@ -2046,6 +2138,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
     except (
         OrderLineItemsRebuildIncomplete,
         OrderLineItemsZeroSnapshotDetected,
+        RuntimeError,
     ) as exc:
         raise SystemExit(1) from exc
 
