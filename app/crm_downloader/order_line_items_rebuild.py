@@ -744,7 +744,7 @@ async def run_rebuild(
             "database_url is required for order_line_items historical rebuild"
         )
     logger = logger or get_logger("order_line_items_rebuild")
-    run_id = run_id or new_run_id("order-line-items-rebuild")
+    run_id = run_id or new_run_id()
     end_date = end_date or aware_now(get_timezone()).date()
     run_date = aware_now(get_timezone())
     sources: list[Source] = (
