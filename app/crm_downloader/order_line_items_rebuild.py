@@ -480,7 +480,7 @@ async def default_fetch_snapshot(
         from playwright.async_api import async_playwright
 
         async with async_playwright() as playwright:
-            browser = await launch_browser(playwright)
+            browser = await launch_browser(playwright=playwright, logger=logger)
             try:
                 context = await browser.new_context(storage_state=storage_state)
                 client = TdApiClient(
@@ -501,7 +501,7 @@ async def default_fetch_snapshot(
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
-        browser = await launch_browser(playwright)
+        browser = await launch_browser(playwright=playwright, logger=logger)
         try:
             context = await browser.new_context(storage_state=storage_state)
             page = await context.new_page()
