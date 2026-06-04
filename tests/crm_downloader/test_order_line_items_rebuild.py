@@ -1093,7 +1093,7 @@ async def test_retryable_failed_window_is_retried(patch_config_and_stores) -> No
         RuntimeError("missing cost_center"),
     ],
 )
-async def test_deterministic_rebuild_window_failures_are_not_retried(
+async def test_deterministic_setup_failures_are_not_retried(
     patch_config_and_stores, exc: Exception
 ) -> None:
     db_url = patch_config_and_stores
@@ -1105,7 +1105,7 @@ async def test_deterministic_rebuild_window_failures_are_not_retried(
         attempts += 1
         raise exc
 
-    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+    with pytest.raises(type(exc)):
         await rebuild.run_rebuild(
             source_selection="td",
             store_codes=None,
@@ -1118,6 +1118,116 @@ async def test_deterministic_rebuild_window_failures_are_not_retried(
         )
 
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_systemic_type_error_stops_after_first_window(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    attempts: list[tuple[str, date]] = []
+    events: list[dict[str, Any]] = []
+
+    def capture_log_event(**kwargs: Any) -> None:
+        events.append(kwargs)
+
+    monkeypatch.setattr(rebuild, "log_event", capture_log_event)
+
+    async def fetcher(**kwargs):
+        attempts.append((kwargs["store"].store_code, kwargs["window"].start))
+        raise TypeError("launch_browser() takes 0 positional arguments but 1 was given")
+
+    with pytest.raises(TypeError):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 2),
+            window_size_days=1,
+            dry_run=True,
+            run_id="systemic-type-error",
+            fetch_snapshot=fetcher,
+        )
+
+    assert attempts == [("TD001", date(2025, 1, 1))]
+    stop_events = [
+        event
+        for event in events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("status") == "error"
+    ]
+    assert len(stop_events) == 1
+    assert stop_events[0]["failure_class"] == "systemic_setup_failure"
+    assert stop_events[0]["source"] == "td"
+    assert stop_events[0]["store_code"] == "TD001"
+    assert stop_events[0]["window_start"] == "2025-01-01"
+    assert "launch_browser" in stop_events[0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_transient_timeout_retries_and_then_continues_to_next_window(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    attempts: list[date] = []
+
+    async def fetcher(**kwargs):
+        window_start = kwargs["window"].start
+        attempts.append(window_start)
+        if attempts.count(window_start) == 1 and window_start == date(2025, 1, 1):
+            raise TimeoutError("Navigation timeout of 30000 ms exceeded")
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=True,
+        run_id="transient-continues",
+        fetch_snapshot=fetcher,
+    )
+
+    assert attempts == [date(2025, 1, 1), date(2025, 1, 1), date(2025, 1, 2)]
+    assert [(metric.window_start, metric.window_end) for metric in metrics] == [
+        (date(2025, 1, 1), date(2025, 1, 1)),
+        (date(2025, 1, 2), date(2025, 1, 2)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_store_specific_auth_failure_does_not_suppress_other_sources(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    seen: list[str] = []
+
+    async def fetcher(**kwargs):
+        source = kwargs["source"]
+        seen.append(source)
+        if source == "td":
+            raise RuntimeError("401 unauthorized: store authentication failed")
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="both",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="store-auth",
+            fetch_snapshot=fetcher,
+        )
+
+    assert seen == ["td", "uc"]
+    assert exc_info.value.completed_window_count == 1
+    assert exc_info.value.missing_windows == ("td:TD001:2025-01-01..2025-01-01",)
 
 
 @pytest.mark.asyncio
