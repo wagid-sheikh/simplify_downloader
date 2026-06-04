@@ -1,16 +1,60 @@
 from __future__ import annotations
 
+import importlib.util
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 import app.__main__ as app_main
 
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
+
+
+def _load_oli_progress_migration():
+    project_root = Path(__file__).resolve().parents[2]
+    module_path = project_root / "alembic" / "versions" / "0123_oli_rebuild_progress.py"
+    spec = importlib.util.spec_from_file_location(
+        "v0123_oli_rebuild_progress_for_rebuild_tests", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load migration module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_oli_progress_migration = _load_oli_progress_migration()
+
+
+def _run_oli_progress_migration(
+    connection: sa.Connection, fn: Callable[[], None]
+) -> None:
+    context = MigrationContext.configure(connection)
+    operations = Operations(context)
+    original_op = _oli_progress_migration.op
+    _oli_progress_migration.op = operations
+    try:
+        fn()
+    finally:
+        _oli_progress_migration.op = original_op
+
+
+async def _create_oli_progress_table_from_migration(db_url: str) -> None:
+    async with session_scope(db_url) as session:
+        connection = await session.connection()
+        await connection.run_sync(
+            lambda sync_connection: _run_oli_progress_migration(
+                sync_connection, _oli_progress_migration.upgrade
+            )
+        )
+        await session.commit()
 
 
 async def _create_common_tables(db_url: str) -> None:
@@ -48,11 +92,63 @@ async def _create_common_tables(db_url: str) -> None:
             )
         """))
         await session.commit()
+    await _create_oli_progress_table_from_migration(db_url)
 
 
 async def _rows(db_url: str, sql: str) -> list[Any]:
     async with session_scope(db_url) as session:
         return (await session.execute(sa.text(sql))).all()
+
+
+@pytest.mark.asyncio
+async def test_ensure_progress_table_requires_alembic_migration(tmp_path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'missing-progress.sqlite'}"
+
+    with pytest.raises(RuntimeError, match="run Alembic migrations"):
+        await rebuild._ensure_progress_table(db_url)
+
+
+@pytest.mark.asyncio
+async def test_write_progress_works_against_alembic_created_table(tmp_path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'alembic-progress.sqlite'}"
+    await _create_oli_progress_table_from_migration(db_url)
+
+    metrics = rebuild.WindowMetrics(
+        source="td",
+        store_code="TD001",
+        cost_center="CC01",
+        window_start=date(2025, 1, 1),
+        window_end=date(2025, 1, 1),
+        complete_with_rows_orders=2,
+        inserted_rows=3,
+    )
+    await rebuild._write_progress(
+        database_url=db_url,
+        store=rebuild.RebuildStore(source="td", store_code="TD001", cost_center="CC01"),
+        window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 1)),
+        run_id="alembic-shape",
+        status="success",
+        attempt_no=1,
+        metrics=metrics,
+    )
+
+    rows = await _rows(
+        db_url,
+        "SELECT id, source, store_code, run_id, status, complete_with_rows_orders, inserted_rows "
+        "FROM order_line_items_rebuild_progress",
+    )
+    assert [
+        (
+            row.id,
+            row.source,
+            row.store_code,
+            row.run_id,
+            row.status,
+            row.complete_with_rows_orders,
+            row.inserted_rows,
+        )
+        for row in rows
+    ] == [(1, "td", "TD001", "alembic-shape", "success", 2, 3)]
 
 
 @pytest.fixture
