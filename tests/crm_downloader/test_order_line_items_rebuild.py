@@ -2598,3 +2598,147 @@ async def test_source_specific_lower_limit_overrides_thirty_day_cap(
         (date(2025, 1, 11), date(2025, 1, 20)),
         (date(2025, 1, 21), date(2025, 1, 25)),
     ]
+
+
+@pytest.mark.asyncio
+async def test_zero_snapshot_confirmed_source_empty_logs_ok_event(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("zero-confirmed-empty")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[],
+            zero_snapshot_class="confirmed_source_empty",
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="zero-confirmed-empty",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 1
+    zero_events = [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "zero_authoritative_orders_detected_confirmed_source_empty"
+    ]
+    assert zero_events
+    assert zero_events[-1]["status"] == "ok"
+    assert zero_events[-1]["source"] == "td"
+    assert zero_events[-1]["store_code"] == "TD001"
+    assert zero_events[-1]["cost_center"] == "CC01"
+    assert zero_events[-1]["window_start"] == "2025-01-01"
+    assert zero_events[-1]["window_end"] == "2025-01-01"
+    assert zero_events[-1]["dry_run"] is True
+    assert zero_events[-1]["zero_snapshot_class"] == "confirmed_source_empty"
+
+
+@pytest.mark.asyncio
+async def test_zero_snapshot_source_fetch_auth_failure_fails_in_strict_mode(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("zero-auth-failure")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[],
+            zero_snapshot_class="source_fetch_auth_failure",
+        )
+
+    with pytest.raises(rebuild.OrderLineItemsZeroSnapshotDetected) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            fail_on_zero_snapshot=True,
+            run_id="zero-auth-failure",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert exc_info.value.suspicious_window_count == 1
+    zero_events = [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "zero_authoritative_orders_detected_source_fetch_auth_failure"
+    ]
+    assert zero_events
+    assert zero_events[-1]["status"] == "warning"
+    summary_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_zero_snapshot_summary"
+    ]
+    assert summary_events[-1]["status"] == "error"
+    assert summary_events[-1]["fail_on_zero_snapshot"] is True
+
+
+@pytest.mark.asyncio
+async def test_all_selected_windows_zero_in_dry_run_logs_prominent_warning(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("zero-dry-run-summary")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=True,
+        run_id="zero-dry-run-summary",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 2
+    summary_events = [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "all_selected_windows_zero_authoritative_orders_detected"
+    ]
+    assert summary_events
+    assert summary_events[-1]["status"] == "warning"
+    assert summary_events[-1]["dry_run"] is True
+    assert summary_events[-1]["fail_on_zero_snapshot"] is False
+    assert summary_events[-1]["expected_window_count"] == 2
+    assert summary_events[-1]["zero_window_count"] == 2
+    assert summary_events[-1]["suspicious_zero_window_count"] == 2
+    assert [item["window_start"] for item in summary_events[-1]["zero_windows"]] == [
+        "2025-01-01",
+        "2025-01-02",
+    ]
+
+
+def test_cli_parser_accepts_fail_on_zero_snapshot() -> None:
+    args = rebuild._build_parser().parse_args(
+        ["--source", "td", "--dry-run", "--fail-on-zero-snapshot"]
+    )
+
+    assert args.dry_run is True
+    assert args.fail_on_zero_snapshot is True
