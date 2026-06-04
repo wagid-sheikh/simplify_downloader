@@ -80,6 +80,105 @@ def patch_config_and_stores(monkeypatch: pytest.MonkeyPatch, tmp_path):
     return db_url
 
 
+class _FakeAsyncPlaywright:
+    def __init__(self, playwright: Any) -> None:
+        self._playwright = playwright
+
+    async def __aenter__(self) -> Any:
+        return self._playwright
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.contexts: list[_FakeContext] = []
+        self.closed = False
+
+    async def new_context(self, **kwargs: Any) -> "_FakeContext":
+        context = _FakeContext(**kwargs)
+        self.contexts.append(context)
+        return context
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeContext:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.pages: list[_FakePage] = []
+
+    async def new_page(self) -> "_FakePage":
+        page = _FakePage()
+        self.pages.append(page)
+        return page
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.goto_calls: list[tuple[str, str | None]] = []
+
+    async def goto(self, url: str, *, wait_until: str | None = None) -> None:
+        self.goto_calls.append((url, wait_until))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["td", "uc"])
+async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
+    monkeypatch: pytest.MonkeyPatch, source: rebuild.Source
+) -> None:
+    playwright = SimpleNamespace(name=f"{source}-playwright")
+    browser = _FakeBrowser()
+    logger = SimpleNamespace(name=f"{source}-logger")
+    launch_calls: list[tuple[Any, Any]] = []
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(playwright),
+    )
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        launch_calls.append((playwright, logger))
+        return browser
+
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+
+    class FakeTdApiClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+        async def fetch_reports(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(garments_rows=[], garment_order_snapshots=[])
+
+    async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            order_detail_rows=[], order_detail_snapshot_rows=[]
+        )
+
+    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+    monkeypatch.setattr(
+        rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
+    )
+
+    snapshot = await rebuild.default_fetch_snapshot(
+        source=source,
+        store=rebuild.RebuildStore(
+            source=source,
+            store_code=f"{source.upper()}001",
+            cost_center="CC01",
+            raw_store=SimpleNamespace(home_url="https://example.test/home"),
+        ),
+        window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 2)),
+        run_id=f"{source}-run",
+        logger=logger,
+    )
+
+    assert snapshot == rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+    assert launch_calls == [(playwright, logger)]
+    assert browser.closed is True
+
 def test_bounded_window_progression() -> None:
     windows = rebuild.iter_windows(date(2025, 1, 1), date(2025, 1, 10), 4)
     assert [(w.start, w.end) for w in windows] == [
