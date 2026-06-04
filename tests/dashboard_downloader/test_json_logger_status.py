@@ -20,3 +20,7 @@ def test_logger_rejects_unknown_status_value() -> None:
 def test_logger_accepts_all_allowed_statuses(status: str) -> None:
     logger = JsonLogger(run_id="test", stream=io.StringIO(), log_file_path=None)
     logger.info(phase="unit", status=status, message=f"{status} event")
+
+
+def test_logger_status_values_are_exact_allowed_contract() -> None:
+    assert LOG_STATUSES == frozenset({"debug", "info", "ok", "warning", "error"})

@@ -2247,6 +2247,219 @@ def test_garments_incomplete_reason_normalizes_operator_categories() -> None:
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_garments_har_shaped_empty_count_zero_is_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a668", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "payload": {"success": True, "data": {"rows": [], "count": 0}},
+                "error": None,
+                "status": 200,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "application/json",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-06-03", "endDate": "2026-06-04", "page": 1, "pageSize": 100},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert result["data"] == []
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_incomplete_reason"] is None
+    assert health["reported_total_rows"] == 0
+    assert health["parsed_row_count"] == 0
+    assert health["stop_reason"] == "empty_page"
+
+
+@pytest.mark.asyncio
+async def test_garments_har_shaped_non_empty_response_is_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a668", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "payload": {"success": True, "data": {"rows": [{"barcode": "A668-G-1"}], "count": 1}},
+                "error": None,
+                "status": 200,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "application/json",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-06-03", "endDate": "2026-06-04", "page": 1, "pageSize": 100},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert result["data"] == [{"barcode": "A668-G-1"}]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_incomplete_reason"] is None
+    assert health["reported_total_rows"] == 1
+    assert health["parsed_row_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_garments_malformed_payload_logs_sanitized_shape_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = TdApiClient(store_code="a668", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "payload": {"success": True, "data": {"count": 5, "unexpected": [{"barcode": "SHOULD_NOT_LOG"}]}},
+                "error": None,
+                "status": 200,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "application/json; charset=utf-8",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    with caplog.at_level(logging.ERROR, logger="app.crm_downloader.td_orders_sync.td_api_client"):
+        await client._fetch_endpoint_rows(
+            endpoint="/garments/details",
+            params={"startDate": "2026-06-03", "endDate": "2026-06-04", "page": 1, "pageSize": 100},
+            metadata=[],
+            errors={},
+            error_diagnostics={},
+            endpoint_health=endpoint_health,
+        )
+
+    health = endpoint_health["/garments/details"]
+    diagnostic = health["payload_shape_diagnostic"]
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["stop_reason"] == "parsing_failure"
+    assert diagnostic == {
+        "top_level_keys": ["data", "success"],
+        "data_type": "dict",
+        "data_keys": ["count", "unexpected"],
+        "content_type": "application/json; charset=utf-8",
+        "status": 200,
+        "payload_type": "dict",
+    }
+    assert "SHOULD_NOT_LOG" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_garments_html_auth_payload_is_payload_error_not_parsing_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a668", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "payload": "<html><body>login required</body></html>",
+                "error": None,
+                "status": 200,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "text/html",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    errors: dict[str, str] = {}
+
+    await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-06-03", "endDate": "2026-06-04", "page": 1, "pageSize": 100},
+        metadata=[],
+        errors=errors,
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert errors["/garments/details"] == "html_auth_payload"
+    assert health["final_error_class"] == "html_auth_payload"
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["stop_reason"] == "payload_error"
+    assert health["garments_incomplete_reason"] == {"code": "endpoint_error", "message": "endpoint error"}
+
+
+@pytest.mark.asyncio
+async def test_garments_alternate_nested_data_shape_is_supported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a668", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "payload": {"success": True, "data": {"payload": {"records": [{"barcode": "A668-NESTED-1"}], "count": 1}}},
+                "error": None,
+                "status": 200,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "application/json",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-06-03", "endDate": "2026-06-04", "page": 1, "pageSize": 100},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert result["data"] == [{"barcode": "A668-NESTED-1"}]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["reported_total_rows"] == 1
+    assert health["parsed_row_count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_garments_har_shaped_count_rows_and_barcode_ids_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TdApiClient(
