@@ -47,6 +47,11 @@ Source = Literal["td", "uc"]
 SnapshotOutcome = Literal[
     "complete_with_rows", "complete_empty", "incomplete_or_failed"
 ]
+ZeroSnapshotClass = Literal[
+    "confirmed_source_empty",
+    "source_fetch_auth_failure",
+    "unknown_ambiguous_empty",
+]
 
 FailureClass = Literal[
     "retryable_transient_failure",
@@ -158,6 +163,7 @@ class RebuildPreflightResult:
 class SourceSnapshot:
     line_item_rows: list[Mapping[str, Any]] = field(default_factory=list)
     order_snapshots: list[Mapping[str, Any]] = field(default_factory=list)
+    zero_snapshot_class: ZeroSnapshotClass | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,25 @@ class OrderLineItemsRebuildIncomplete(Exception):
         )
 
 
+@dataclass(frozen=True)
+class OrderLineItemsZeroSnapshotDetected(Exception):
+    run_id: str
+    zero_window_count: int
+    expected_window_count: int
+    suspicious_window_count: int
+    zero_windows: tuple[str, ...]
+
+    def __str__(self) -> str:
+        preview = ", ".join(self.zero_windows[:5])
+        suffix = "" if len(self.zero_windows) <= 5 else ", ..."
+        return (
+            "order_line_items rebuild zero authoritative-order snapshot detected "
+            f"run_id={self.run_id} zero_windows={self.zero_window_count}/"
+            f"{self.expected_window_count} suspicious={self.suspicious_window_count}"
+            f" windows=[{preview}{suffix}]"
+        )
+
+
 @dataclass
 class WindowMetrics:
     source: Source
@@ -197,6 +222,7 @@ class WindowMetrics:
     inserted_rows: int = 0
     orphan_rows: int = 0
     dry_run: bool = False
+    zero_snapshot_class: ZeroSnapshotClass | None = None
 
     def checkpoint(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -206,6 +232,7 @@ class WindowMetrics:
             "window_start": self.window_start.isoformat(),
             "window_end": self.window_end.isoformat(),
             "dry_run": self.dry_run,
+            "zero_snapshot_class": self.zero_snapshot_class,
             "inspected_orders": self.inspected_orders,
             "complete_with_rows_orders": self.complete_with_rows_orders,
             "complete_empty_orders": self.complete_empty_orders,
@@ -217,6 +244,31 @@ class WindowMetrics:
         if self.uc_child_run_id:
             payload["uc_child_run_id"] = self.uc_child_run_id
         return payload
+
+
+def _is_zero_authoritative_snapshot(metrics: WindowMetrics) -> bool:
+    return (
+        metrics.inspected_orders == 0
+        and metrics.complete_with_rows_orders == 0
+        and metrics.complete_empty_orders == 0
+        and metrics.skipped_incomplete_orders == 0
+    )
+
+
+def _zero_snapshot_class(snapshot: SourceSnapshot) -> ZeroSnapshotClass:
+    return snapshot.zero_snapshot_class or "unknown_ambiguous_empty"
+
+
+def _zero_snapshot_status(zero_snapshot_class: ZeroSnapshotClass) -> str:
+    return "ok" if zero_snapshot_class == "confirmed_source_empty" else "warning"
+
+
+def _zero_snapshot_message(zero_snapshot_class: ZeroSnapshotClass) -> str:
+    if zero_snapshot_class == "confirmed_source_empty":
+        return "zero_authoritative_orders_detected_confirmed_source_empty"
+    if zero_snapshot_class == "source_fetch_auth_failure":
+        return "zero_authoritative_orders_detected_source_fetch_auth_failure"
+    return "zero_authoritative_orders_detected_unknown_ambiguous_empty"
 
 
 class SnapshotFetcher(Protocol):
@@ -345,6 +397,7 @@ async def _dry_run_metrics(
     window: RebuildWindow,
     snapshot: SourceSnapshot,
     database_url: str,
+    zero_snapshot_class: ZeroSnapshotClass | None = None,
 ) -> WindowMetrics:
     snapshots = list(snapshot.order_snapshots)
     complete_with_rows = [
@@ -390,6 +443,7 @@ async def _dry_run_metrics(
             inserted_rows_by_order=rows_by_order,
         ),
         dry_run=True,
+        zero_snapshot_class=zero_snapshot_class,
     )
 
 
@@ -460,6 +514,7 @@ def _td_metrics_from_result(
     window: RebuildWindow,
     result: TdGarmentIngestResult,
     dry_run: bool,
+    zero_snapshot_class: ZeroSnapshotClass | None = None,
 ) -> WindowMetrics:
     return WindowMetrics(
         source="td",
@@ -475,6 +530,7 @@ def _td_metrics_from_result(
         inserted_rows=result.inserted_final_rows,
         orphan_rows=result.orphan_rows,
         dry_run=dry_run,
+        zero_snapshot_class=zero_snapshot_class,
     )
 
 
@@ -505,6 +561,7 @@ async def rebuild_window(
             window=window,
             snapshot=snapshot,
             database_url=database_url,
+            zero_snapshot_class=_zero_snapshot_class(snapshot),
         )
     elif source == "td":
         result = await ingest_td_garment_rows(
@@ -520,7 +577,11 @@ async def rebuild_window(
             database_url=database_url,
         )
         metrics = _td_metrics_from_result(
-            store=store, window=window, result=result, dry_run=False
+            store=store,
+            window=window,
+            result=result,
+            dry_run=False,
+            zero_snapshot_class=_zero_snapshot_class(snapshot),
         )
     else:
         assert uc_child_run_id is not None
@@ -551,10 +612,37 @@ async def rebuild_window(
             inserted_rows=result.inserted_final_rows,
             orphan_rows=result.orphan_rows,
             dry_run=False,
+            zero_snapshot_class=_zero_snapshot_class(snapshot),
         )
 
     if uc_child_run_id and metrics.uc_child_run_id is None:
         metrics.uc_child_run_id = uc_child_run_id
+
+    if _is_zero_authoritative_snapshot(metrics):
+        metrics.zero_snapshot_class = metrics.zero_snapshot_class or (
+            "unknown_ambiguous_empty"
+        )
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_zero_snapshot",
+            status=_zero_snapshot_status(metrics.zero_snapshot_class),
+            message=_zero_snapshot_message(metrics.zero_snapshot_class),
+            run_id=run_id,
+            source=metrics.source,
+            store_code=metrics.store_code,
+            cost_center=metrics.cost_center,
+            window_start=metrics.window_start.isoformat(),
+            window_end=metrics.window_end.isoformat(),
+            dry_run=metrics.dry_run,
+            zero_snapshot_class=metrics.zero_snapshot_class,
+            inspected_orders=metrics.inspected_orders,
+            complete_with_rows_orders=metrics.complete_with_rows_orders,
+            complete_empty_orders=metrics.complete_empty_orders,
+            skipped_incomplete_orders=metrics.skipped_incomplete_orders,
+            uc_child_run_id=metrics.uc_child_run_id,
+        )
+    else:
+        metrics.zero_snapshot_class = None
 
     log_event(
         logger=logger,
@@ -857,7 +945,9 @@ def _window_status(row: Mapping[str, Any] | None) -> str | None:
 
 
 def _browser_backend() -> str:
-    return str(getattr(config, "pdf_render_backend", None) or "bundled_chromium").lower()
+    return str(
+        getattr(config, "pdf_render_backend", None) or "bundled_chromium"
+    ).lower()
 
 
 class _PreflightChromiumProbe:
@@ -1118,6 +1208,7 @@ async def run_rebuild(
     end_date: date | None,
     window_size_days: int | None,
     dry_run: bool,
+    fail_on_zero_snapshot: bool = False,
     resume: bool = False,
     resume_run_id: str | None = None,
     run_id: str | None = None,
@@ -1185,6 +1276,7 @@ async def run_rebuild(
         requested_window_size_days=window_size_days,
         max_source_window_days=30,
         dry_run=dry_run,
+        fail_on_zero_snapshot=fail_on_zero_snapshot,
         resume=resume,
         resume_scope="source_store_window" if resume else None,
         resume_run_id_filter=resume_run_id,
@@ -1423,6 +1515,100 @@ async def run_rebuild(
             missing_window_count=len(missing_windows),
             missing_windows=compact_missing_windows,
         )
+
+    zero_metrics = [
+        metric for metric in metrics if _is_zero_authoritative_snapshot(metric)
+    ]
+    suspicious_zero_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class != "confirmed_source_empty"
+    ]
+    all_selected_windows_zero = bool(metrics) and len(zero_metrics) == len(metrics)
+    if dry_run and all_selected_windows_zero:
+        zero_windows = tuple(
+            _compact_window_identifier(
+                metric.source,
+                metric.store_code,
+                metric.window_start,
+                metric.window_end,
+            )
+            for metric in zero_metrics
+        )
+        should_fail_zero_snapshot = fail_on_zero_snapshot and bool(
+            suspicious_zero_metrics
+        )
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_zero_snapshot_summary",
+            status="error" if should_fail_zero_snapshot else "warning",
+            message=("all_selected_windows_zero_authoritative_orders_detected"),
+            run_id=run_id,
+            dry_run=dry_run,
+            fail_on_zero_snapshot=fail_on_zero_snapshot,
+            expected_window_count=len(expected_windows),
+            zero_window_count=len(zero_metrics),
+            suspicious_zero_window_count=len(suspicious_zero_metrics),
+            zero_windows=[
+                {
+                    "source": metric.source,
+                    "store_code": metric.store_code,
+                    "cost_center": metric.cost_center,
+                    "window_start": metric.window_start.isoformat(),
+                    "window_end": metric.window_end.isoformat(),
+                    "zero_snapshot_class": metric.zero_snapshot_class,
+                }
+                for metric in zero_metrics
+            ],
+        )
+        if should_fail_zero_snapshot:
+            raise OrderLineItemsZeroSnapshotDetected(
+                run_id=run_id,
+                zero_window_count=len(zero_metrics),
+                expected_window_count=len(expected_windows),
+                suspicious_window_count=len(suspicious_zero_metrics),
+                zero_windows=zero_windows,
+            )
+    elif fail_on_zero_snapshot and suspicious_zero_metrics:
+        zero_windows = tuple(
+            _compact_window_identifier(
+                metric.source,
+                metric.store_code,
+                metric.window_start,
+                metric.window_end,
+            )
+            for metric in suspicious_zero_metrics
+        )
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_zero_snapshot_summary",
+            status="error",
+            message="suspicious_zero_authoritative_orders_detected",
+            run_id=run_id,
+            dry_run=dry_run,
+            fail_on_zero_snapshot=fail_on_zero_snapshot,
+            expected_window_count=len(expected_windows),
+            zero_window_count=len(zero_metrics),
+            suspicious_zero_window_count=len(suspicious_zero_metrics),
+            zero_windows=[
+                {
+                    "source": metric.source,
+                    "store_code": metric.store_code,
+                    "cost_center": metric.cost_center,
+                    "window_start": metric.window_start.isoformat(),
+                    "window_end": metric.window_end.isoformat(),
+                    "zero_snapshot_class": metric.zero_snapshot_class,
+                }
+                for metric in suspicious_zero_metrics
+            ],
+        )
+        raise OrderLineItemsZeroSnapshotDetected(
+            run_id=run_id,
+            zero_window_count=len(zero_metrics),
+            expected_window_count=len(expected_windows),
+            suspicious_window_count=len(suspicious_zero_metrics),
+            zero_windows=zero_windows,
+        )
     return metrics
 
 
@@ -1459,6 +1645,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Requested CRM source window size in days; source fetches are capped at 30 days",
+    )
+    parser.add_argument(
+        "--fail-on-zero-snapshot",
+        action="store_true",
+        help=(
+            "Fail when a completed window returns a suspicious zero authoritative-order snapshot; "
+            "confirmed source-empty windows remain informational."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -1510,11 +1704,15 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
             end_date=args.end_date,
             window_size_days=args.window_size,
             dry_run=args.dry_run,
+            fail_on_zero_snapshot=args.fail_on_zero_snapshot,
             resume=args.resume,
             resume_run_id=args.resume_run_id,
             run_id=args.run_id,
         )
-    except OrderLineItemsRebuildIncomplete as exc:
+    except (
+        OrderLineItemsRebuildIncomplete,
+        OrderLineItemsZeroSnapshotDetected,
+    ) as exc:
         raise SystemExit(1) from exc
 
 
