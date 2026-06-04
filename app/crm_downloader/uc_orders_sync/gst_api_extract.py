@@ -109,7 +109,65 @@ class GstApiExtract:
     gst_orders_without_payments: int = 0
     invoice_retry_count: int = 0
     source_fetch_status: str | None = None
+    source_fetch_error_class: str | None = None
+    source_fetch_failure_reason: str | None = None
+    confirmed_empty: bool = False
     extractor_status: str | None = None
+
+
+def _log_gst_api_extract_complete(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    extract: GstApiExtract,
+) -> None:
+    log_event(
+        logger=logger,
+        phase="gst_api_extract",
+        message="GST API experimental extraction complete",
+        store_code=store_code,
+        gst_rows=len(extract.gst_rows),
+        base_rows=len(extract.base_rows),
+        order_detail_rows=len(extract.order_detail_rows),
+        payment_detail_rows=len(extract.payment_detail_rows),
+        order_detail_snapshot_rows=len(extract.order_detail_snapshot_rows),
+        booking_lookup_hits=extract.booking_lookup_hits,
+        booking_lookup_misses=extract.booking_lookup_misses,
+        delivered_rows_scanned=extract.delivered_rows_scanned,
+        delivered_rows_matched_gst=extract.delivered_rows_matched_gst,
+        delivered_payment_rows_produced=extract.delivered_payment_rows_produced,
+        gst_orders_without_payments=extract.gst_orders_without_payments,
+        invoice_retry_count=extract.invoice_retry_count,
+        skipped_order_counters=extract.skipped_order_counters,
+        source_fetch_status=extract.source_fetch_status,
+        source_fetch_error_class=extract.source_fetch_error_class,
+        source_fetch_failure_reason=extract.source_fetch_failure_reason,
+        confirmed_empty=extract.confirmed_empty,
+        extractor_status=extract.extractor_status,
+    )
+
+
+def _log_gst_api_source_fetch_failure(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    extract: GstApiExtract,
+    message: str,
+) -> None:
+    log_event(
+        logger=logger,
+        phase="gst_api_extract",
+        status="warning",
+        message=message,
+        store_code=store_code,
+        gst_rows=len(extract.gst_rows),
+        source_fetch_status=extract.source_fetch_status,
+        source_fetch_error_class=extract.source_fetch_error_class,
+        source_fetch_failure_reason=extract.source_fetch_failure_reason,
+        confirmed_empty=extract.confirmed_empty,
+        extractor_status=extract.extractor_status,
+        skipped_order_counters=extract.skipped_order_counters,
+    )
 
 
 def _record_skip(extract: GstApiExtract, *, order_code: str, reason: str) -> None:
@@ -459,15 +517,51 @@ async def collect_gst_orders_via_api(
     )
     if not isinstance(payload, Mapping):
         extract.source_fetch_status = "failed"
+        extract.source_fetch_error_class = "gst_api_failed"
+        extract.source_fetch_failure_reason = "GST API request did not return a JSON mapping"
         extract.extractor_status = "failed"
         _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_failed")
+        _log_gst_api_source_fetch_failure(
+            logger=logger,
+            store_code=store_code,
+            extract=extract,
+            message="GST API source fetch failed",
+        )
+        _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
         return extract
 
     rows = payload.get("data")
     if not isinstance(rows, list):
-        extract.source_fetch_status = "invalid_data"
+        extract.source_fetch_status = "failed"
+        extract.source_fetch_error_class = "gst_api_invalid_data"
+        extract.source_fetch_failure_reason = "GST API payload data field was not a list"
         extract.extractor_status = "failed"
         _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_invalid_data")
+        _log_gst_api_source_fetch_failure(
+            logger=logger,
+            store_code=store_code,
+            extract=extract,
+            message="GST API source payload data was invalid",
+        )
+        _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
+        return extract
+
+    if not rows:
+        extract.source_fetch_status = "complete"
+        extract.confirmed_empty = True
+        extract.extractor_status = "success"
+        log_event(
+            logger=logger,
+            phase="gst_api_extract",
+            status="info",
+            message="GST API source returned no rows",
+            store_code=store_code,
+            gst_rows=0,
+            source_fetch_status=extract.source_fetch_status,
+            confirmed_empty=extract.confirmed_empty,
+            extractor_status=extract.extractor_status,
+        )
+        _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
         return extract
 
     extract.source_fetch_status = "success"
@@ -621,25 +715,5 @@ async def collect_gst_orders_via_api(
 
     extract.extractor_status = "success" if not extract.skipped_order_counters else "partial"
 
-    log_event(
-        logger=logger,
-        phase="gst_api_extract",
-        message="GST API experimental extraction complete",
-        store_code=store_code,
-        gst_rows=len(extract.gst_rows),
-        base_rows=len(extract.base_rows),
-        order_detail_rows=len(extract.order_detail_rows),
-        payment_detail_rows=len(extract.payment_detail_rows),
-        order_detail_snapshot_rows=len(extract.order_detail_snapshot_rows),
-        booking_lookup_hits=extract.booking_lookup_hits,
-        booking_lookup_misses=extract.booking_lookup_misses,
-        delivered_rows_scanned=extract.delivered_rows_scanned,
-        delivered_rows_matched_gst=extract.delivered_rows_matched_gst,
-        delivered_payment_rows_produced=extract.delivered_payment_rows_produced,
-        gst_orders_without_payments=extract.gst_orders_without_payments,
-        invoice_retry_count=extract.invoice_retry_count,
-        skipped_order_counters=extract.skipped_order_counters,
-        source_fetch_status=extract.source_fetch_status,
-        extractor_status=extract.extractor_status,
-    )
+    _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
     return extract

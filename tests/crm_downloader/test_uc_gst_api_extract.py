@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
+from io import StringIO
 
 from app.crm_downloader.uc_orders_sync import gst_api_extract
 from app.crm_downloader.uc_orders_sync.gst_api_extract import collect_gst_orders_via_api
-from app.dashboard_downloader.json_logger import get_logger
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger
 
 
 class _FakePage:
     pass
+
+
+def _memory_logger() -> tuple[JsonLogger, StringIO]:
+    stream = StringIO()
+    return JsonLogger(run_id="test_uc_gst_api_extract", stream=stream, log_file_path=None), stream
+
+
+def _logged_events(stream: StringIO) -> list[dict[str, object]]:
+    return [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
 
 
 def test_collect_gst_orders_via_api_keeps_base_row_when_invoice_fetch_fails(monkeypatch) -> None:
@@ -361,3 +372,185 @@ def test_collect_gst_orders_via_api_dedupes_payment_rows_with_overlap(monkeypatc
     assert extract.payment_detail_rows[0]["order_code"] == "UC610-OVERLAP-1"
     assert extract.delivered_rows_matched_gst == 2
     assert extract.gst_orders_without_payments == 0
+
+
+def test_collect_gst_orders_via_api_failed_payload_logs_and_returns_failed_status(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        return None
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    logger, stream = _memory_logger()
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert extract.source_fetch_status == "failed"
+    assert extract.source_fetch_error_class == "gst_api_failed"
+    assert extract.source_fetch_failure_reason == "GST API request did not return a JSON mapping"
+    assert extract.confirmed_empty is False
+    assert extract.extractor_status == "failed"
+    assert extract.skipped_order_counters == {"gst_api_failed": 1}
+
+    events = _logged_events(stream)
+    assert any(
+        event["phase"] == "gst_api_extract"
+        and event["status"] == "warning"
+        and event["source_fetch_status"] == "failed"
+        and event["source_fetch_error_class"] == "gst_api_failed"
+        for event in events
+    )
+    assert events[-1]["message"] == "GST API experimental extraction complete"
+    assert events[-1]["source_fetch_status"] == "failed"
+    assert events[-1]["source_fetch_error_class"] == "gst_api_failed"
+
+
+def test_collect_gst_orders_via_api_invalid_payload_logs_and_returns_failed_status(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        return {"data": {"unexpected": "mapping"}}
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    logger, stream = _memory_logger()
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert extract.source_fetch_status == "failed"
+    assert extract.source_fetch_error_class == "gst_api_invalid_data"
+    assert extract.source_fetch_failure_reason == "GST API payload data field was not a list"
+    assert extract.confirmed_empty is False
+    assert extract.extractor_status == "failed"
+    assert extract.skipped_order_counters == {"gst_api_invalid_data": 1}
+
+    events = _logged_events(stream)
+    assert any(
+        event["phase"] == "gst_api_extract"
+        and event["status"] == "warning"
+        and event["source_fetch_status"] == "failed"
+        and event["source_fetch_error_class"] == "gst_api_invalid_data"
+        for event in events
+    )
+    assert events[-1]["message"] == "GST API experimental extraction complete"
+    assert events[-1]["source_fetch_error_class"] == "gst_api_invalid_data"
+
+
+def test_collect_gst_orders_via_api_empty_data_logs_confirmed_empty(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        return {"data": []}
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    logger, stream = _memory_logger()
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert extract.source_fetch_status == "complete"
+    assert extract.source_fetch_error_class is None
+    assert extract.source_fetch_failure_reason is None
+    assert extract.confirmed_empty is True
+    assert extract.extractor_status == "success"
+    assert extract.skipped_order_counters == {}
+    assert extract.gst_rows == []
+
+    events = _logged_events(stream)
+    assert any(
+        event["phase"] == "gst_api_extract"
+        and event["message"] == "GST API source returned no rows"
+        and event["gst_rows"] == 0
+        and event["source_fetch_status"] == "complete"
+        and event["confirmed_empty"] is True
+        for event in events
+    )
+    assert events[-1]["message"] == "GST API experimental extraction complete"
+    assert events[-1]["gst_rows"] == 0
+    assert events[-1]["confirmed_empty"] is True
+
+
+def test_collect_gst_orders_via_api_non_empty_data_preserves_current_status(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        if method == "POST":
+            return {
+                "data": [
+                    {
+                        "order_number": "UC610-0006",
+                        "invoice_number": "INV-006",
+                        "invoice_date": "2026-01-06",
+                        "name": "Test User 6",
+                        "customer_phone": "9999999986",
+                        "store_address": "Store Address",
+                        "city_name": "Pune",
+                        "taxable_value": 100,
+                        "cgst": 9,
+                        "sgst": 9,
+                        "total_tax": 18,
+                        "final_amount": 118,
+                        "payment_status": "Paid",
+                    }
+                ]
+            }
+        return {"data": []}
+
+    async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
+        return None, None
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_resolve_booking_id_for_order", _fake_resolve_booking_id_for_order)
+    logger, stream = _memory_logger()
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert extract.source_fetch_status == "success"
+    assert extract.source_fetch_error_class is None
+    assert extract.source_fetch_failure_reason is None
+    assert extract.confirmed_empty is False
+    assert len(extract.gst_rows) == 1
+    assert len(extract.base_rows) == 1
+
+    events = _logged_events(stream)
+    assert events[-1]["message"] == "GST API experimental extraction complete"
+    assert events[-1]["source_fetch_status"] == "success"
+    assert events[-1]["confirmed_empty"] is False
