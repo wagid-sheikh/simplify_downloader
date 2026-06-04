@@ -382,6 +382,12 @@ poetry run python -m app crm rebuild-order-line-items --source both
 # Interrupted live recovery: continue a previously interrupted live rebuild.
 poetry run python -m app crm rebuild-order-line-items --source both --resume
 
+# Stricter interrupted recovery: only reuse progress from a specific prior run ID.
+poetry run python -m app crm rebuild-order-line-items --source both --resume --resume-run-id PRIOR_RUN_ID
+
+# Explicit fresh/live intent; equivalent to omitting --resume.
+poetry run python -m app crm rebuild-order-line-items --source both --fresh
+
 # Optional local wrapper for the same CLI; pass the same flags after the script name.
 bash scripts/run_local_order_line_items_rebuild.sh --source both --from-date YYYY-MM-DD --to-date YYYY-MM-DD --window-days 7 --dry-run
 ```
@@ -390,10 +396,10 @@ Operational behavior and limitations:
 
 - Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
 - CRM source fetch windows are capped at 30 days. Omitted `--window-size`/`--window-days` resolves to CRM-safe source windows capped at 30 days, and a lower store/source config limit is honored. Larger explicit values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`; when `--end-date`/`--to-date` is omitted, the rebuild ends on the current pipeline date (`aware_now(get_timezone()).date()`). Explicit dates remain supported for smoke tests and dry runs.
-- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items`, staging tables, or live resume progress. Dry-run window results are log-only: a dry run is useful as a small smoke test, but it does not prepare or advance a later live `--resume`. The normal first live full rebuild omits `--resume`; use `--resume` only to recover a live rebuild that was interrupted after it had written live progress rows.
+- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items`, staging tables, or live resume progress. Dry-run window results are log-only: a dry run is useful as a small smoke test, but it does not prepare or advance a later live `--resume`. The normal first live full rebuild omits `--resume`; use `--fresh`/`--ignore-progress` when you want that intent to be explicit. Use `--resume` only to recover a live rebuild that was interrupted after it had written live progress rows.
 - TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
 - Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
-- Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses live-run rows in `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; dry-run rows are not written by the current rebuild and any legacy dry-run rows are ignored for resume decisions. The rebuild reports any missing windows at completion.
+- Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses live-run rows in `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; it is not tied to the current run ID. Rebuild start logs state that resume scope explicitly, and skipped-window logs include the prior progress row's run ID, `updated_at`, status, and metric counts. Add `--resume-run-id PRIOR_RUN_ID` when recovery must only trust progress from one prior run. Dry-run rows are not written by the current rebuild and any legacy dry-run rows are ignored for resume decisions. The rebuild reports any missing windows at completion.
 - The default source fetchers rely on valid CRM browser storage-state/auth context. If CRM auth has expired, refresh normal TD/UC sessions first and rerun the rebuild.
 
 ## Legacy markdown status (triaged)

@@ -708,17 +708,21 @@ async def _ensure_progress_table(database_url: str) -> None:
 
 async def _fetch_progress_rows(
     database_url: str,
+    *,
+    resume_run_id: str | None = None,
 ) -> dict[tuple[Source, str, date, date], Mapping[str, Any]]:
     await _ensure_progress_table(database_url)
     async with session_scope(database_url) as session:
         # Resume progress is a live-run contract. Legacy dry-run rows must not
         # cause a mutating rebuild to skip a window that was only simulated.
-        result = await session.execute(
-            sa.text(
-                "SELECT * FROM order_line_items_rebuild_progress "
-                "WHERE dry_run = FALSE"
-            )
+        progress_sql = (
+            "SELECT * FROM order_line_items_rebuild_progress " "WHERE dry_run = FALSE"
         )
+        params: dict[str, Any] = {}
+        if resume_run_id:
+            progress_sql += " AND run_id = :resume_run_id"
+            params["resume_run_id"] = resume_run_id
+        result = await session.execute(sa.text(progress_sql), params)
         rows: dict[tuple[Source, str, date, date], Mapping[str, Any]] = {}
         for row in result.mappings():
             window_start = _coerce_date(row.get("window_start"))
@@ -795,6 +799,32 @@ async def _write_progress(
         await session.commit()
 
 
+def _prior_progress_metadata(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    updated_at = row.get("updated_at")
+    if isinstance(updated_at, datetime):
+        prior_updated_at: str | None = updated_at.isoformat()
+    elif updated_at is None:
+        prior_updated_at = None
+    else:
+        prior_updated_at = str(updated_at)
+    prior_metrics_counts = {
+        "complete_with_rows_orders": int(row.get("complete_with_rows_orders") or 0),
+        "complete_empty_orders": int(row.get("complete_empty_orders") or 0),
+        "skipped_incomplete_orders": int(row.get("skipped_incomplete_orders") or 0),
+        "deleted_rows": int(row.get("deleted_rows") or 0),
+        "inserted_rows": int(row.get("inserted_rows") or 0),
+        "orphan_rows": int(row.get("orphan_rows") or 0),
+    }
+    return {
+        "prior_run_id": row.get("run_id"),
+        "prior_updated_at": prior_updated_at,
+        "prior_status": row.get("status"),
+        "prior_metrics_counts": prior_metrics_counts,
+    }
+
+
 def _is_success_status(status: Any) -> bool:
     return str(status or "").strip().lower() in {"success", "success_with_warnings"}
 
@@ -847,10 +877,13 @@ async def run_rebuild(
     window_size_days: int | None,
     dry_run: bool,
     resume: bool = False,
+    resume_run_id: str | None = None,
     run_id: str | None = None,
     logger: JsonLogger | None = None,
     fetch_snapshot: SnapshotFetcher = default_fetch_snapshot,
 ) -> list[WindowMetrics]:
+    if resume_run_id and not resume:
+        raise ValueError("resume_run_id requires resume=True")
     if not config.database_url:
         raise RuntimeError(
             "database_url is required for order_line_items historical rebuild"
@@ -881,7 +914,11 @@ async def run_rebuild(
             )
             for store in stores
         ]
-    progress_rows = await _fetch_progress_rows(config.database_url) if resume else {}
+    progress_rows = (
+        await _fetch_progress_rows(config.database_url, resume_run_id=resume_run_id)
+        if resume
+        else {}
+    )
     metrics: list[WindowMetrics] = []
     expected_windows: set[tuple[Source, str, date, date]] = set()
     successful_windows: set[tuple[Source, str, date, date]] = set()
@@ -899,7 +936,24 @@ async def run_rebuild(
         max_source_window_days=30,
         dry_run=dry_run,
         resume=resume,
+        resume_scope="source_store_window" if resume else None,
+        resume_run_id_filter=resume_run_id,
+        resume_ignores_current_run_id=bool(resume and resume_run_id is None),
     )
+    if resume:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_resume_scope",
+            status="info",
+            message=(
+                "order_line_items rebuild resume matches prior progress by "
+                "source/store/window, not the current run ID"
+            ),
+            run_id=run_id,
+            resume_scope="source_store_window",
+            resume_run_id_filter=resume_run_id,
+            resume_ignores_current_run_id=resume_run_id is None,
+        )
     for store in stores:
         store_start_date = start_date or store.start_date
         if store_start_date is None:
@@ -939,6 +993,7 @@ async def run_rebuild(
                     uc_child_run_id=uc_child_run_id,
                     dry_run=dry_run,
                     resume=resume,
+                    **_prior_progress_metadata(existing),
                 )
                 continue
             if (
@@ -964,9 +1019,9 @@ async def run_rebuild(
                     window_start=window.start.isoformat(),
                     window_end=window.end.isoformat(),
                     uc_child_run_id=uc_child_run_id,
-                    prior_status=existing_status,
                     dry_run=dry_run,
                     resume=resume,
+                    **_prior_progress_metadata(existing),
                 )
                 continue
             max_attempts = 2 if existing is None or existing_status else 1
@@ -1170,8 +1225,24 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Skip successful live windows recorded in "
-            "order_line_items_rebuild_progress and retry retryable failures"
+            "order_line_items_rebuild_progress by source/store/window and retry "
+            "retryable failures. This is not tied to the current --run-id."
         ),
+    )
+    parser.add_argument(
+        "--resume-run-id",
+        default=None,
+        help=(
+            "Only consider live progress rows from this prior run ID when --resume "
+            "is used; useful when source/store/window resume is too broad."
+        ),
+    )
+    parser.add_argument(
+        "--fresh",
+        "--ignore-progress",
+        dest="fresh",
+        action="store_true",
+        help="Explicitly ignore order_line_items_rebuild_progress (default without --resume).",
     )
     parser.add_argument("--run-id", default=None)
     return parser
@@ -1179,6 +1250,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(list(argv) if argv is not None else None)
+    if args.fresh and args.resume:
+        raise SystemExit("--fresh/--ignore-progress cannot be combined with --resume")
+    if args.resume_run_id and not args.resume:
+        raise SystemExit("--resume-run-id requires --resume")
     try:
         await run_rebuild(
             source_selection=args.source,
@@ -1188,6 +1263,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
             window_size_days=args.window_size,
             dry_run=args.dry_run,
             resume=args.resume,
+            resume_run_id=args.resume_run_id,
             run_id=args.run_id,
         )
     except OrderLineItemsRebuildIncomplete as exc:
