@@ -3034,6 +3034,14 @@ def _resolve_api_orders_status(
     return orders_status, zero_row_classification
 
 
+def _api_orders_zero_row_log_status(*, orders_status: str, zero_row_classification: str | None) -> str:
+    if zero_row_classification == "valid_empty_endpoint" and orders_status == "ok":
+        return "ok"
+    if zero_row_classification:
+        return "warning"
+    return "ok" if orders_status == "ok" else "warning"
+
+
 def _dataset_completion_health(
     payload: Mapping[str, Any] | None,
     *,
@@ -7583,7 +7591,10 @@ async def _execute_api_primary_ingestion(
     log_event(
         logger=logger,
         phase="api_ingest",
-        status="ok" if orders_status == "ok" else "warning",
+        status=_api_orders_zero_row_log_status(
+            orders_status=orders_status,
+            zero_row_classification=orders_zero_row_classification,
+        ),
         message="Classified TD API orders zero-row result",
         store_code=store.store_code,
         orders_rows=len(api_fetch_result.orders_rows),
@@ -8364,7 +8375,10 @@ async def _run_store_discovery(
                         log_event(
                             logger=store_logger,
                             phase="api_ingest",
-                            status="ok" if orders_status == "ok" else "warning",
+                            status=_api_orders_zero_row_log_status(
+                                orders_status=orders_status,
+                                zero_row_classification=orders_zero_row_classification,
+                            ),
                             message="Classified TD API orders zero-row result",
                             store_code=store.store_code,
                             orders_rows=len(api_fetch_result.orders_rows),

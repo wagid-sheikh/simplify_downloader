@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -573,6 +574,131 @@ async def test_overdue_popup_store_skip_does_not_stop_other_api_only_stores(
     assert stores_summary["A817"]["data_ingest_status"] == "skipped"
     assert stores_summary["A818"]["data_ingest_status"] == "success"
 
+
+@pytest.mark.asyncio
+async def test_valid_empty_td_orders_api_response_is_clean_store_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[dict[str, object]] = []
+
+    class _FakeTdApiClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def read_session_artifact(self) -> dict[str, object]:
+            return {"cookies": [{"name": "sid"}], "origins": []}
+
+        async def fetch_reports(self, **_kwargs: object) -> td_orders_main.TdApiFetchResult:
+            return td_orders_main.TdApiFetchResult(
+                raw_orders_payload={"data": {"rows": [], "count": 0}},
+                raw_sales_payload={"data": {"rows": [{"order_number": "A668-1"}], "count": 1}},
+                raw_garments_payload={"data": {"rows": [], "count": 0}},
+                orders_rows=[],
+                sales_rows=[{"order_number": "A668-1"}],
+                garments_rows=[],
+                endpoint_health={
+                    "/reports/order-report": {
+                        "success": True,
+                        "reported_total_rows": 0,
+                        "parsed_row_count": 0,
+                    },
+                    "/sales-and-deliveries/sales": {
+                        "success": True,
+                        "reported_total_rows": 1,
+                        "parsed_row_count": 1,
+                    },
+                    "/garments/details": {
+                        "success": True,
+                        "reported_total_rows": 0,
+                        "parsed_row_count": 0,
+                        "garments_fetch_completeness": "complete",
+                        "garments_budget_state": "within_budget",
+                        "garments_final_row_count": 0,
+                    },
+                },
+            )
+
+    async def _ingest_sales_rows(**kwargs: object) -> td_orders_main.TdSalesIngestResult:
+        rows = list(kwargs["rows"])
+        return td_orders_main.TdSalesIngestResult(
+            staging_rows=len(rows),
+            staging_inserted=len(rows),
+            staging_updated=0,
+            final_rows=len(rows),
+            final_inserted=len(rows),
+            final_updated=0,
+            warnings=[],
+            parsed_rows=rows,
+        )
+
+    monkeypatch.setattr(td_orders_main, "config", SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:"))
+    monkeypatch.setattr(td_orders_main, "TdApiClient", _FakeTdApiClient)
+    monkeypatch.setattr(td_orders_main, "ingest_td_sales_rows", _ingest_sales_rows)
+    monkeypatch.setattr(
+        td_orders_main,
+        "persist_td_api_artifacts",
+        lambda **_kwargs: SimpleNamespace(warnings=[]),
+    )
+    monkeypatch.setattr(td_orders_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    summary = td_orders_main.TdOrdersDiscoverySummary(
+        run_id="run-valid-empty-a668",
+        run_env="test",
+        report_date=date(2026, 1, 1),
+        report_end_date=date(2026, 1, 1),
+    )
+    store = td_orders_main.TdStore(
+        store_code="A668", store_name="A668", cost_center="CC-A668", sync_config={}
+    )
+
+    orders_report, sales_report, fetch_result, _metadata = await td_orders_main._execute_api_primary_ingestion(
+        context=_FakeContext(_FakePage()),
+        store=store,
+        logger=JsonLogger(stream=io.StringIO(), log_file_path=None),
+        source_mode="api_only",
+        run_id="run-valid-empty-a668",
+        run_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        run_start_date=date(2026, 1, 1),
+        run_end_date=date(2026, 1, 1),
+        run_orders=True,
+        run_sales=True,
+        download_dir=tmp_path,
+        summary=summary,
+        stored_state_path=str(tmp_path / "state.json"),
+    )
+
+    summary.record_store(
+        store.store_code,
+        td_orders_main.StoreOutcome(status="ok", message="API primary path executed"),
+        orders_result=orders_report,
+        sales_result=sales_report,
+    )
+    record = summary.build_record(finished_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    store_summary = record["metrics_json"]["stores_summary"]["stores"]["A668"]
+    zero_row_events = [
+        event for event in events if event.get("message") == "Classified TD API orders zero-row result"
+    ]
+
+    assert fetch_result.orders_rows == []
+    assert zero_row_events[-1]["status"] == "ok"
+    assert zero_row_events[-1]["orders_status"] == "ok"
+    assert zero_row_events[-1]["orders_zero_row_classification"] == "valid_empty_endpoint"
+    assert orders_report.status == "ok"
+    assert orders_report.warnings == []
+    assert orders_report.warning_rows == []
+    assert sales_report.status == "ok"
+    assert sales_report.warnings == []
+    assert store_summary["status"] == "ok"
+    assert store_summary["data_ingest_status"] == "success"
+    assert store_summary["observability_warnings"] == []
+    assert td_orders_main._resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=True,
+        run_sales=True,
+    ) == "success"
+    assert summary.overall_status() == "success"
+    assert record["overall_status"] == "success"
 
 def test_zero_orders_nonzero_sales_complete_empty_garments_compare_pass_is_success() -> None:
     summary = td_orders_main.TdOrdersDiscoverySummary(
