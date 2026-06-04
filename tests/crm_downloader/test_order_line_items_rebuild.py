@@ -762,7 +762,7 @@ async def test_td_unauthorized_window_is_reported_missing(
     ]
 
 
-def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
+def test_cli_exits_nonzero_when_td_garments_auth_failure_would_be_zero_row_window(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'cli-unauthorized.sqlite'}"
@@ -772,6 +772,12 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
         "playwright.async_api.async_playwright",
         lambda: _FakeAsyncPlaywright(SimpleNamespace(name="td-playwright")),
     )
+    emitted_loggers: list[_InMemoryLogger] = []
+
+    def fake_get_logger(run_id: str | None = None) -> _InMemoryLogger:
+        logger = _InMemoryLogger(str(run_id))
+        emitted_loggers.append(logger)
+        return logger
 
     async def load_stores(*, sources, store_codes, logger):
         return [
@@ -791,22 +797,23 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
             pass
 
         async def fetch_reports(self, **kwargs: Any) -> Any:
+            # Regression shape from the operator log: the garments source endpoint
+            # is unauthorized, but row arrays are empty. Rebuild must treat this
+            # as a failed/missing window, not as a successful zero-row snapshot.
             return SimpleNamespace(
                 garments_rows=[],
                 garment_order_snapshots=[],
-                endpoint_errors={
-                    "/reports/order-report": "http_401",
-                    "/sales-and-deliveries/sales": "http_401",
-                    "/garments/details": "http_401",
+                endpoint_errors={"/garments/details": "http_401"},
+                endpoint_health={
+                    "/garments/details": {
+                        "success": False,
+                        "final_error_class": "http_401",
+                        "attempts": 2,
+                    }
                 },
-                endpoint_health={},
                 source_fetch_status="auth_failed",
                 source_fetch_error_class="http_401",
-                source_fetch_failed_endpoints=[
-                    "/reports/order-report",
-                    "/sales-and-deliveries/sales",
-                    "/garments/details",
-                ],
+                source_fetch_failed_endpoints=["/garments/details"],
             )
 
     async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
@@ -816,6 +823,7 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
             report_iframe_src="https://reports.quickdrycleaning.com/r",
         )
 
+    monkeypatch.setattr(rebuild, "get_logger", fake_get_logger)
     monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
     monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
     monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
@@ -844,6 +852,20 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
         )
 
     assert exc_info.value.code == 1
+    assert emitted_loggers
+    events = emitted_loggers[-1].events
+    assert not any(
+        event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("status") == "ok"
+        and event.get("inspected_orders") == 0
+        for event in events
+    )
+    missing_summary = [
+        event
+        for event in events
+        if event.get("phase") == "order_line_items_rebuild_missing_windows"
+    ][-1]
+    assert missing_summary["missing_window_count"] > 0
 
 
 def test_bounded_window_progression() -> None:

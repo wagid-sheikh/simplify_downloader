@@ -28,6 +28,7 @@ from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClientConfig,
     TdApiFetchResult,
     build_garment_order_snapshots,
+    td_api_fetch_auth_failure_endpoints,
     _build_garments_incomplete_reason,
     _extract_row_ids,
     _extract_rows,
@@ -1778,6 +1779,55 @@ async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_t
         "/sales-and-deliveries/sales",
         "/garments/details",
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_marks_garments_page_one_401_as_source_auth_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNo": "O-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "O-1"}], "totalPages": 1},
+            ),
+            *(
+                _StubResponse(
+                    status=401,
+                    url="https://reporting-api.quickdrycleaning.com/garments/details",
+                    payload={},
+                )
+                for _ in range(8)
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123", context=context, storage_state_path=tmp_path / "s.json"
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = await client.fetch_reports(
+            from_date=date(2026, 1, 1), to_date=date(2026, 1, 2)
+        )
+
+    assert result.endpoint_errors["/garments/details"] == "http_401"
+    assert result.source_fetch_status == "auth_failed"
+    assert result.source_fetch_error_class == "http_401"
+    assert result.source_fetch_failed_endpoints == ["/garments/details"]
+    assert td_api_fetch_auth_failure_endpoints(result) == ["/garments/details"]
+    assert result.garments_rows == []
+    assert any(
+        record.message == "TD API endpoint unauthorized on first page"
+        and getattr(record, "endpoint", None) == "/garments/details"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
