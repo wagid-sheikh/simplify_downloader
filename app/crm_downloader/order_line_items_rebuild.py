@@ -604,8 +604,13 @@ async def _fetch_progress_rows(
 ) -> dict[tuple[Source, str, date, date], Mapping[str, Any]]:
     await _ensure_progress_table(database_url)
     async with session_scope(database_url) as session:
+        # Resume progress is a live-run contract. Legacy dry-run rows must not
+        # cause a mutating rebuild to skip a window that was only simulated.
         result = await session.execute(
-            sa.text("SELECT * FROM order_line_items_rebuild_progress")
+            sa.text(
+                "SELECT * FROM order_line_items_rebuild_progress "
+                "WHERE dry_run = FALSE"
+            )
         )
         rows: dict[tuple[Source, str, date, date], Mapping[str, Any]] = {}
         for row in result.mappings():
@@ -880,16 +885,17 @@ async def run_rebuild(
                         fetch_snapshot=fetch_snapshot,
                     )
                 except Exception as exc:
-                    await _write_progress(
-                        database_url=config.database_url,
-                        store=store,
-                        window=window,
-                        run_id=run_id,
-                        status="failed",
-                        attempt_no=attempt_no,
-                        error_message=str(exc),
-                        dry_run=dry_run,
-                    )
+                    if not dry_run:
+                        await _write_progress(
+                            database_url=config.database_url,
+                            store=store,
+                            window=window,
+                            run_id=run_id,
+                            status="failed",
+                            attempt_no=attempt_no,
+                            error_message=str(exc),
+                            dry_run=False,
+                        )
                     if attempt_no < max_attempts and should_retry_window_status(
                         status="failed", error_message=str(exc), status_note=None
                     ):
@@ -930,16 +936,17 @@ async def run_rebuild(
                 else:
                     metrics.append(metric)
                     successful_windows.add(key)
-                    await _write_progress(
-                        database_url=config.database_url,
-                        store=store,
-                        window=window,
-                        run_id=run_id,
-                        status="success",
-                        attempt_no=attempt_no,
-                        metrics=metric,
-                        dry_run=dry_run,
-                    )
+                    if not dry_run:
+                        await _write_progress(
+                            database_url=config.database_url,
+                            store=store,
+                            window=window,
+                            run_id=run_id,
+                            status="success",
+                            attempt_no=attempt_no,
+                            metrics=metric,
+                            dry_run=False,
+                        )
                     break
     missing_windows = sorted(
         expected_windows - successful_windows,
@@ -1019,12 +1026,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report planned replacements without mutating order_line_items",
+        help=(
+            "Report planned replacements without mutating order_line_items "
+            "or writing live resume progress"
+        ),
     )
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Skip successful windows recorded in order_line_items_rebuild_progress and retry retryable failures",
+        help=(
+            "Skip successful live windows recorded in "
+            "order_line_items_rebuild_progress and retry retryable failures"
+        ),
     )
     parser.add_argument("--run-id", default=None)
     return parser

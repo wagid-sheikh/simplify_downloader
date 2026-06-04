@@ -373,7 +373,8 @@ The dedicated historical rebuild command is `python -m app crm rebuild-order-lin
 Typical invocations:
 
 ```bash
-# Full historical rebuild: defaults each store to store_master.start_date through the current pipeline date.
+# Safe full historical sequence: simulate first, then run the live resumable rebuild.
+poetry run python -m app crm rebuild-order-line-items --source both --dry-run
 poetry run python -m app crm rebuild-order-line-items --source both --resume
 
 # Small-window dry runs/smoke tests can still pin explicit dates.
@@ -385,10 +386,10 @@ Operational behavior and limitations:
 
 - Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
 - CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`; when `--end-date`/`--to-date` is omitted, the rebuild ends on the current pipeline date (`aware_now(get_timezone()).date()`). Explicit dates remain supported for smoke tests and dry runs.
-- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items` or staging tables.
+- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items`, staging tables, or live resume progress. Dry-run window results are log-only, so the safe operator sequence is to run `--dry-run` first and then rerun the same source/date/store scope without `--dry-run` (usually with `--resume`).
 - TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
 - Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
-- Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; the rebuild reports any missing windows at completion.
+- Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses live-run rows in `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; dry-run rows are not written by the current rebuild and any legacy dry-run rows are ignored for resume decisions. The rebuild reports any missing windows at completion.
 - The default source fetchers rely on valid CRM browser storage-state/auth context. If CRM auth has expired, refresh normal TD/UC sessions first and rerun the rebuild.
 
 ## Legacy markdown status (triaged)
