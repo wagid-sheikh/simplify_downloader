@@ -39,7 +39,6 @@ from app.crm_downloader.td_orders_sync.source_snapshot import (
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiUnauthorizedError,
-    td_api_fetch_auth_failure_endpoints,
 )
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     collect_gst_orders_via_api,
@@ -48,7 +47,10 @@ from app.crm_downloader.uc_orders_sync.gst_api_extract import (
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     publish_uc_gst_order_details_to_line_items,
 )
-from app.crm_downloader.uc_orders_sync.main import _load_uc_order_stores
+from app.crm_downloader.uc_orders_sync.main import (
+    _load_uc_order_stores,
+    prepare_uc_api_page_for_store,
+)
 from app.dashboard_downloader.json_logger import (
     JsonLogger,
     get_logger,
@@ -173,6 +175,38 @@ class RebuildPreflightResult:
     auth_readiness: dict[str, str]
 
 
+@dataclass(frozen=True)
+class UcSourceSnapshotDiagnostics:
+    gst_rows_count: int = 0
+    base_rows_count: int = 0
+    order_detail_rows_count: int = 0
+    payment_detail_rows_count: int = 0
+    order_detail_snapshot_rows_count: int = 0
+    skipped_order_counters: Mapping[str, int] = field(default_factory=dict)
+    skipped_order_codes: tuple[str, ...] = field(default_factory=tuple)
+    booking_lookup_hits: int = 0
+    booking_lookup_misses: int = 0
+    delivered_rows_scanned: int = 0
+    source_fetch_status: str | None = None
+    extractor_status: str | None = None
+
+    def as_log_fields(self) -> dict[str, Any]:
+        return {
+            "gst_rows_count": self.gst_rows_count,
+            "base_rows_count": self.base_rows_count,
+            "order_detail_rows_count": self.order_detail_rows_count,
+            "payment_detail_rows_count": self.payment_detail_rows_count,
+            "order_detail_snapshot_rows_count": self.order_detail_snapshot_rows_count,
+            "skipped_order_counters": dict(self.skipped_order_counters),
+            "skipped_order_codes": list(self.skipped_order_codes),
+            "booking_lookup_hits": self.booking_lookup_hits,
+            "booking_lookup_misses": self.booking_lookup_misses,
+            "delivered_rows_scanned": self.delivered_rows_scanned,
+            "source_fetch_status": self.source_fetch_status,
+            "extractor_status": self.extractor_status,
+        }
+
+
 @dataclass
 class SourceSnapshot:
     line_item_rows: list[Mapping[str, Any]] = field(default_factory=list)
@@ -182,6 +216,7 @@ class SourceSnapshot:
     source_fetch_error_class: str | None = None
     endpoint_health: Mapping[str, Any] = field(default_factory=dict)
     endpoint_error_diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    uc_diagnostics: UcSourceSnapshotDiagnostics | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +315,7 @@ class WindowMetrics:
     orphan_rows: int = 0
     dry_run: bool = False
     zero_snapshot_class: ZeroSnapshotClass | None = None
+    uc_diagnostics: UcSourceSnapshotDiagnostics | None = None
 
     def checkpoint(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -300,6 +336,8 @@ class WindowMetrics:
         }
         if self.uc_child_run_id:
             payload["uc_child_run_id"] = self.uc_child_run_id
+        if self.uc_diagnostics is not None:
+            payload["uc_extraction_diagnostics"] = self.uc_diagnostics.as_log_fields()
         return payload
 
 
@@ -327,6 +365,68 @@ def _zero_snapshot_message(zero_snapshot_class: ZeroSnapshotClass) -> str:
         return "zero_authoritative_orders_detected_source_fetch_auth_failure"
     return "zero_authoritative_orders_detected_unknown_ambiguous_empty"
 
+
+UC_SOURCE_FAILURE_SKIP_REASONS = {
+    "gst_api_failed",
+    "gst_api_invalid_data",
+    "archive_api_auth_failure",
+    "archive_api_transport_failure",
+}
+
+
+def _count_extract_rows(extract: Any, attribute: str) -> int:
+    rows = getattr(extract, attribute, []) or []
+    return len(rows) if isinstance(rows, Sequence) else 0
+
+
+def _uc_diagnostics_from_gst_extract(extract: Any) -> UcSourceSnapshotDiagnostics:
+    skipped_order_counters = dict(getattr(extract, "skipped_order_counters", {}) or {})
+    skipped_order_codes = tuple(str(code) for code in (getattr(extract, "skipped_order_codes", []) or []))
+    return UcSourceSnapshotDiagnostics(
+        gst_rows_count=_count_extract_rows(extract, "gst_rows"),
+        base_rows_count=_count_extract_rows(extract, "base_rows"),
+        order_detail_rows_count=_count_extract_rows(extract, "order_detail_rows"),
+        payment_detail_rows_count=_count_extract_rows(extract, "payment_detail_rows"),
+        order_detail_snapshot_rows_count=_count_extract_rows(extract, "order_detail_snapshot_rows"),
+        skipped_order_counters=skipped_order_counters,
+        skipped_order_codes=skipped_order_codes,
+        booking_lookup_hits=int(getattr(extract, "booking_lookup_hits", 0) or 0),
+        booking_lookup_misses=int(getattr(extract, "booking_lookup_misses", 0) or 0),
+        delivered_rows_scanned=int(getattr(extract, "delivered_rows_scanned", 0) or 0),
+        source_fetch_status=getattr(extract, "source_fetch_status", None),
+        extractor_status=getattr(extract, "extractor_status", None),
+    )
+
+
+def _gst_api_extract_confirms_zero_rows_for_rebuild(diagnostics: UcSourceSnapshotDiagnostics) -> bool:
+    return (
+        diagnostics.gst_rows_count == 0
+        and diagnostics.base_rows_count == 0
+        and diagnostics.order_detail_rows_count == 0
+        and diagnostics.payment_detail_rows_count == 0
+        and diagnostics.order_detail_snapshot_rows_count == 0
+        and not diagnostics.skipped_order_counters
+    )
+
+
+def _uc_skip_reason_is_source_fetch_failure(reason: str) -> bool:
+    normalized = reason.strip().lower()
+    return (
+        normalized in UC_SOURCE_FAILURE_SKIP_REASONS
+        or ("auth" in normalized and ("fail" in normalized or "failure" in normalized))
+        or ("transport" in normalized and ("fail" in normalized or "failure" in normalized))
+    )
+
+
+def _classify_uc_zero_snapshot(diagnostics: UcSourceSnapshotDiagnostics) -> ZeroSnapshotClass:
+    if _gst_api_extract_confirms_zero_rows_for_rebuild(diagnostics):
+        return "confirmed_source_empty"
+    if any(
+        _uc_skip_reason_is_source_fetch_failure(reason)
+        for reason in diagnostics.skipped_order_counters
+    ):
+        return "source_fetch_auth_failure"
+    return "unknown_ambiguous_empty"
 
 def _garments_health_from_result(result: Any) -> Mapping[str, Any]:
     endpoint_health = getattr(result, "endpoint_health", None) or {}
@@ -550,6 +650,7 @@ async def _dry_run_metrics(
         ),
         dry_run=True,
         zero_snapshot_class=zero_snapshot_class,
+        uc_diagnostics=snapshot.uc_diagnostics,
     )
 
 
@@ -752,6 +853,7 @@ async def rebuild_window(
             orphan_rows=result.orphan_rows,
             dry_run=False,
             zero_snapshot_class=_zero_snapshot_class(snapshot),
+            uc_diagnostics=snapshot.uc_diagnostics,
         )
 
     if uc_child_run_id and metrics.uc_child_run_id is None:
@@ -783,6 +885,12 @@ async def rebuild_window(
     else:
         metrics.zero_snapshot_class = None
 
+    window_log_fields: dict[str, Any] = {}
+    if metrics.uc_diagnostics is not None:
+        window_log_fields["uc_extraction_diagnostics"] = (
+            metrics.uc_diagnostics.as_log_fields()
+        )
+
     log_event(
         logger=logger,
         phase="order_line_items_rebuild_window",
@@ -804,6 +912,7 @@ async def rebuild_window(
         dry_run=metrics.dry_run,
         uc_child_run_id=metrics.uc_child_run_id,
         checkpoint=metrics.checkpoint(),
+        **window_log_fields,
     )
     return metrics
 
@@ -821,13 +930,6 @@ async def default_fetch_snapshot(
     run_id: str,
     logger: JsonLogger,
 ) -> SourceSnapshot:
-    storage_state_path = _storage_state_path(store)
-    storage_state = (
-        str(storage_state_path)
-        if storage_state_path and storage_state_path.exists()
-        else None
-    )
-
     if source == "td":
         td_store = store.raw_store
         if td_store is None:
@@ -858,23 +960,40 @@ async def default_fetch_snapshot(
     async with async_playwright() as playwright:
         browser = await launch_browser(playwright=playwright, logger=logger)
         try:
-            context = await browser.new_context(storage_state=storage_state)
-            page = await context.new_page()
-            home_url = getattr(store.raw_store, "home_url", None) or getattr(
-                store.raw_store, "orders_url", None
+            if store.raw_store is None:
+                raise ValueError(
+                    "UC rebuild stores must include the raw UcStore auth config"
+                )
+            page_preparation = await prepare_uc_api_page_for_store(
+                browser=browser,
+                store=store.raw_store,
+                logger=logger,
+                source="order_line_items_rebuild",
             )
-            if home_url:
-                await page.goto(home_url, wait_until="domcontentloaded")
+            if not page_preparation.ok or page_preparation.page is None:
+                raise RuntimeError(
+                    f"UC API page preparation failed for {store.store_code}: "
+                    f"{page_preparation.message}"
+                )
             extract = await collect_gst_orders_via_api(
-                page=page,
+                page=page_preparation.page,
                 store_code=store.store_code,
                 logger=logger,
                 from_date=window.start,
                 to_date=window.end,
             )
+            diagnostics = _uc_diagnostics_from_gst_extract(extract)
+            zero_snapshot_class = _classify_uc_zero_snapshot(diagnostics)
             return SourceSnapshot(
-                line_item_rows=extract.order_detail_rows,
-                order_snapshots=extract.order_detail_snapshot_rows,
+                line_item_rows=list(getattr(extract, "order_detail_rows", []) or []),
+                order_snapshots=list(getattr(extract, "order_detail_snapshot_rows", []) or []),
+                zero_snapshot_class=zero_snapshot_class,
+                source_fetch_error_class=(
+                    zero_snapshot_class
+                    if zero_snapshot_class == "source_fetch_auth_failure"
+                    else None
+                ),
+                uc_diagnostics=diagnostics,
             )
         finally:
             await browser.close()
@@ -974,6 +1093,7 @@ def _source_snapshot_from_td_source_result(
         endpoint_health=garments_health,
         endpoint_error_diagnostics=endpoint_diagnostics,
     )
+
 
 def _coerce_date(value: Any) -> date | None:
     if isinstance(value, datetime):

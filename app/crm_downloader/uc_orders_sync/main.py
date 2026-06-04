@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from openpyxl import Workbook
 from playwright.async_api import (
     Browser,
+    BrowserContext,
     ElementHandle,
     Locator,
     Page,
@@ -401,6 +402,24 @@ class UcStore:
                 ]
             )
         return raw_labels
+
+
+@dataclass
+class UcApiPagePreparationResult:
+    """Result of preparing an authenticated UC page for API extraction."""
+
+    ok: bool
+    message: str
+    context: BrowserContext | None = None
+    page: Page | None = None
+    final_url: str | None = None
+    storage_state: str | None = None
+    login_used: bool | None = None
+    session_probe_result: bool | None = None
+    fallback_login_attempted: bool | None = None
+    fallback_login_result: bool | None = None
+    reason_codes: list[str] = field(default_factory=list)
+    login_error_code: str | None = None
 
 
 @dataclass
@@ -3594,6 +3613,187 @@ async def _collect_archive_orders(
     return extract
 
 
+async def prepare_uc_api_page_for_store(
+    *, browser: Browser, store: UcStore, logger: JsonLogger, source: str
+) -> UcApiPagePreparationResult:
+    """Open a UC browser context and return a page with a ready authenticated session.
+
+    The Archive Orders API extractor relies on browser-local auth state. Keep all UC
+    callers on this single readiness path so expired storage state, login redirects,
+    and home-page DOM drift fail loudly instead of producing ambiguous empty extracts.
+    """
+
+    storage_state_path = store.storage_state_path
+    storage_state_exists = storage_state_path.exists()
+    storage_state_value = str(storage_state_path) if storage_state_exists else None
+    login_used = not storage_state_exists
+    session_probe_result: bool | None = None
+    fallback_login_attempted = False
+    fallback_login_result: bool | None = None
+    context: BrowserContext | None = None
+    page: Page | None = None
+
+    def failure(
+        message: str,
+        *,
+        reason_codes: list[str] | None = None,
+        login_error_code: str | None = None,
+    ) -> UcApiPagePreparationResult:
+        return UcApiPagePreparationResult(
+            ok=False,
+            message=message,
+            context=None,
+            page=None,
+            final_url=page.url if page is not None else None,
+            storage_state=(
+                str(storage_state_path) if storage_state_path.exists() else None
+            ),
+            login_used=login_used,
+            session_probe_result=session_probe_result,
+            fallback_login_attempted=fallback_login_attempted,
+            fallback_login_result=fallback_login_result,
+            reason_codes=list(reason_codes or []),
+            login_error_code=login_error_code,
+        )
+
+    if storage_state_exists:
+        log_event(
+            logger=logger,
+            phase="login",
+            message="Reusing existing storage state",
+            store_code=store.store_code,
+            storage_state=storage_state_value,
+        )
+
+    if not store.home_url:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="error",
+            message="Missing home URL in sync_config",
+            store_code=store.store_code,
+            source=source,
+        )
+        return failure("Missing home URL in sync_config")
+
+    if not store.orders_url:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="error",
+            message="Missing orders_link URL in sync_config",
+            store_code=store.store_code,
+            source=source,
+        )
+        return failure("Missing orders_link URL in sync_config")
+
+    try:
+        context = await browser.new_context(
+            storage_state=storage_state_value,
+            ignore_https_errors=getattr(config, "uc_ignore_https_errors", False),
+        )
+        page = await context.new_page()
+        await page.goto(store.home_url, wait_until="domcontentloaded")
+        if _url_is_login(page.url, store):
+            session_probe_result = False
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warning",
+                message="Session probe landed on login URL; skipping home wait",
+                store_code=store.store_code,
+                current_url=page.url,
+                source=source,
+            )
+        else:
+            session_probe_result = await _assert_home_ready(
+                page=page, store=store, logger=logger, source="session"
+            )
+        if not session_probe_result:
+            fallback_login_attempted = True
+            log_event(
+                logger=logger,
+                phase="login",
+                status="warning",
+                message="Session probe failed; attempting full login",
+                store_code=store.store_code,
+                current_url=page.url,
+                source=source,
+            )
+            login_used = True
+            fallback_login_result = await _perform_login(
+                page=page, store=store, logger=logger
+            )
+            login_error_code = getattr(page, "_uc_login_error_code", None)
+            if fallback_login_result:
+                storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+                await context.storage_state(path=str(storage_state_path))
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    message="Saved storage state",
+                    store_code=store.store_code,
+                    storage_state=str(storage_state_path),
+                    source=source,
+                )
+                if not await _assert_home_ready(
+                    page=page, store=store, logger=logger, source="post-login"
+                ):
+                    fallback_login_result = False
+            if not fallback_login_result:
+                error_message = "Login failed after session probe"
+                reason_codes: list[str] = []
+                if isinstance(login_error_code, str) and login_error_code.strip():
+                    reason_codes.append(login_error_code)
+                if login_error_code == "LOGIN_DOM_MISMATCH":
+                    error_message = "Login DOM mismatch after session probe"
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    status="error",
+                    message=error_message,
+                    store_code=store.store_code,
+                    error_code=login_error_code,
+                    login_page_version_signature=getattr(
+                        page, "_uc_login_page_version_signature", None
+                    ),
+                    login_dom_snippet_path=getattr(
+                        page, "_uc_login_dom_snippet_path", None
+                    ),
+                    login_dom_screenshot_path=getattr(
+                        page, "_uc_login_dom_screenshot_path", None
+                    ),
+                    source=source,
+                )
+                with contextlib.suppress(Exception):
+                    await context.close()
+                return failure(
+                    error_message,
+                    reason_codes=reason_codes,
+                    login_error_code=login_error_code,
+                )
+
+        return UcApiPagePreparationResult(
+            ok=True,
+            message="UC API page ready",
+            context=context,
+            page=page,
+            final_url=page.url,
+            storage_state=(
+                str(storage_state_path) if storage_state_path.exists() else None
+            ),
+            login_used=login_used,
+            session_probe_result=session_probe_result,
+            fallback_login_attempted=fallback_login_attempted,
+            fallback_login_result=fallback_login_result,
+        )
+    except Exception:
+        if context is not None:
+            with contextlib.suppress(Exception):
+                await context.close()
+        raise
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -3649,13 +3849,8 @@ async def _run_store_discovery(
     row_count: int | None = None
 
     storage_state_path = store.storage_state_path
-    storage_state_exists = storage_state_path.exists()
-    storage_state_value = str(storage_state_path) if storage_state_exists else None
-    context = await browser.new_context(
-        storage_state=storage_state_value,
-        ignore_https_errors=getattr(config, "uc_ignore_https_errors", False),
-    )
-    page = await context.new_page()
+    context: BrowserContext | None = None
+    page: Page | None = None
     outcome = StoreOutcome(status="error", message="uninitialized")
 
     try:
@@ -3679,7 +3874,7 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
-        login_used = not storage_state_exists
+        login_used = not storage_state_path.exists()
         session_probe_result: bool | None = None
         fallback_login_attempted = False
         fallback_login_result: bool | None = None
@@ -3711,136 +3906,43 @@ async def _run_store_discovery(
         staging_feed_payment_details_path: Path | None = None
         staging_feed_order_detail_snapshots_path: Path | None = None
 
-        if storage_state_exists:
-            log_event(
-                logger=logger,
-                phase="login",
-                message="Reusing existing storage state",
-                store_code=store.store_code,
-                storage_state=storage_state_value,
-            )
-
-        if not store.home_url:
+        page_preparation = await prepare_uc_api_page_for_store(
+            browser=browser,
+            store=store,
+            logger=logger,
+            source="uc_orders_sync",
+        )
+        login_used = page_preparation.login_used
+        session_probe_result = page_preparation.session_probe_result
+        fallback_login_attempted = bool(page_preparation.fallback_login_attempted)
+        fallback_login_result = page_preparation.fallback_login_result
+        if not page_preparation.ok:
             outcome = StoreOutcome(
                 status="error",
-                message="Missing home URL in sync_config",
+                message=page_preparation.message,
+                final_url=page_preparation.final_url,
+                storage_state=page_preparation.storage_state,
+                login_used=login_used,
+                session_probe_result=session_probe_result,
+                fallback_login_attempted=fallback_login_attempted,
+                fallback_login_result=fallback_login_result,
+                reason_codes=page_preparation.reason_codes,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
+        if page_preparation.context is None or page_preparation.page is None:
+            outcome = StoreOutcome(
+                status="error",
+                message="UC API page preparation returned no page",
                 login_used=login_used,
                 session_probe_result=session_probe_result,
                 fallback_login_attempted=fallback_login_attempted,
                 fallback_login_result=fallback_login_result,
             )
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="error",
-                message=outcome.message,
-                store_code=store.store_code,
-            )
             summary.record_store(store.store_code, outcome)
             return
-
-        if not store.orders_url:
-            outcome = StoreOutcome(
-                status="error",
-                message="Missing orders_link URL in sync_config",
-                login_used=login_used,
-                session_probe_result=session_probe_result,
-                fallback_login_attempted=fallback_login_attempted,
-                fallback_login_result=fallback_login_result,
-            )
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="error",
-                message=outcome.message,
-                store_code=store.store_code,
-            )
-            summary.record_store(store.store_code, outcome)
-            return
-
-        await page.goto(store.home_url, wait_until="domcontentloaded")
-        if _url_is_login(page.url, store):
-            session_probe_result = False
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="warning",
-                message="Session probe landed on login URL; skipping home wait",
-                store_code=store.store_code,
-                current_url=page.url,
-            )
-        else:
-            session_probe_result = await _assert_home_ready(
-                page=page, store=store, logger=logger, source="session"
-            )
-        if not session_probe_result:
-            fallback_login_attempted = True
-            log_event(
-                logger=logger,
-                phase="login",
-                status="warning",
-                message="Session probe failed; attempting full login",
-                store_code=store.store_code,
-                current_url=page.url,
-            )
-            login_used = True
-            fallback_login_result = await _perform_login(
-                page=page, store=store, logger=logger
-            )
-            login_error_code = getattr(page, "_uc_login_error_code", None)
-            if fallback_login_result:
-                storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-                await context.storage_state(path=str(storage_state_path))
-                log_event(
-                    logger=logger,
-                    phase="login",
-                    message="Saved storage state",
-                    store_code=store.store_code,
-                    storage_state=str(storage_state_path),
-                )
-                if not await _assert_home_ready(
-                    page=page, store=store, logger=logger, source="post-login"
-                ):
-                    fallback_login_result = False
-            if not fallback_login_result:
-                error_message = "Login failed after session probe"
-                reason_codes: list[str] = []
-                if isinstance(login_error_code, str) and login_error_code.strip():
-                    reason_codes.append(login_error_code)
-                if login_error_code == "LOGIN_DOM_MISMATCH":
-                    error_message = "Login DOM mismatch after session probe"
-                outcome = StoreOutcome(
-                    status="error",
-                    message=error_message,
-                    final_url=page.url,
-                    storage_state=(
-                        str(storage_state_path) if storage_state_path.exists() else None
-                    ),
-                    login_used=login_used,
-                    session_probe_result=session_probe_result,
-                    fallback_login_attempted=fallback_login_attempted,
-                    fallback_login_result=fallback_login_result,
-                    reason_codes=reason_codes,
-                )
-                log_event(
-                    logger=logger,
-                    phase="login",
-                    status="error",
-                    message=error_message,
-                    store_code=store.store_code,
-                    error_code=login_error_code,
-                    login_page_version_signature=getattr(
-                        page, "_uc_login_page_version_signature", None
-                    ),
-                    login_dom_snippet_path=getattr(
-                        page, "_uc_login_dom_snippet_path", None
-                    ),
-                    login_dom_screenshot_path=getattr(
-                        page, "_uc_login_dom_screenshot_path", None
-                    ),
-                )
-                summary.record_store(store.store_code, outcome)
-                return
+        context = page_preparation.context
+        page = page_preparation.page
 
         try:
             download_dir = _resolve_uc_download_dir(
@@ -3928,6 +4030,9 @@ async def _run_store_discovery(
                 order_detail_rows=len(gst_api_extract.order_detail_rows),
                 payment_detail_rows=len(gst_api_extract.payment_detail_rows),
                 order_detail_snapshot_rows=len(gst_api_extract.order_detail_snapshot_rows),
+                source_fetch_status=gst_api_extract.source_fetch_status,
+                extractor_status=gst_api_extract.extractor_status,
+                skipped_order_counters=gst_api_extract.skipped_order_counters,
             )
             gst_ingest_stage_statuses[STAGE_CREATED_COHORT_EXTRACT] = "success"
             gst_ingest_stage_metrics[STAGE_CREATED_COHORT_EXTRACT] = {
@@ -3951,7 +4056,7 @@ async def _run_store_discovery(
             outcome = StoreOutcome(
                 status="error",
                 message="GST API extraction failed",
-                final_url=page.url,
+                final_url=page.url if page is not None else None,
                 storage_state=(
                     str(storage_state_path) if storage_state_path.exists() else None
                 ),
@@ -4089,7 +4194,7 @@ async def _run_store_discovery(
             outcome = StoreOutcome(
                 status="error",
                 message="GST API output unavailable; aborting store run",
-                final_url=page.url,
+                final_url=page.url if page is not None else None,
                 storage_state=(
                     str(storage_state_path) if storage_state_path.exists() else None
                 ),
@@ -4113,7 +4218,7 @@ async def _run_store_discovery(
             outcome = StoreOutcome(
                 status="warning",
                 message="Archive Orders navigation failed",
-                final_url=page.url,
+                final_url=page.url if page is not None else None,
                 storage_state=(
                     str(storage_state_path) if storage_state_path.exists() else None
                 ),
@@ -4514,7 +4619,7 @@ async def _run_store_discovery(
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
-            final_url=page.url,
+            final_url=page.url if page is not None else None,
             storage_state=(
                 str(storage_state_path) if storage_state_path.exists() else None
             ),
@@ -4561,13 +4666,13 @@ async def _run_store_discovery(
             phase="store",
             message="UC store discovery complete",
             store_code=store.store_code,
-            final_url=page.url,
+            final_url=page.url if page is not None else None,
         )
     except TimeoutError as exc:
         outcome = StoreOutcome(
             status="error",
             message="Timeout while loading Archive Orders page",
-            final_url=page.url,
+            final_url=page.url if page is not None else None,
             storage_state=(
                 str(storage_state_path) if storage_state_path.exists() else None
             ),
@@ -4589,7 +4694,7 @@ async def _run_store_discovery(
         outcome = StoreOutcome(
             status="error",
             message="Store discovery failed",
-            final_url=page.url,
+            final_url=page.url if page is not None else None,
             storage_state=(
                 str(storage_state_path) if storage_state_path.exists() else None
             ),
@@ -4713,8 +4818,9 @@ async def _run_store_discovery(
                 "orders_sync_log_id": sync_log_id,
             }
         )
-        with contextlib.suppress(Exception):
-            await context.close()
+        if context is not None:
+            with contextlib.suppress(Exception):
+                await context.close()
 
 
 async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:

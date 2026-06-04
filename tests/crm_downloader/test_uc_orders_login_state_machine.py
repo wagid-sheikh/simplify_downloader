@@ -129,20 +129,12 @@ async def test_migrated_uc_dashboard_url_is_ready_without_home_url_timeout() -> 
         (True, True),
     ],
 )
-async def test_run_store_discovery_passes_uc_https_error_config_to_browser_context(
+async def test_prepare_uc_api_page_passes_uc_https_error_config_to_browser_context(
     monkeypatch: pytest.MonkeyPatch,
     configured_value: bool,
     expected_ignore_https_errors: bool,
 ) -> None:
     logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
-    summary = uc_main.UcOrdersDiscoverySummary(
-        run_id="run-tls",
-        run_env="test",
-        report_date=date(2025, 1, 2),
-        report_end_date=date(2025, 1, 1),
-        started_at=datetime.now(timezone.utc),
-        store_codes=["A100"],
-    )
     store = uc_main.UcStore(
         store_code="A100",
         store_name="Store A",
@@ -167,24 +159,16 @@ async def test_run_store_discovery_passes_uc_https_error_config_to_browser_conte
             uc_ignore_https_errors=configured_value,
         ),
     )
-    monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
-    monkeypatch.setattr(uc_main, "_update_orders_sync_log", AsyncMock())
+    monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(return_value=True))
+    monkeypatch.setattr(uc_main, "_perform_login", AsyncMock(return_value=True))
 
     browser = _FakeBrowser()
 
-    await uc_main._run_store_discovery(
-        browser=browser,
-        store=store,
-        logger=logger,
-        run_env="test",
-        run_id="run-tls",
-        run_date=datetime.now(timezone.utc),
-        summary=summary,
-        from_date=date(2025, 1, 2),
-        to_date=date(2025, 1, 1),
-        download_timeout_ms=1000,
+    result = await uc_main.prepare_uc_api_page_for_store(
+        browser=browser, store=store, logger=logger, source="test"
     )
 
+    assert result.ok is True
     assert browser.context_kwargs == [
         {"storage_state": None, "ignore_https_errors": expected_ignore_https_errors}
     ]
@@ -390,3 +374,183 @@ async def test_run_store_discovery_does_not_require_gst_ui_when_api_is_healthy(
     assert navigate_gst_mock.await_count == 0
     assert direct_gst_mock.await_count == 0
     assert summary.store_outcomes["A100"].message in {"Archive Orders navigation failed", "navigation failed"}
+
+
+@pytest.mark.asyncio
+async def test_prepare_uc_api_page_for_store_reuses_valid_storage_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="A100",
+        store_name="Store A",
+        cost_center=None,
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+    (tmp_path / f"{store.store_code}_storage_state.json").write_text("{}")
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+    home_ready = AsyncMock(return_value=True)
+    login = AsyncMock(return_value=True)
+    monkeypatch.setattr(uc_main, "_assert_home_ready", home_ready)
+    monkeypatch.setattr(uc_main, "_perform_login", login)
+
+    browser = _FakeBrowser()
+
+    result = await uc_main.prepare_uc_api_page_for_store(
+        browser=browser, store=store, logger=logger, source="test"
+    )
+
+    assert result.ok is True
+    assert result.page is not None
+    assert result.context is not None
+    assert result.login_used is False
+    assert result.session_probe_result is True
+    assert result.fallback_login_attempted is False
+    assert login.await_count == 0
+    assert home_ready.await_count == 1
+    assert browser.context_kwargs == [
+        {
+            "storage_state": str(tmp_path / "A100_storage_state.json"),
+            "ignore_https_errors": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_uc_api_page_for_store_refreshes_expired_storage_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="A100",
+        store_name="Store A",
+        cost_center=None,
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+    storage_path = tmp_path / f"{store.store_code}_storage_state.json"
+    storage_path.write_text("{}")
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+
+    async def _probe(*, page, store, logger, source):
+        return source == "post-login"
+
+    async def _login(*, page, store, logger):
+        page.session_state = "valid"
+        page.url = store.home_url or page.url
+        return True
+
+    monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(side_effect=_probe))
+    login = AsyncMock(side_effect=_login)
+    monkeypatch.setattr(uc_main, "_perform_login", login)
+
+    browser = _FakeBrowser()
+
+    result = await uc_main.prepare_uc_api_page_for_store(
+        browser=browser, store=store, logger=logger, source="test"
+    )
+
+    assert result.ok is True
+    assert result.login_used is True
+    assert result.session_probe_result is False
+    assert result.fallback_login_attempted is True
+    assert result.fallback_login_result is True
+    assert login.await_count == 1
+    assert storage_path.read_text() == "{}"
+
+
+@pytest.mark.asyncio
+async def test_run_store_discovery_uses_uc_api_page_preparation_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-helper",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A100"],
+    )
+    store = uc_main.UcStore(
+        store_code="A100",
+        store_name="Store A",
+        cost_center=None,
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(uc_main, "_resolve_uc_download_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
+    monkeypatch.setattr(uc_main, "_update_orders_sync_log", AsyncMock())
+    monkeypatch.setattr(uc_main, "_navigate_to_archive_orders", AsyncMock(return_value=False))
+    monkeypatch.setattr(uc_main, "_navigate_to_gst_reports", AsyncMock(return_value=False))
+    monkeypatch.setattr(uc_main, "_try_direct_gst_reports", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(
+        uc_main,
+        "collect_gst_orders_via_api",
+        AsyncMock(
+            return_value=uc_main.GstApiExtract(
+                gst_rows=[],
+                base_rows=[],
+                order_detail_rows=[],
+                payment_detail_rows=[],
+            )
+        ),
+    )
+
+    browser = _FakeBrowser()
+    context = await browser.new_context()
+    page = await context.new_page()
+    prepare = AsyncMock(
+        return_value=uc_main.UcApiPagePreparationResult(
+            ok=True,
+            message="ready",
+            context=context,
+            page=page,
+            login_used=False,
+            session_probe_result=True,
+            fallback_login_attempted=False,
+            fallback_login_result=None,
+        )
+    )
+    monkeypatch.setattr(uc_main, "prepare_uc_api_page_for_store", prepare)
+
+    await uc_main._run_store_discovery(
+        browser=browser,
+        store=store,
+        logger=logger,
+        run_env="test",
+        run_id="run-helper",
+        run_date=datetime.now(timezone.utc),
+        summary=summary,
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 1, 1),
+        download_timeout_ms=1000,
+    )
+
+    prepare.assert_awaited_once()
+    assert prepare.await_args.kwargs["source"] == "uc_orders_sync"
+    assert uc_main.collect_gst_orders_via_api.await_count == 1
