@@ -226,7 +226,7 @@ async def _fetch_reconciliation(
             "vw_orders.recovery_status is required for payment reports"
         ) from exc
     order_rows = [dict(record) for record in order_result.mappings()]
-    payment_rows = await _fetch_payment_rows_for_orders(
+    payment_rows = await fetch_payment_rows_for_orders(
         session=session,
         payment_collections=payment_collections,
         order_rows=order_rows,
@@ -296,7 +296,7 @@ def _delimited_payment_order_tokens_sql(column: Any) -> Any:
     return sa.literal(",") + sa.func.replace(normalized, "/", ",") + sa.literal(",")
 
 
-async def _fetch_payment_rows_for_orders(
+async def fetch_payment_rows_for_orders(
     *, session: Any, payment_collections: Any, order_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Fetch only payment evidence that can affect the candidate order set.

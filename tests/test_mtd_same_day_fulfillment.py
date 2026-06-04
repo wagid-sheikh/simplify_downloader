@@ -202,6 +202,7 @@ async def test_mtd_pipeline_has_no_missing_payment_fetch_dependency(monkeypatch,
     monkeypatch.setattr(mtd_pipeline, "render_pdf_with_configured_browser", _fake_render_pdf)
     monkeypatch.setattr(mtd_pipeline, "persist_summary_record", _fake_summary)
     monkeypatch.setattr(mtd_pipeline, "update_summary_record", _fake_summary)
+    monkeypatch.setattr(mtd_pipeline, "_persist_document", _fake_summary)
     monkeypatch.setattr(mtd_pipeline, "send_notifications_for_run", _fake_notify)
 
     await mtd_pipeline._run(report_date=date(2026, 4, 29), env="test", force=True)
@@ -305,7 +306,7 @@ async def test_fetch_mtd_same_day_fulfillment_excludes_orders_with_payment_proof
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1'), ('CC2', 'S2')"))
         await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system) VALUES ('CC1','Ord2','2026-04-10T09:00:00+05:30','Alice','999',800,'TumbleDry'),('CC1','ORDX','2026-04-10T09:00:00+05:30','Bob','888',700,'TumbleDry'),('CC2','ORD3','2026-04-10T09:00:00+05:30','Cara','777',600,'TumbleDry')"))
         await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','Ord2','2026-04-10T10:00:00+05:30','UPI',800),('CC1','ORDX','2026-04-10T10:00:00+05:30','CARD',700),('CC2','ORD3','2026-04-10T10:00:00+05:30','UPI',600)"))
-        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1',' ORD1, ord2 / ORD3 ,,')"))
+        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES ('CC1',' ord2 ',800,'google_sheet')"))
         await session.commit()
 
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
