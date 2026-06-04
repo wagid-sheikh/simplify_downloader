@@ -108,6 +108,8 @@ class GstApiExtract:
     delivered_payment_rows_produced: int = 0
     gst_orders_without_payments: int = 0
     invoice_retry_count: int = 0
+    source_fetch_status: str | None = None
+    extractor_status: str | None = None
 
 
 def _record_skip(extract: GstApiExtract, *, order_code: str, reason: str) -> None:
@@ -456,13 +458,19 @@ async def collect_gst_orders_via_api(
         data={"from_date": from_date.isoformat(), "to_date": to_date.isoformat()},
     )
     if not isinstance(payload, Mapping):
+        extract.source_fetch_status = "failed"
+        extract.extractor_status = "failed"
         _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_failed")
         return extract
 
     rows = payload.get("data")
     if not isinstance(rows, list):
+        extract.source_fetch_status = "invalid_data"
+        extract.extractor_status = "failed"
         _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_invalid_data")
         return extract
+
+    extract.source_fetch_status = "success"
 
     gst_order_codes: set[str] = set()
     seen_orders: set[str] = set()
@@ -611,6 +619,8 @@ async def collect_gst_orders_via_api(
         extract=extract,
     )
 
+    extract.extractor_status = "success" if not extract.skipped_order_counters else "partial"
+
     log_event(
         logger=logger,
         phase="gst_api_extract",
@@ -629,5 +639,7 @@ async def collect_gst_orders_via_api(
         gst_orders_without_payments=extract.gst_orders_without_payments,
         invoice_retry_count=extract.invoice_retry_count,
         skipped_order_counters=extract.skipped_order_counters,
+        source_fetch_status=extract.source_fetch_status,
+        extractor_status=extract.extractor_status,
     )
     return extract

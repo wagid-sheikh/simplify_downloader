@@ -4030,6 +4030,9 @@ async def _run_store_discovery(
                 order_detail_rows=len(gst_api_extract.order_detail_rows),
                 payment_detail_rows=len(gst_api_extract.payment_detail_rows),
                 order_detail_snapshot_rows=len(gst_api_extract.order_detail_snapshot_rows),
+                source_fetch_status=gst_api_extract.source_fetch_status,
+                extractor_status=gst_api_extract.extractor_status,
+                skipped_order_counters=gst_api_extract.skipped_order_counters,
             )
             gst_ingest_stage_statuses[STAGE_CREATED_COHORT_EXTRACT] = "success"
             gst_ingest_stage_metrics[STAGE_CREATED_COHORT_EXTRACT] = {
