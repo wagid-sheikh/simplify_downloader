@@ -17,6 +17,7 @@ import app.__main__ as app_main
 
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
+from app.crm_downloader.td_orders_sync import main as td_orders_main
 
 
 def _write_td_storage_state(path: Path, *, expires: int = 4_102_444_800) -> Path:
@@ -325,30 +326,39 @@ class _FakeContext:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.pages: list[_FakePage] = []
+        self.storage_state_paths: list[str] = []
 
     async def new_page(self) -> "_FakePage":
         page = _FakePage()
         self.pages.append(page)
         return page
 
+    async def storage_state(self, *, path: str) -> dict[str, Any]:
+        self.storage_state_paths.append(path)
+        return {"cookies": [], "origins": []}
+
 
 class _FakePage:
     def __init__(self) -> None:
         self.goto_calls: list[tuple[str, str | None]] = []
+        self.url = "https://subs.quickdrycleaning.com/td001/App/home"
 
     async def goto(self, url: str, *, wait_until: str | None = None) -> None:
         self.goto_calls.append((url, wait_until))
+        self.url = url
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["td", "uc"])
 async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
-    monkeypatch: pytest.MonkeyPatch, source: rebuild.Source
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: rebuild.Source
 ) -> None:
     playwright = SimpleNamespace(name=f"{source}-playwright")
     browser = _FakeBrowser()
     logger = SimpleNamespace(name=f"{source}-logger")
     launch_calls: list[tuple[Any, Any]] = []
+    prepare_calls: list[dict[str, Any]] = []
+    td_client_kwargs: list[dict[str, Any]] = []
 
     monkeypatch.setattr(
         "playwright.async_api.async_playwright",
@@ -364,14 +374,28 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     class FakeTdApiClient:
         def __init__(self, **kwargs: Any) -> None:
             self.kwargs = kwargs
+            td_client_kwargs.append(kwargs)
 
         async def fetch_reports(self, **kwargs: Any) -> Any:
             return SimpleNamespace(garments_rows=[], garment_order_snapshots=[])
+
+    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
+        prepare_calls.append(kwargs)
+        context = await kwargs["browser"].new_context(storage_state=None)
+        return SimpleNamespace(
+            context=context,
+            report_iframe_src="https://reports.quickdrycleaning.com/r",
+        )
 
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
         return SimpleNamespace(order_detail_rows=[], order_detail_snapshot_rows=[])
 
     monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+    monkeypatch.setattr(
+        rebuild,
+        "prepare_td_api_context_for_store",
+        fake_prepare_td_api_context_for_store,
+    )
     monkeypatch.setattr(
         rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
     )
@@ -382,7 +406,10 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
             source=source,
             store_code=f"{source.upper()}001",
             cost_center="CC01",
-            raw_store=SimpleNamespace(home_url="https://example.test/home"),
+            raw_store=SimpleNamespace(
+                home_url="https://example.test/home",
+                storage_state_path=tmp_path / f"{source}.json",
+            ),
         ),
         window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 2)),
         run_id=f"{source}-run",
@@ -391,6 +418,15 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
 
     assert snapshot == rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
     assert launch_calls == [(playwright, logger)]
+    if source == "td":
+        assert len(prepare_calls) == 1
+        assert prepare_calls[0]["store"].storage_state_path == tmp_path / "td.json"
+        assert (
+            td_client_kwargs[0]["report_iframe_src"]
+            == "https://reports.quickdrycleaning.com/r"
+        )
+    else:
+        assert prepare_calls == []
     assert browser.closed is True
 
 
@@ -430,8 +466,20 @@ async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
                 source_fetch_failed_endpoints=["/garments/details"],
             )
 
+    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
+        context = await kwargs["browser"].new_context(storage_state=None)
+        return SimpleNamespace(
+            context=context,
+            report_iframe_src="https://reports.quickdrycleaning.com/r",
+        )
+
     monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
     monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+    monkeypatch.setattr(
+        rebuild,
+        "prepare_td_api_context_for_store",
+        fake_prepare_td_api_context_for_store,
+    )
 
     with pytest.raises(rebuild.TdApiUnauthorizedError, match="TD API unauthorized"):
         await rebuild.default_fetch_snapshot(
@@ -440,12 +488,192 @@ async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
                 source="td",
                 store_code="TD001",
                 cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=Path()),
             ),
             window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 1)),
             run_id="td-unauthorized",
             logger=logger,
         )
 
+    assert browser.closed is True
+
+
+@pytest.mark.asyncio
+async def test_prepare_td_api_context_invalid_storage_state_logs_in_and_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[dict[str, Any]] = []
+    call_order: list[str] = []
+    browser = _FakeBrowser()
+    logger = SimpleNamespace(name="logger")
+
+    monkeypatch.setattr(td_orders_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        td_orders_main,
+        "log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    store = td_orders_main.TdStore(
+        store_code="TD001",
+        store_name="TD001",
+        cost_center="CC01",
+        sync_config={},
+    )
+    _write_td_storage_state(store.storage_state_path)
+
+    async def fake_probe(
+        *_args: Any, **_kwargs: Any
+    ) -> td_orders_main.SessionProbeResult:
+        call_order.append("probe")
+        return td_orders_main.SessionProbeResult(
+            valid=False,
+            final_url="https://subs.quickdrycleaning.com/td001/App/Login",
+            reason="login_form_visible",
+            verification_seen=False,
+        )
+
+    async def fake_login(*_args: Any, **_kwargs: Any) -> bool:
+        call_order.append("login")
+        return True
+
+    async def fake_otp(*_args: Any, **_kwargs: Any) -> tuple[bool, bool]:
+        call_order.append("otp")
+        return True, False
+
+    async def fake_home(*_args: Any, **_kwargs: Any) -> bool:
+        call_order.append("home")
+        return True
+
+    async def fake_nav(*_args: Any, **_kwargs: Any) -> bool:
+        call_order.append("navigate")
+        return True
+
+    async def fake_iframe(*_args: Any, **_kwargs: Any) -> tuple[object, str]:
+        call_order.append("iframe")
+        return object(), "https://reports.quickdrycleaning.com/orders"
+
+    async def fake_resolve(*_args: Any, **_kwargs: Any) -> str:
+        call_order.append("resolve")
+        return "https://reports.quickdrycleaning.com/orders?auth=1"
+
+    monkeypatch.setattr(td_orders_main, "_probe_session", fake_probe)
+    monkeypatch.setattr(td_orders_main, "_perform_login", fake_login)
+    monkeypatch.setattr(td_orders_main, "_wait_for_otp_verification", fake_otp)
+    monkeypatch.setattr(td_orders_main, "_wait_for_home", fake_home)
+    monkeypatch.setattr(td_orders_main, "_navigate_to_orders_container", fake_nav)
+    monkeypatch.setattr(td_orders_main, "_wait_for_iframe", fake_iframe)
+    monkeypatch.setattr(
+        td_orders_main, "_resolve_report_iframe_auth_source_for_api", fake_resolve
+    )
+
+    api_context = await td_orders_main.prepare_td_api_context_for_store(
+        browser=browser,
+        store=store,
+        logger=logger,
+        run_id="invalid-storage-refresh",
+        run_start_date=date(2025, 1, 1),
+        run_end_date=date(2025, 1, 2),
+        nav_timeout_ms=10,
+    )
+
+    assert call_order == [
+        "probe",
+        "login",
+        "otp",
+        "home",
+        "navigate",
+        "iframe",
+        "resolve",
+    ]
+    assert api_context.login_performed is True
+    assert (
+        api_context.report_iframe_src
+        == "https://reports.quickdrycleaning.com/orders?auth=1"
+    )
+    assert browser.contexts[0].kwargs["storage_state"] == str(store.storage_state_path)
+    assert browser.contexts[0].storage_state_paths == [str(store.storage_state_path)]
+    assert any(
+        event.get("message") == "Storage state probe invalid; performing login"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_fetch_snapshot_successful_td_garments_response_is_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    playwright = SimpleNamespace(name="td-playwright")
+    browser = _FakeBrowser()
+    logger = SimpleNamespace(name="td-logger")
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(playwright),
+    )
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        return browser
+
+    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
+        context = await kwargs["browser"].new_context(storage_state=None)
+        return SimpleNamespace(
+            context=context,
+            report_iframe_src="https://reports.quickdrycleaning.com/orders?auth=1",
+        )
+
+    class FakeTdApiClient:
+        def __init__(self, **kwargs: Any) -> None:
+            assert (
+                kwargs["report_iframe_src"]
+                == "https://reports.quickdrycleaning.com/orders?auth=1"
+            )
+
+        async def fetch_reports(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                garments_rows=[{"order_number": "ORD-1", "garment_name": "Shirt"}],
+                garment_order_snapshots=[
+                    {
+                        "order_number": "ORD-1",
+                        "garment_snapshot_outcome": "complete_with_rows",
+                    }
+                ],
+                endpoint_errors={},
+                endpoint_health={
+                    "/garments/details": {
+                        "success": True,
+                        "garments_fetch_completeness": "complete",
+                    }
+                },
+            )
+
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+    monkeypatch.setattr(
+        rebuild,
+        "prepare_td_api_context_for_store",
+        fake_prepare_td_api_context_for_store,
+    )
+    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+
+    snapshot = await rebuild.default_fetch_snapshot(
+        source="td",
+        store=rebuild.RebuildStore(
+            source="td",
+            store_code="TD001",
+            cost_center="CC01",
+            raw_store=SimpleNamespace(storage_state_path=tmp_path / "td.json"),
+        ),
+        window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 1)),
+        run_id="td-garments-success",
+        logger=logger,
+    )
+
+    assert len(snapshot.line_item_rows) == 1
+    assert len(snapshot.order_snapshots) == 1
+    assert (
+        snapshot.order_snapshots[0]["garment_snapshot_outcome"]
+        == "complete_with_rows"
+    )
     assert browser.closed is True
 
 
@@ -547,7 +775,12 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
 
     async def load_stores(*, sources, store_codes, logger):
         return [
-            rebuild.RebuildStore(source="td", store_code="TD001", cost_center="CC01")
+            rebuild.RebuildStore(
+                source="td",
+                store_code="TD001",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=Path()),
+            )
         ]
 
     async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
@@ -576,9 +809,21 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
                 ],
             )
 
+    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
+        context = await kwargs["browser"].new_context(storage_state=None)
+        return SimpleNamespace(
+            context=context,
+            report_iframe_src="https://reports.quickdrycleaning.com/r",
+        )
+
     monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
     monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
     monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+    monkeypatch.setattr(
+        rebuild,
+        "prepare_td_api_context_for_store",
+        fake_prepare_td_api_context_for_store,
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         rebuild.run(
