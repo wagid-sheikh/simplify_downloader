@@ -1118,6 +1118,7 @@ async def test_resume_progress_uses_source_store_window_while_uc_staging_uses_ch
             ],
         )
 
+    logger = _InMemoryLogger("resume-parent")
     metrics = await rebuild.run_rebuild(
         source_selection="uc",
         store_codes=None,
@@ -1127,10 +1128,25 @@ async def test_resume_progress_uses_source_store_window_while_uc_staging_uses_ch
         dry_run=False,
         resume=True,
         run_id="resume-parent",
+        logger=logger,
         fetch_snapshot=fetcher,
     )
 
     assert seen == [date(2025, 1, 2)]
+    skip_events = [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "Skipping previously successful order_line_items rebuild window"
+    ]
+    assert skip_events[0]["prior_run_id"] == "old-parent"
+    assert skip_events[0]["resume"] is True
+    assert [
+        event
+        for event in logger.events
+        if event.get("message")
+        == "order_line_items rebuild resume matches prior progress by source/store/window, not the current run ID"
+    ]
     assert [metric.uc_child_run_id for metric in metrics] == [
         "resume-parent:uc:UC001:2025-01-02:2025-01-02"
     ]
@@ -1564,6 +1580,101 @@ async def test_missing_window_detection_reports_failed_windows(
 
 
 @pytest.mark.asyncio
+async def test_resume_skipped_window_log_includes_prior_progress_metadata(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items_rebuild_progress
+            (source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no,
+             complete_with_rows_orders, complete_empty_orders, skipped_incomplete_orders, deleted_rows, inserted_rows,
+             orphan_rows, updated_at)
+            VALUES ('td', 'TD001', 'CC01', '2025-01-01', '2025-01-01', 'prior-run', 'success_with_warnings', 2,
+             3, 4, 5, 6, 7, 8, '2025-01-02 03:04:05')
+        """))
+        await session.commit()
+    logger = _InMemoryLogger("current-run")
+
+    async def fetcher(**kwargs):
+        pytest.fail("successful resume progress should skip the window")
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        resume=True,
+        run_id="current-run",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    skip_event = next(
+        event
+        for event in logger.events
+        if event.get("message")
+        == "Skipping previously successful order_line_items rebuild window"
+    )
+    assert skip_event["prior_run_id"] == "prior-run"
+    assert skip_event["prior_updated_at"] == "2025-01-02 03:04:05"
+    assert skip_event["prior_status"] == "success_with_warnings"
+    assert skip_event["prior_metrics_counts"] == {
+        "complete_with_rows_orders": 3,
+        "complete_empty_orders": 4,
+        "skipped_incomplete_orders": 5,
+        "deleted_rows": 6,
+        "inserted_rows": 7,
+        "orphan_rows": 8,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fresh_live_rebuild_without_resume_ignores_progress_and_processes_all_windows(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items_rebuild_progress
+            (source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no)
+            VALUES ('td', 'TD001', 'CC01', '2025-01-01', '2025-01-01', 'prior-success', 'success', 1)
+        """))
+        await session.commit()
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        resume=False,
+        run_id="fresh-live",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 1, 1)]
+    assert len(metrics) == 1
+    progress = await _rows(
+        db_url,
+        "SELECT run_id, status FROM order_line_items_rebuild_progress WHERE source='td' AND store_code='TD001'",
+    )
+    assert [(row.run_id, row.status) for row in progress] == [("fresh-live", "success")]
+
+
+@pytest.mark.asyncio
 async def test_resume_skips_last_success_and_processes_remaining_window(
     patch_config_and_stores,
 ) -> None:
@@ -1763,7 +1874,20 @@ def test_module_parser_accepts_omitted_dates() -> None:
     assert args.start_date is None
     assert args.end_date is None
     assert args.resume is True
+    assert args.resume_run_id is None
+    assert args.fresh is False
     assert args.run_id == "explicit-cli-run"
+
+    scoped_args = rebuild._build_parser().parse_args(
+        ["--source", "td", "--resume", "--resume-run-id", "prior-run"]
+    )
+    assert scoped_args.resume is True
+    assert scoped_args.resume_run_id == "prior-run"
+
+    fresh_args = rebuild._build_parser().parse_args(
+        ["--source", "td", "--ignore-progress"]
+    )
+    assert fresh_args.fresh is True
 
 
 def test_async_entrypoint_exits_zero_when_rebuild_completes(
