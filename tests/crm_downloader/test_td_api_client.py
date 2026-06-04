@@ -2403,6 +2403,107 @@ async def test_garments_har_shaped_non_empty_response_is_complete(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_garments_first_page_unauthorized_uses_structured_log_without_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class InMemoryJsonLogger:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        def info(
+            self,
+            *,
+            phase: str,
+            status: str = "ok",
+            message: str = "",
+            **fields: object,
+        ) -> None:
+            self.events.append(
+                {"phase": phase, "status": status, "message": message, **fields}
+            )
+
+    structured_logger = InMemoryJsonLogger()
+    client = TdApiClient(
+        store_code="a668",
+        context=None,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(min_interval_seconds=0, max_retries=0),
+        run_id="td-unauthorized-run",
+        structured_logger=structured_logger,
+    )  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type(
+            "_Result",
+            (),
+            {
+                "ok": False,
+                "payload": {"error": "unauthorized"},
+                "error": "http_401",
+                "status": 401,
+                "attempts": 1,
+                "latency_ms": 10,
+                "timeout_failures": 0,
+                "content_type": "application/json",
+            },
+        )()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={
+            "startDate": "2026-06-03",
+            "endDate": "2026-06-04",
+            "page": 1,
+            "pageSize": 100,
+        },
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    unauthorized_events = [
+        event
+        for event in structured_logger.events
+        if event.get("message") == "TD API endpoint unauthorized on first page"
+    ]
+    assert len(unauthorized_events) == 1
+    unauthorized_event = unauthorized_events[0]
+    expected_fields = {
+        "phase": "td_order_line_items_source_fetch",
+        "status": "error",
+        "message": "TD API endpoint unauthorized on first page",
+        "run_id": "td-unauthorized-run",
+        "source": "td",
+        "store_code": "A668",
+        "endpoint": "/garments/details",
+        "window_start": "2026-06-03",
+        "window_end": "2026-06-04",
+        "http_status": 401,
+        "failure_class": "http_401",
+    }
+    for key, expected_value in expected_fields.items():
+        assert unauthorized_event[key] == expected_value
+    completeness_events = [
+        event
+        for event in structured_logger.events
+        if event.get("message") == "garments_fetch_completeness"
+    ]
+    assert completeness_events
+    assert completeness_events[-1]["status"] == "warning"
+    assert completeness_events[-1]["run_id"] == "td-unauthorized-run"
+    assert completeness_events[-1]["source"] == "td"
+    assert completeness_events[-1]["store_code"] == "A668"
+    assert completeness_events[-1]["window_start"] == "2026-06-03"
+    assert completeness_events[-1]["window_end"] == "2026-06-04"
+    assert completeness_events[-1]["failure_class"] == "http_401"
+
+@pytest.mark.asyncio
 async def test_garments_malformed_payload_logs_sanitized_shape_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
