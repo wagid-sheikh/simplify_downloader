@@ -8954,9 +8954,9 @@ async def _run_store_discovery(
             and "api_fetch_result" in locals()
             and (api_fetch_result.garments_rows or api_fetch_result.garment_order_snapshots)
         ):
+            garments_endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
+            replacement_allowed = str(garments_endpoint_health.get("garments_fetch_completeness") or "unknown") == "complete"
             try:
-                garments_endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
-                replacement_allowed = str(garments_endpoint_health.get("garments_fetch_completeness") or "unknown") == "complete"
                 garment_ingest_result = await ingest_td_garment_rows(
                     rows=api_fetch_result.garments_rows,
                     authoritative_order_scope=api_fetch_result.garment_order_snapshots,
@@ -8969,11 +8969,21 @@ async def _run_store_discovery(
                     window_to_date=run_end_date,
                     database_url=config.database_url,
                 )
+            except Exception as exc:
+                log_event(
+                    logger=store_logger,
+                    phase="garment_ingest",
+                    status="warning",
+                    message="TD garment sync failed",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+            else:
                 log_event(
                     logger=store_logger,
                     phase="garment_ingest",
                     message="TD garment snapshot replacement completed" if replacement_allowed else "TD garment snapshot replacement skipped",
-                    status="success" if replacement_allowed else "warning",
+                    status="ok" if replacement_allowed else "warning",
                     store_code=store.store_code,
                     authoritative_orders_inspected=garment_ingest_result.authoritative_orders_inspected,
                     complete_with_rows_orders=garment_ingest_result.complete_with_rows_orders,
@@ -8985,15 +8995,6 @@ async def _run_store_discovery(
                     orphan_rows=garment_ingest_result.orphan_rows,
                     replacement_allowed=replacement_allowed,
                     garments_fetch_completeness=garments_endpoint_health.get("garments_fetch_completeness"),
-                )
-            except Exception as exc:
-                log_event(
-                    logger=store_logger,
-                    phase="garment_ingest",
-                    status="warning",
-                    message="TD garment sync failed",
-                    store_code=store.store_code,
-                    error=str(exc),
                 )
         elif garment_sync_enabled and not compare_ok:
             log_event(

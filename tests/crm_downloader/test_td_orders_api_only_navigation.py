@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -152,6 +153,151 @@ async def test_api_only_modal_blocked_orders_navigation_is_warning_when_api_has_
     assert store_summary["status"] == "warning"
     assert store_summary["data_ingest_status"] == "success"
     assert store_summary["failure_stage"] is None
+
+
+@pytest.mark.asyncio
+async def test_successful_garment_replacement_logs_ok_without_failure_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(td_orders_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(td_orders_main, "_resolve_td_api_artifact_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        td_orders_main,
+        "config",
+        replace(
+            td_orders_main.config, database_url="sqlite+aiosqlite:///garments-ok.db"
+        ),
+    )
+
+    async def _insert_log(**_kwargs: object) -> int:
+        return 1
+
+    async def _noop_async(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _login(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def _home(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def _nav_blocked(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def _api_success(**_kwargs: object):
+        orders_report = td_orders_main.StoreReport(
+            status="ok",
+            source_mode="api_only",
+            rows_downloaded=1,
+            rows_ingested=1,
+            final_rows=1,
+            compare_rows_orders=[{"order_number": "A817-1"}],
+        )
+        sales_report = td_orders_main.StoreReport(
+            status="ok",
+            source_mode="api_only",
+            rows_downloaded=1,
+            rows_ingested=1,
+            final_rows=1,
+            compare_rows_sales=[{"order_number": "A817-1"}],
+        )
+        fetch_result = td_orders_main.TdApiFetchResult(
+            orders_rows=[{"order_number": "A817-1"}],
+            sales_rows=[{"order_number": "A817-1"}],
+            garments_rows=[{"order_number": "A817-1", "garment_name": "Shirt"}],
+            garment_order_snapshots=[
+                {
+                    "order_number": "A817-1",
+                    "garment_snapshot_outcome": "complete_with_rows",
+                }
+            ],
+            endpoint_health={
+                "/garments/details": {"garments_fetch_completeness": "complete"}
+            },
+        )
+        return orders_report, sales_report, fetch_result, []
+
+    async def _garment_ingest_success(
+        **_kwargs: object,
+    ) -> td_orders_main.TdGarmentIngestResult:
+        return td_orders_main.TdGarmentIngestResult(
+            staging_rows=1,
+            staging_inserted=1,
+            staging_updated=0,
+            final_rows=1,
+            final_inserted=1,
+            final_updated=0,
+            row_count=1,
+            source_id_duplicate_rows=0,
+            changed_rows=1,
+            late_updates=0,
+            orphan_rows=0,
+            authoritative_orders_inspected=1,
+            complete_with_rows_orders=1,
+            complete_empty_orders=0,
+            replacement_skipped_incomplete_orders=0,
+            deleted_final_rows=0,
+            inserted_final_rows=1,
+        )
+
+    async def _no_orphan_alert(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"triggered": False}
+
+    monkeypatch.setattr(td_orders_main, "_insert_orders_sync_log", _insert_log)
+    monkeypatch.setattr(td_orders_main, "_update_orders_sync_log", _noop_async)
+    monkeypatch.setattr(td_orders_main, "_perform_login", _login)
+    monkeypatch.setattr(td_orders_main, "_wait_for_home", _home)
+    monkeypatch.setattr(td_orders_main, "_navigate_to_orders_container", _nav_blocked)
+    monkeypatch.setattr(td_orders_main, "_execute_api_primary_ingestion", _api_success)
+    monkeypatch.setattr(td_orders_main, "ingest_td_garment_rows", _garment_ingest_success)
+    monkeypatch.setattr(td_orders_main, "_log_home_nav_diagnostics", _noop_async)
+    monkeypatch.setattr(td_orders_main, "_evaluate_garment_orphan_alert", _no_orphan_alert)
+
+    stream = io.StringIO()
+    summary = td_orders_main.TdOrdersDiscoverySummary(
+        run_id="run-garment-ok",
+        run_env="test",
+        report_date=date(2026, 1, 1),
+        report_end_date=date(2026, 1, 1),
+    )
+    store = td_orders_main.TdStore(
+        store_code="A817", store_name="A817", cost_center="CC-A817", sync_config={}
+    )
+
+    await td_orders_main._run_store_discovery(
+        browser=_FakeBrowser(_FakePage()),
+        store=store,
+        logger=JsonLogger(stream=stream, log_file_path=None),
+        run_env="test",
+        run_id="run-garment-ok",
+        run_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        run_start_date=date(2026, 1, 1),
+        run_end_date=date(2026, 1, 1),
+        nav_timeout_ms=10,
+        summary=summary,
+        run_orders=True,
+        run_sales=True,
+        source_mode="api_only",
+    )
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    replacement_event = next(
+        event
+        for event in events
+        if event.get("message") == "TD garment snapshot replacement completed"
+    )
+
+    assert replacement_event["status"] == "ok"
+    assert not any(
+        event.get("message") == "TD garment sync failed" for event in events
+    )
+    assert {event["status"] for event in events} <= {
+        "debug",
+        "info",
+        "ok",
+        "warning",
+        "error",
+    }
 
 
 def test_a817_summary_distinguishes_api_ingest_ui_navigation_and_garment_warnings() -> (
