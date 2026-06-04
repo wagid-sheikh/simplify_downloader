@@ -514,3 +514,49 @@ def test_grouped_short_with_mixed_recovery_status_is_not_grouped_short() -> None
         audit_rows[0].operator_actionable_payment_status != "actionable_short_payment"
     )
     assert audit_rows[0].recovery_statuses_csv == "WRITE_OFF"
+
+
+def test_overpayment_counts_as_paid_and_short_proof_remains_short_payment() -> None:
+    overpaid = reconcile_payments(
+        order_rows=[_order("OVERPAID", "100")],
+        sales_rows=[_sale("OVERPAID", "125")],
+        payment_evidence_rows=[_proof("OVERPAID", "125")],
+    )
+    short = reconcile_payments(
+        order_rows=[_order("SHORTPROOF", "100")],
+        sales_rows=[_sale("SHORTPROOF", "50")],
+        payment_evidence_rows=[_proof("SHORTPROOF", "50")],
+    )
+
+    assert overpaid.groups[0].status == "paid"
+    assert overpaid.orders[0].status == "paid"
+    assert overpaid.short_payment_orders == ()
+    assert short.groups[0].status == "short"
+    assert short.short_payment_orders == (short.orders[0],)
+
+
+def test_mixed_comma_slash_tokens_match_and_unrelated_tokens_do_not_match() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("MIX1", "50", "2026-05-01T10:00:00"),
+            _order("MIX2", "30", "2026-05-01T11:00:00"),
+            _order("MIX3", "20", "2026-05-01T12:00:00"),
+            _order("ORD1", "100", "2026-05-01T13:00:00"),
+        ],
+        sales_rows=[
+            _sale("MIX1", "50"),
+            _sale("MIX2", "30"),
+            _sale("MIX3", "20"),
+            _sale("ORD1", "100"),
+        ],
+        payment_evidence_rows=[
+            _proof("MIX1, MIX2/MIX3", "100"),
+            _proof("ORD10", "100"),
+        ],
+    )
+
+    groups_by_tokens = {group.normalized_order_numbers: group for group in result.groups}
+    assert groups_by_tokens[("MIX1", "MIX2", "MIX3")].status == "paid"
+    assert groups_by_tokens[("ORD1",)].status == "proof_missing"
+    assert ("ORD10",) not in groups_by_tokens
+    assert [order.order_number for order in result.actual_payments_not_found] == ["ORD1"]
