@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -124,9 +125,7 @@ async def test_load_store_start_dates_matches_sync_group_case_insensitively(
     start_dates = await rebuild._load_store_start_dates(
         database_url=db_url,
         stores=[
-            rebuild.RebuildStore(
-                source="td", store_code="TD001", cost_center="CC01"
-            )
+            rebuild.RebuildStore(source="td", store_code="TD001", cost_center="CC01")
         ],
     )
 
@@ -333,6 +332,212 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     assert browser.closed is True
 
 
+@pytest.mark.asyncio
+async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    playwright = SimpleNamespace(name="td-playwright")
+    browser = _FakeBrowser()
+    logger = SimpleNamespace(name="td-logger")
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(playwright),
+    )
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        return browser
+
+    class FakeTdApiClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+        async def fetch_reports(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                garments_rows=[],
+                garment_order_snapshots=[],
+                endpoint_errors={"/garments/details": "http_401"},
+                endpoint_health={
+                    "/garments/details": {
+                        "success": False,
+                        "final_error_class": "http_401",
+                    }
+                },
+                source_fetch_status="auth_failed",
+                source_fetch_error_class="http_401",
+                source_fetch_failed_endpoints=["/garments/details"],
+            )
+
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+
+    with pytest.raises(rebuild.TdApiUnauthorizedError, match="TD API unauthorized"):
+        await rebuild.default_fetch_snapshot(
+            source="td",
+            store=rebuild.RebuildStore(
+                source="td",
+                store_code="TD001",
+                cost_center="CC01",
+            ),
+            window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 1)),
+            run_id="td-unauthorized",
+            logger=logger,
+        )
+
+    assert browser.closed is True
+
+
+@pytest.mark.asyncio
+async def test_td_unauthorized_does_not_create_successful_window_metrics(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("unauthorized-window")
+
+    async def fetcher(**kwargs):
+        raise rebuild.TdApiUnauthorizedError(
+            store_code=kwargs["store"].store_code,
+            failed_endpoints=["/garments/details"],
+            error_class="http_401",
+        )
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="unauthorized-window",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert exc_info.value.completed_window_count == 0
+    assert exc_info.value.missing_windows == ("td:TD001:2025-01-01..2025-01-01",)
+    failed_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("window_start") == "2025-01-01"
+    ]
+    assert failed_events[-1]["status"] == "error"
+    assert not any(event.get("status") == "ok" for event in failed_events)
+
+
+@pytest.mark.asyncio
+async def test_td_unauthorized_window_is_reported_missing(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("unauthorized-missing")
+
+    async def fetcher(**kwargs):
+        raise rebuild.TdApiUnauthorizedError(
+            store_code="TD001",
+            failed_endpoints=["/reports/order-report", "/garments/details"],
+            error_class="http_401",
+        )
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="unauthorized-missing",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    missing_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_missing_windows"
+    ][-1]
+    assert missing_event["status"] == "warning"
+    assert missing_event["missing_window_count"] == 1
+    assert missing_event["missing_windows"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "window_start": "2025-01-01",
+            "window_end": "2025-01-01",
+        }
+    ]
+
+
+def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'cli-unauthorized.sqlite'}"
+    asyncio.run(_create_common_tables(db_url))
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(SimpleNamespace(name="td-playwright")),
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(source="td", store_code="TD001", cost_center="CC01")
+        ]
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        return _FakeBrowser()
+
+    class FakeTdApiClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def fetch_reports(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                garments_rows=[],
+                garment_order_snapshots=[],
+                endpoint_errors={
+                    "/reports/order-report": "http_401",
+                    "/sales-and-deliveries/sales": "http_401",
+                    "/garments/details": "http_401",
+                },
+                endpoint_health={},
+                source_fetch_status="auth_failed",
+                source_fetch_error_class="http_401",
+                source_fetch_failed_endpoints=[
+                    "/reports/order-report",
+                    "/sales-and-deliveries/sales",
+                    "/garments/details",
+                ],
+            )
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
+
+    with pytest.raises(SystemExit) as exc_info:
+        rebuild.run(
+            [
+                "--source",
+                "td",
+                "--start-date",
+                "2025-01-01",
+                "--end-date",
+                "2025-01-01",
+                "--window-size",
+                "1",
+                "--dry-run",
+                "--run-id",
+                "cli-unauthorized",
+            ]
+        )
+
+    assert exc_info.value.code == 1
+
+
 def test_bounded_window_progression() -> None:
     windows = rebuild.iter_windows(date(2025, 1, 1), date(2025, 1, 10), 4)
     assert [(w.start, w.end) for w in windows] == [
@@ -340,6 +545,7 @@ def test_bounded_window_progression() -> None:
         (date(2025, 1, 5), date(2025, 1, 8)),
         (date(2025, 1, 9), date(2025, 1, 10)),
     ]
+
 
 @pytest.mark.asyncio
 async def test_preflight_missing_store_master_start_date_fails_before_windows(

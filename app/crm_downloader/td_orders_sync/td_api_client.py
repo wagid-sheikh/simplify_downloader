@@ -27,6 +27,38 @@ HAR_COMPATIBLE_ENDPOINTS = frozenset({SALES_ENDPOINT, GARMENTS_ENDPOINT})
 
 logger = logging.getLogger(__name__)
 
+
+AUTH_FAILURE_ERROR_CLASSES = frozenset(
+    {
+        "auth_unavailable",
+        "auth_context_not_ready",
+        "missing_auth_token_at_dispatch",
+        "http_401",
+        "http_403",
+        "html_auth_payload",
+    }
+)
+
+
+class TdApiUnauthorizedError(RuntimeError):
+    """Raised when TD API source fetch cannot be authoritative due to auth failure."""
+
+    def __init__(
+        self,
+        *,
+        store_code: str,
+        failed_endpoints: Sequence[str] | None = None,
+        error_class: str | None = None,
+    ) -> None:
+        self.store_code = store_code.upper().strip()
+        self.failed_endpoints = tuple(failed_endpoints or ())
+        self.error_class = error_class or "td_api_auth_failed"
+        endpoints = ",".join(self.failed_endpoints) if self.failed_endpoints else "unknown"
+        super().__init__(
+            f"TD API unauthorized/session expired for store {self.store_code}; "
+            f"failed_endpoints={endpoints}; error_class={self.error_class}"
+        )
+
 _TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "total_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
 _GARMENTS_WALL_TIME_SOFT_THRESHOLD_RATIO = 0.9
 _GARMENTS_INCOMPLETE_REASON_MESSAGES = {
@@ -217,6 +249,9 @@ class TdApiFetchResult:
     orders_cookie_shape_status_code: int | None = None
     orders_cookie_shape_fallback_used: bool = False
     orders_cookie_shape_runtime_delta_ms: int | None = None
+    source_fetch_status: str = "unknown"
+    source_fetch_error_class: str | None = None
+    source_fetch_failed_endpoints: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -302,6 +337,66 @@ class _StoreRateLimiter:
             cls._next_allowed_at[normalized_store] = time.monotonic() + max(min_interval_seconds, 0.0)
 
 
+
+def td_api_fetch_auth_failure_endpoints(result: Any) -> list[str]:
+    """Return endpoints whose result proves the TD API session is unauthorized.
+
+    The rebuild pipeline treats these as source-fetch failures rather than as
+    legitimate empty data windows. This intentionally keys off explicit auth
+    classes emitted by the TD API client instead of row counts.
+    """
+    failed: list[str] = []
+    endpoint_errors = getattr(result, "endpoint_errors", None) or {}
+    for endpoint, error_class in endpoint_errors.items():
+        if str(error_class or "").strip() in AUTH_FAILURE_ERROR_CLASSES:
+            failed.append(str(endpoint))
+
+    endpoint_health = getattr(result, "endpoint_health", None) or {}
+    for endpoint, health in endpoint_health.items():
+        if not isinstance(health, Mapping):
+            continue
+        error_class = str(health.get("final_error_class") or "").strip()
+        if error_class in AUTH_FAILURE_ERROR_CLASSES and str(endpoint) not in failed:
+            failed.append(str(endpoint))
+
+    source_status = str(getattr(result, "source_fetch_status", "") or "").strip()
+    source_error = str(getattr(result, "source_fetch_error_class", "") or "").strip()
+    if source_status == "auth_failed" or source_error in AUTH_FAILURE_ERROR_CLASSES:
+        for endpoint in getattr(result, "source_fetch_failed_endpoints", None) or []:
+            if str(endpoint) not in failed:
+                failed.append(str(endpoint))
+    return failed
+
+
+def td_api_fetch_has_auth_failure(result: Any) -> bool:
+    return bool(td_api_fetch_auth_failure_endpoints(result))
+
+
+def _td_api_source_status(
+    *, endpoint_errors: Mapping[str, str], endpoint_health: Mapping[str, Mapping[str, Any]]
+) -> tuple[str, str | None, list[str]]:
+    proxy = type(
+        "_TdApiSourceStatusProxy",
+        (),
+        {"endpoint_errors": endpoint_errors, "endpoint_health": endpoint_health},
+    )()
+    failed_endpoints = td_api_fetch_auth_failure_endpoints(proxy)
+    if failed_endpoints:
+        first_error = next(
+            (
+                str(endpoint_errors.get(endpoint) or "").strip()
+                for endpoint in failed_endpoints
+                if str(endpoint_errors.get(endpoint) or "").strip()
+            ),
+            "td_api_auth_failed",
+        )
+        return "auth_failed", first_error, failed_endpoints
+    if endpoint_errors:
+        first_error = next((str(value) for value in endpoint_errors.values() if value), None)
+        return "incomplete", first_error, list(endpoint_errors)
+    return "complete", None, []
+
+
 class TdApiClient:
     def __init__(
         self,
@@ -376,6 +471,9 @@ class TdApiClient:
                 orders_cookie_shape_status_code=self._auth_state.orders_cookie_shape_status_code,
                 orders_cookie_shape_fallback_used=self._auth_state.orders_cookie_shape_attempted and not self._auth_state.orders_cookie_shape_success,
                 orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
+                source_fetch_status="auth_failed",
+                source_fetch_error_class="auth_unavailable",
+                source_fetch_failed_endpoints=list(errors),
             )
 
         self._log_orders_cookie_shape_gate_state_once()
@@ -436,6 +534,10 @@ class TdApiClient:
             endpoint_health=endpoint_health.get(GARMENTS_ENDPOINT),
         )
 
+        source_fetch_status, source_fetch_error_class, source_fetch_failed_endpoints = _td_api_source_status(
+            endpoint_errors=errors, endpoint_health=endpoint_health
+        )
+
         return TdApiFetchResult(
             raw_orders_payload=order_payload,
             raw_sales_payload=sales_payload,
@@ -457,6 +559,9 @@ class TdApiClient:
             orders_cookie_shape_status_code=self._auth_state.orders_cookie_shape_status_code,
             orders_cookie_shape_fallback_used=self._auth_state.orders_cookie_shape_attempted and not self._auth_state.orders_cookie_shape_success,
             orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
+            source_fetch_status=source_fetch_status,
+            source_fetch_error_class=source_fetch_error_class,
+            source_fetch_failed_endpoints=source_fetch_failed_endpoints,
         )
 
     def _orders_cookie_shape_gate_state_payload(self) -> dict[str, Any]:
