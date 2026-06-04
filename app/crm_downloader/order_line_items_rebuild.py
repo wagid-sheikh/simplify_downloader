@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 import sqlalchemy as sa
@@ -140,6 +141,13 @@ class RebuildStore:
     raw_store: Any | None = None
     sync_config: Mapping[str, Any] = field(default_factory=dict)
     start_date: date | None = None
+
+
+@dataclass(frozen=True)
+class RebuildPreflightResult:
+    stores: list[RebuildStore]
+    source_window_days_by_store: dict[tuple[Source, str], int]
+    missing_storage_states: list[dict[str, str]]
 
 
 @dataclass
@@ -833,6 +841,206 @@ def _window_status(row: Mapping[str, Any] | None) -> str | None:
     return str(row.get("status") or "").strip().lower() if row else None
 
 
+def _browser_backend() -> str:
+    return str(getattr(config, "pdf_render_backend", None) or "bundled_chromium").lower()
+
+
+class _PreflightChromiumProbe:
+    async def launch(self, **_kwargs: Any) -> "_PreflightBrowserProbe":
+        return _PreflightBrowserProbe()
+
+
+class _PreflightBrowserProbe:
+    async def close(self) -> None:
+        return None
+
+
+async def _check_browser_launch_contract(*, logger: JsonLogger) -> None:
+    """Validate the rebuild's browser-launch calling contract without opening Chrome.
+
+    The historical rebuild fetchers only depend on the shared ``launch_browser``
+    keyword-only API and a browser object that can be closed.  A lightweight
+    probe catches contract drift before the first window starts while keeping
+    tests and dry-run preflight independent from the local Playwright install.
+    """
+    browser = await launch_browser(
+        playwright=SimpleNamespace(chromium=_PreflightChromiumProbe()),
+        logger=logger,
+    )
+    close = getattr(browser, "close", None)
+    if close is not None:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+
+
+def _storage_state_concerns(stores: Sequence[RebuildStore]) -> list[dict[str, str]]:
+    concerns: list[dict[str, str]] = []
+    for store in stores:
+        path = _storage_state_path(store)
+        if path is None:
+            concerns.append(
+                {
+                    "source": store.source,
+                    "store_code": store.store_code,
+                    "reason": "storage_state_path_missing",
+                }
+            )
+            continue
+        if not path.exists():
+            concerns.append(
+                {
+                    "source": store.source,
+                    "store_code": store.store_code,
+                    "storage_state": str(path),
+                    "reason": "storage_state_file_missing",
+                }
+            )
+    return concerns
+
+
+async def preflight_rebuild(
+    *,
+    database_url: str | None,
+    sources: Sequence[Source],
+    stores: Sequence[RebuildStore],
+    start_date: date | None,
+    requested_window_size_days: int | None,
+    run_id: str,
+    logger: JsonLogger,
+) -> RebuildPreflightResult:
+    selected_stores = list(stores)
+    selected_store_codes = [store.store_code for store in selected_stores]
+    source_window_days_by_store: dict[tuple[Source, str], int] = {}
+    missing_start_dates: list[dict[str, str]] = []
+    missing_cost_centers = [
+        {"source": store.source, "store_code": store.store_code}
+        for store in selected_stores
+        if not str(store.cost_center or "").strip()
+    ]
+    errors: list[str] = []
+
+    if not database_url:
+        errors.append("database_url is required")
+    if not selected_stores:
+        errors.append("at least one selected store is required")
+    if missing_cost_centers:
+        errors.append("cost_center is required for every selected store")
+
+    hydrated_stores = selected_stores
+    if database_url and selected_stores and start_date is None:
+        start_dates = await _load_store_start_dates(
+            database_url=database_url, stores=selected_stores
+        )
+        hydrated_stores = [
+            RebuildStore(
+                source=store.source,
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                raw_store=store.raw_store,
+                sync_config=store.sync_config,
+                start_date=start_dates.get((store.source, store.store_code.upper()))
+                or store.start_date,
+            )
+            for store in selected_stores
+        ]
+        missing_start_dates = [
+            {"source": store.source, "store_code": store.store_code}
+            for store in hydrated_stores
+            if store.start_date is None
+        ]
+        if missing_start_dates:
+            errors.append(
+                "start_date is required because store_master.start_date is not set "
+                "for every selected store"
+            )
+
+    for store in hydrated_stores:
+        try:
+            resolved_days = resolve_crm_source_window_days(
+                sync_config=store.sync_config,
+                source=store.source,
+                requested_window_days=requested_window_size_days,
+            )
+        except Exception as exc:
+            errors.append(
+                f"source window size could not be resolved for "
+                f"{store.source}:{store.store_code}: {exc}"
+            )
+            continue
+        source_window_days_by_store[(store.source, store.store_code.upper())] = (
+            resolved_days
+        )
+        if resolved_days < 1 or resolved_days > 30:
+            errors.append(
+                f"source window size for {store.source}:{store.store_code} must be "
+                "between 1 and 30 days"
+            )
+
+    missing_storage_states = _storage_state_concerns(hydrated_stores)
+    if missing_storage_states:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_preflight",
+            status="warning",
+            message=(
+                "Storage state is missing for one or more selected stores; "
+                "CRM sync will follow the existing login/session refresh path"
+            ),
+            run_id=run_id,
+            sources=list(sources),
+            stores=selected_store_codes,
+            missing_start_dates=missing_start_dates,
+            missing_storage_states=missing_storage_states,
+            browser_backend=_browser_backend(),
+        )
+
+    if not errors:
+        try:
+            await _check_browser_launch_contract(logger=logger)
+        except Exception as exc:
+            errors.append(f"browser launch contract failed: {exc}")
+
+    if errors:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_preflight",
+            status="error",
+            message="order_line_items rebuild preflight failed",
+            run_id=run_id,
+            sources=list(sources),
+            stores=selected_store_codes,
+            missing_start_dates=missing_start_dates,
+            missing_storage_states=missing_storage_states,
+            missing_cost_centers=missing_cost_centers,
+            browser_backend=_browser_backend(),
+            errors=errors,
+        )
+        raise RuntimeError("; ".join(errors))
+
+    log_event(
+        logger=logger,
+        phase="order_line_items_rebuild_preflight",
+        status="warning" if missing_storage_states else "ok",
+        message="order_line_items rebuild preflight completed",
+        run_id=run_id,
+        sources=list(sources),
+        stores=selected_store_codes,
+        missing_start_dates=missing_start_dates,
+        missing_storage_states=missing_storage_states,
+        source_window_days={
+            f"{source}:{store_code}": days
+            for (source, store_code), days in source_window_days_by_store.items()
+        },
+        browser_backend=_browser_backend(),
+    )
+    return RebuildPreflightResult(
+        stores=hydrated_stores,
+        source_window_days_by_store=source_window_days_by_store,
+        missing_storage_states=missing_storage_states,
+    )
+
+
 async def load_rebuild_stores(
     *, sources: Sequence[Source], store_codes: Sequence[str] | None, logger: JsonLogger
 ) -> list[RebuildStore]:
@@ -841,30 +1049,28 @@ async def load_rebuild_stores(
         for store in await _load_td_order_stores(
             logger=logger, store_codes=store_codes
         ):
-            if store.cost_center:
-                stores.append(
-                    RebuildStore(
-                        source="td",
-                        store_code=store.store_code,
-                        cost_center=store.cost_center,
-                        raw_store=store,
-                        sync_config=_store_sync_config(store),
-                    )
+            stores.append(
+                RebuildStore(
+                    source="td",
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    raw_store=store,
+                    sync_config=_store_sync_config(store),
                 )
+            )
     if "uc" in sources:
         for store in await _load_uc_order_stores(
             logger=logger, store_codes=store_codes
         ):
-            if store.cost_center:
-                stores.append(
-                    RebuildStore(
-                        source="uc",
-                        store_code=store.store_code,
-                        cost_center=store.cost_center,
-                        raw_store=store,
-                        sync_config=_store_sync_config(store),
-                    )
+            stores.append(
+                RebuildStore(
+                    source="uc",
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    raw_store=store,
+                    sync_config=_store_sync_config(store),
                 )
+            )
     return stores
 
 
@@ -884,38 +1090,46 @@ async def run_rebuild(
 ) -> list[WindowMetrics]:
     if resume_run_id and not resume:
         raise ValueError("resume_run_id requires resume=True")
-    if not config.database_url:
-        raise RuntimeError(
-            "database_url is required for order_line_items historical rebuild"
-        )
     run_id = run_id or new_run_id()
     logger = logger or get_logger(run_id)
+    database_url = getattr(config, "database_url", None)
     end_date = end_date or aware_now(get_timezone()).date()
     run_date = aware_now(get_timezone())
     sources: list[Source] = (
         ["td", "uc"] if source_selection == "both" else [source_selection]
     )
+    if not database_url:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_preflight",
+            status="error",
+            message="order_line_items rebuild preflight failed",
+            run_id=run_id,
+            sources=sources,
+            stores=[],
+            missing_start_dates=[],
+            missing_storage_states=[],
+            browser_backend=_browser_backend(),
+            errors=["database_url is required"],
+        )
+        raise RuntimeError(
+            "database_url is required for order_line_items historical rebuild"
+        )
     stores = await load_rebuild_stores(
         sources=sources, store_codes=store_codes, logger=logger
     )
-    if start_date is None:
-        start_dates = await _load_store_start_dates(
-            database_url=config.database_url, stores=stores
-        )
-        stores = [
-            RebuildStore(
-                source=store.source,
-                store_code=store.store_code,
-                cost_center=store.cost_center,
-                raw_store=store.raw_store,
-                sync_config=store.sync_config,
-                start_date=start_dates.get((store.source, store.store_code.upper()))
-                or store.start_date,
-            )
-            for store in stores
-        ]
+    preflight = await preflight_rebuild(
+        database_url=database_url,
+        sources=sources,
+        stores=stores,
+        start_date=start_date,
+        requested_window_size_days=window_size_days,
+        run_id=run_id,
+        logger=logger,
+    )
+    stores = preflight.stores
     progress_rows = (
-        await _fetch_progress_rows(config.database_url, resume_run_id=resume_run_id)
+        await _fetch_progress_rows(database_url, resume_run_id=resume_run_id)
         if resume
         else {}
     )
@@ -961,11 +1175,9 @@ async def run_rebuild(
                 f"start_date is required for {store.source}:{store.store_code} "
                 "because store_master.start_date is not set"
             )
-        source_window_days = resolve_crm_source_window_days(
-            sync_config=store.sync_config,
-            source=store.source,
-            requested_window_days=window_size_days,
-        )
+        source_window_days = preflight.source_window_days_by_store[
+            (store.source, store.store_code.upper())
+        ]
         windows = iter_windows(store_start_date, end_date, source_window_days)
         for window in windows:
             key = (store.source, store.store_code.upper(), window.start, window.end)
@@ -1033,7 +1245,7 @@ async def run_rebuild(
                         window=window,
                         run_id=run_id,
                         run_date=run_date,
-                        database_url=config.database_url,
+                        database_url=database_url,
                         dry_run=dry_run,
                         logger=logger,
                         fetch_snapshot=fetch_snapshot,
@@ -1042,7 +1254,7 @@ async def run_rebuild(
                     failure_class = classify_rebuild_failure(exc)
                     if not dry_run:
                         await _write_progress(
-                            database_url=config.database_url,
+                            database_url=database_url,
                             store=store,
                             window=window,
                             run_id=run_id,
@@ -1115,7 +1327,7 @@ async def run_rebuild(
                     successful_windows.add(key)
                     if not dry_run:
                         await _write_progress(
-                            database_url=config.database_url,
+                            database_url=database_url,
                             store=store,
                             window=window,
                             run_id=run_id,
