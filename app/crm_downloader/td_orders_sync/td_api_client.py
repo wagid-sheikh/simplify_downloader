@@ -81,7 +81,9 @@ def _has_unparseable_rows_payload(payload: Any, rows: list[dict[str, Any]]) -> b
     """Detect non-empty response containers that the supported row parser cannot consume."""
     if rows or not isinstance(payload, Mapping):
         return False
-    for key in ("data", "items", "results", "rows", "records"):
+    if _is_valid_empty_rows_payload(payload):
+        return False
+    for key in ("data", "items", "results", "rows", "records", "garments", "details"):
         if key not in payload:
             continue
         value = payload[key]
@@ -89,6 +91,47 @@ def _has_unparseable_rows_payload(payload: Any, rows: list[dict[str, Any]]) -> b
             return False
         return True
     return False
+
+
+def _is_valid_empty_rows_payload(payload: Mapping[str, Any]) -> bool:
+    """Recognize an intentional empty-page payload rather than treating it as malformed."""
+    total_rows = _extract_total_rows_hint(payload)
+    if total_rows != 0:
+        return False
+    rows_container = _first_present_value(payload, ("rows", "items", "results", "records", "garments", "details"))
+    nested_data = payload.get("data")
+    if rows_container is None and isinstance(nested_data, Mapping):
+        rows_container = _first_present_value(nested_data, ("rows", "items", "results", "records", "garments", "details"))
+    return rows_container is None or rows_container == []
+
+
+def _first_present_value(payload: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _payload_shape_diagnostic(payload: Any, *, content_type: str | None, status: int | None) -> dict[str, Any]:
+    """Return sanitized schema metadata only; never include raw row/customer values."""
+    data_value = payload.get("data") if isinstance(payload, Mapping) else None
+    return {
+        "top_level_keys": sorted(str(key) for key in payload.keys()) if isinstance(payload, Mapping) else [],
+        "data_type": type(data_value).__name__ if isinstance(payload, Mapping) and "data" in payload else None,
+        "data_keys": sorted(str(key) for key in data_value.keys()) if isinstance(data_value, Mapping) else [],
+        "content_type": content_type,
+        "status": status,
+        "payload_type": type(payload).__name__,
+    }
+
+
+def _looks_like_html_payload(payload: Any, *, content_type: str | None) -> bool:
+    if content_type and "html" in content_type.lower():
+        return True
+    if not isinstance(payload, str):
+        return False
+    text = payload.lstrip().lower()
+    return text.startswith("<!doctype html") or text.startswith("<html")
 
 
 @dataclass(frozen=True)
@@ -208,6 +251,7 @@ class _JsonFetchResult:
     auth_shape: str = "legacy"
     latency_ms: int | None = None
     timeout_failures: int = 0
+    content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -854,7 +898,11 @@ class TdApiClient:
                 self._increment_metric(name="eventual_success_after_retry", endpoint=endpoint)
                 eventual_success_recorded = True
 
-            payload_error = self._extract_payload_error_class(page_payload)
+            payload_error = self._extract_payload_error_class(
+                page_payload,
+                content_type=getattr(page_result, "content_type", None),
+                status=page_result.status,
+            )
             if payload_error:
                 if is_garments_endpoint:
                     garments_stop_reason = "payload_error"
@@ -890,8 +938,12 @@ class TdApiClient:
                 )
                 break
 
-            total_rows_hint = _extract_total_rows_hint(page_payload) or total_rows_hint
-            total_pages_hint = _extract_total_pages_hint(page_payload) or total_pages_hint
+            extracted_total_rows_hint = _extract_total_rows_hint(page_payload)
+            if extracted_total_rows_hint is not None:
+                total_rows_hint = extracted_total_rows_hint
+            extracted_total_pages_hint = _extract_total_pages_hint(page_payload)
+            if extracted_total_pages_hint is not None:
+                total_pages_hint = extracted_total_pages_hint
 
             rows = _extract_rows(page_payload)
             if is_garments_endpoint and _has_unparseable_rows_payload(page_payload, rows):
@@ -904,6 +956,35 @@ class TdApiClient:
                     else 0.0
                 )
                 errors[endpoint] = "garments_response_parsing_failure"
+                payload_shape_diagnostic = _payload_shape_diagnostic(
+                    page_payload,
+                    content_type=getattr(page_result, "content_type", None),
+                    status=page_result.status,
+                )
+                endpoint_health[endpoint] = {
+                    "success": False,
+                    "final_error_class": "garments_response_parsing_failure",
+                    "attempts": endpoint_attempts,
+                    "last_successful_page": last_successful_page,
+                    "resume_from_page": max(last_successful_page + 1, page),
+                    "pages_attempted": garments_pages_attempted,
+                    "timeout_count": garments_timeout_count,
+                    "retry_count": garments_retry_count,
+                    "retry_success_count": garments_retry_success_count,
+                    "page_success_rate": garments_page_success_rate,
+                    "payload_shape_diagnostic": payload_shape_diagnostic,
+                }
+                logger.error(
+                    "garments_response_parsing_failure",
+                    extra={
+                        "store_code": self.store_code,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "endpoint": endpoint,
+                        "page": page,
+                        "payload_shape_diagnostic": payload_shape_diagnostic,
+                    },
+                )
                 break
             last_successful_page = page
             if fallback_used:
@@ -1337,14 +1418,27 @@ class TdApiClient:
         }
 
     @staticmethod
-    def _extract_payload_error_class(payload: Any) -> str | None:
+    def _extract_payload_error_class(payload: Any, *, content_type: str | None = None, status: int | None = None) -> str | None:
+        if _looks_like_html_payload(payload, content_type=content_type):
+            return "html_auth_payload"
         if not isinstance(payload, Mapping):
             return None
+
+        status_like = _first_present_value(payload, ("status", "statusCode", "code", "httpStatus"))
+        message = _first_present_value(payload, ("error", "message", "msg", "detail", "title"))
+        message_text = str(message or "").strip()
+        status_text = str(status_like or status or "").strip()
+        auth_text = f"{message_text} {status_text}".lower()
+        if any(signal in auth_text for signal in ("unauthorized", "forbidden", "login", "session", "token", "auth")):
+            return "auth_payload_error"
+
         raw_error = payload.get("error")
-        if raw_error is None:
-            return None
-        error_text = str(raw_error).strip()
-        return error_text or "unknown_error"
+        if raw_error is not None:
+            error_text = str(raw_error).strip()
+            return error_text or "unknown_error"
+        if payload.get("success") is False:
+            return "api_payload_error"
+        return None
 
     def _read_timeout_ms_for_endpoint(self, endpoint: str, *, page_size: int | None = None) -> int:
         if endpoint == ORDERS_ENDPOINT:
@@ -1752,6 +1846,7 @@ class TdApiClient:
                     auth_shape=shape_result.auth_shape,
                     latency_ms=shape_result.latency_ms,
                     timeout_failures=shape_result.timeout_failures,
+                    content_type=shape_result.content_type,
                 )
 
             logger.info(
@@ -1776,6 +1871,7 @@ class TdApiClient:
             auth_shape=(shape_last_result.auth_shape if shape_last_result else "legacy"),
             latency_ms=(shape_last_result.latency_ms if shape_last_result else None),
             timeout_failures=(shape_last_result.timeout_failures if shape_last_result else 0),
+            content_type=(shape_last_result.content_type if shape_last_result else None),
         )
 
     async def _execute_json_request_shape(
@@ -1864,6 +1960,8 @@ class TdApiClient:
                 )
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 status_code = response.status
+                response_headers = getattr(response, "headers", {}) or {}
+                content_type = str(response_headers.get("content-type") or response_headers.get("Content-Type") or "").strip() or None
 
                 if status_code == 401:
                     refreshed = await self._attempt_auth_refresh_once()
@@ -1910,7 +2008,7 @@ class TdApiClient:
                                 request_params=request_params,
                             )
                         continue
-                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
+                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms, content_type=content_type)
 
                 metadata.append(
                     {
@@ -1939,10 +2037,24 @@ class TdApiClient:
 
                 if status_code < 400:
                     timed_out_during_response_read = True
-                    payload = await asyncio.wait_for(
-                        response.json(),
-                        timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
-                    )
+                    try:
+                        payload = await asyncio.wait_for(
+                            response.json(),
+                            timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
+                        )
+                    except ValueError:
+                        error_class = "html_auth_payload" if content_type and "html" in content_type.lower() else "non_json_payload"
+                        return _JsonFetchResult(
+                            ok=False,
+                            payload=None,
+                            error=error_class,
+                            status=status_code,
+                            attempts=attempts,
+                            auth_shape=auth_shape.name,
+                            latency_ms=latency_ms,
+                            timeout_failures=timeout_failures,
+                            content_type=content_type,
+                        )
                     logger.info(
                         "TD API request attempt succeeded",
                         extra={
@@ -1953,9 +2065,9 @@ class TdApiClient:
                             "timeout_diagnostics": timeout_diagnostics,
                         },
                     )
-                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms, timeout_failures=timeout_failures)
+                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms, timeout_failures=timeout_failures, content_type=content_type)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
-                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
+                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms, content_type=content_type)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
                 retry_reason = f"http_{status_code}"
             except asyncio.TimeoutError:
@@ -2375,21 +2487,37 @@ def build_garment_order_snapshots(
     return snapshots
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
+    rows = _find_rows_container(payload)
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _find_rows_container(payload: Any) -> Any:
     if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
-    if not isinstance(payload, dict):
-        return []
-    for key in ("data", "items", "rows", "results"):
+        return payload
+    if not isinstance(payload, Mapping):
+        return None
+
+    row_keys = ("rows", "items", "results", "records", "garments", "details")
+    for key in row_keys:
         value = payload.get(key)
         if isinstance(value, list):
-            return [row for row in value if isinstance(row, dict)]
-    nested_data = payload.get("data")
-    if isinstance(nested_data, dict):
-        for key in ("items", "rows", "results"):
-            value = nested_data.get(key)
-            if isinstance(value, list):
-                return [row for row in value if isinstance(row, dict)]
-    return []
+            return value
+
+    # A668 has been observed to use an extra wrapper below data/payload/result.
+    # Recurse only through known envelope keys so arbitrary customer fields are
+    # not treated as schema metadata.
+    for envelope_key in ("data", "payload", "result", "response"):
+        value = payload.get(envelope_key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, Mapping):
+            nested_rows = _find_rows_container(value)
+            if isinstance(nested_rows, list):
+                return nested_rows
+
+    return None
 
 
 def _filter_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -2648,24 +2776,21 @@ def _extract_total_pages_hint(payload: Any) -> int | None:
 
 
 def _extract_pagination_candidates(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-
     candidates: dict[str, Any] = {}
-    for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
+    _collect_pagination_candidates(payload, candidates, depth=0)
+    return candidates
+
+
+def _collect_pagination_candidates(payload: Any, candidates: dict[str, Any], *, depth: int) -> None:
+    if depth > 3 or not isinstance(payload, Mapping):
+        return
+
+    pagination_keys = ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount")
+    for key in pagination_keys:
         if key in payload:
             candidates[key] = payload.get(key)
 
-    nested_data = payload.get("data")
-    if isinstance(nested_data, dict):
-        for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
-            if key in nested_data:
-                candidates[key] = nested_data.get(key)
-
-    pagination = payload.get("pagination")
-    if isinstance(pagination, dict):
-        for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
-            if key in pagination:
-                candidates[key] = pagination.get(key)
-
-    return candidates
+    for envelope_key in ("data", "payload", "result", "response", "pagination"):
+        value = payload.get(envelope_key)
+        if isinstance(value, Mapping):
+            _collect_pagination_candidates(value, candidates, depth=depth + 1)
