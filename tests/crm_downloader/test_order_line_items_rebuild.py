@@ -90,6 +90,36 @@ def test_bounded_window_progression() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_rebuild_generates_default_run_id_without_type_error(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    seen_run_ids: list[str] = []
+
+    async def fetcher(**kwargs):
+        seen_run_ids.append(kwargs["run_id"])
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    try:
+        metrics = await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            fetch_snapshot=fetcher,
+        )
+    except TypeError as exc:  # pragma: no cover - assertion failure path
+        pytest.fail(f"run_rebuild raised TypeError without run_id: {exc}")
+
+    assert len(metrics) == 1
+    assert len(seen_run_ids) == 1
+    assert seen_run_ids[0]
+
+
+@pytest.mark.asyncio
 async def test_dry_run_reports_planned_replacements_without_mutation(
     patch_config_and_stores,
 ) -> None:
@@ -1059,6 +1089,48 @@ def test_top_level_canonical_and_alias_cli_accept_omitted_dates(
     assert captured == [
         ["--source", "both", "--resume"],
         ["--source", "both", "--resume"],
+    ]
+
+
+def test_top_level_crm_rebuild_order_line_items_dry_run_without_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_runner(argv: list[str] | None = None) -> None:
+        captured.append(argv)
+
+    monkeypatch.setattr("app.crm_downloader.order_line_items_rebuild.run", fake_runner)
+
+    exit_code = app_main.main(
+        [
+            "crm",
+            "rebuild-order-line-items",
+            "--source",
+            "both",
+            "--from-date",
+            "2026-05-01",
+            "--to-date",
+            "2026-05-07",
+            "--window-days",
+            "7",
+            "--dry-run",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == [
+        [
+            "--source",
+            "both",
+            "--end-date",
+            "2026-05-07",
+            "--start-date",
+            "2026-05-01",
+            "--window-size",
+            "7",
+            "--dry-run",
+        ]
     ]
 
 
