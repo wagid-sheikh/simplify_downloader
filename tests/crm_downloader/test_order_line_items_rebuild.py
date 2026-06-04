@@ -364,8 +364,6 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     launch_calls: list[tuple[Any, Any]] = []
     prepare_calls: list[dict[str, Any]] = []
     uc_prepare_calls: list[dict[str, Any]] = []
-    td_client_kwargs: list[dict[str, Any]] = []
-
     monkeypatch.setattr(
         "playwright.async_api.async_playwright",
         lambda: _FakeAsyncPlaywright(playwright),
@@ -410,7 +408,20 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
 
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
         assert kwargs["page"] is uc_prepare_calls[0]["browser"].contexts[0].pages[0]
-        return SimpleNamespace(order_detail_rows=[], order_detail_snapshot_rows=[])
+        return SimpleNamespace(
+            gst_rows=[],
+            base_rows=[],
+            order_detail_rows=[],
+            payment_detail_rows=[],
+            order_detail_snapshot_rows=[],
+            skipped_order_counters={},
+            skipped_order_codes=[],
+            booking_lookup_hits=0,
+            booking_lookup_misses=0,
+            delivered_rows_scanned=0,
+            source_fetch_status="success",
+            extractor_status="success",
+        )
 
     monkeypatch.setattr(
         rebuild, "fetch_td_source_snapshot", fake_fetch_td_source_snapshot
@@ -438,7 +449,14 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
         logger=logger,
     )
 
-    assert snapshot == rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+    expected_snapshot = rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+    if source == "uc":
+        expected_snapshot.zero_snapshot_class = "confirmed_source_empty"
+        expected_snapshot.uc_diagnostics = rebuild.UcSourceSnapshotDiagnostics(
+            source_fetch_status="success",
+            extractor_status="success",
+        )
+    assert snapshot == expected_snapshot
     if source == "td":
         assert launch_calls == []
         assert len(prepare_calls) == 1
@@ -454,12 +472,221 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
         assert browser.closed is True
 
 
+async def _fetch_uc_default_snapshot_with_extract(
+    *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extract: Any,
+    logger: Any | None = None,
+) -> rebuild.SourceSnapshot:
+    playwright = SimpleNamespace(name="uc-playwright")
+    browser = _FakeBrowser()
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(playwright),
+    )
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        return browser
+
+    async def fake_prepare_uc_api_page_for_store(**kwargs: Any) -> Any:
+        context = await kwargs["browser"].new_context(storage_state="prepared")
+        page = await context.new_page()
+        return uc_orders_main.UcApiPagePreparationResult(
+            ok=True,
+            message="ready",
+            context=context,
+            page=page,
+            login_used=False,
+            session_probe_result=True,
+            fallback_login_attempted=False,
+            fallback_login_result=None,
+        )
+
+    async def fake_collect_gst_orders_via_api(**_kwargs: Any) -> Any:
+        return extract
+
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+    monkeypatch.setattr(
+        rebuild, "prepare_uc_api_page_for_store", fake_prepare_uc_api_page_for_store
+    )
+    monkeypatch.setattr(
+        rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
+    )
+
+    return await rebuild.default_fetch_snapshot(
+        source="uc",
+        store=rebuild.RebuildStore(
+            source="uc",
+            store_code="UC001",
+            cost_center="CC01",
+            raw_store=SimpleNamespace(
+                home_url="https://example.test/home",
+                storage_state_path=tmp_path / "uc.json",
+            ),
+        ),
+        window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 2)),
+        run_id="uc-run",
+        logger=logger or SimpleNamespace(name="uc-logger"),
+    )
+
+
+def _uc_extract(**overrides: Any) -> SimpleNamespace:
+    values = {
+        "gst_rows": [],
+        "base_rows": [],
+        "order_detail_rows": [],
+        "payment_detail_rows": [],
+        "order_detail_snapshot_rows": [],
+        "skipped_order_counters": {},
+        "skipped_order_codes": [],
+        "booking_lookup_hits": 0,
+        "booking_lookup_misses": 0,
+        "delivered_rows_scanned": 0,
+        "source_fetch_status": "success",
+        "extractor_status": "success",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_uc_default_fetch_snapshot_empty_gst_api_response_confirmed_source_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = await _fetch_uc_default_snapshot_with_extract(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        extract=_uc_extract(),
+    )
+
+    assert snapshot.zero_snapshot_class == "confirmed_source_empty"
+    assert snapshot.uc_diagnostics == rebuild.UcSourceSnapshotDiagnostics(
+        source_fetch_status="success", extractor_status="success"
+    )
+
+
+@pytest.mark.asyncio
+async def test_uc_default_fetch_snapshot_gst_api_failed_is_not_confirmed_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = await _fetch_uc_default_snapshot_with_extract(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        extract=_uc_extract(
+            skipped_order_counters={"gst_api_failed": 1},
+            skipped_order_codes=["store:UC001"],
+            source_fetch_status="failed",
+            extractor_status="failed",
+        ),
+    )
+
+    assert snapshot.zero_snapshot_class == "source_fetch_auth_failure"
+    assert snapshot.source_fetch_error_class == "source_fetch_auth_failure"
+    assert snapshot.uc_diagnostics is not None
+    assert snapshot.uc_diagnostics.skipped_order_counters == {"gst_api_failed": 1}
+
+
+@pytest.mark.asyncio
+async def test_uc_default_fetch_snapshot_gst_api_invalid_data_is_not_confirmed_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = await _fetch_uc_default_snapshot_with_extract(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        extract=_uc_extract(
+            skipped_order_counters={"gst_api_invalid_data": 1},
+            skipped_order_codes=["store:UC001"],
+            source_fetch_status="invalid_data",
+            extractor_status="failed",
+        ),
+    )
+
+    assert snapshot.zero_snapshot_class == "source_fetch_auth_failure"
+    assert snapshot.source_fetch_error_class == "source_fetch_auth_failure"
+    assert snapshot.uc_diagnostics is not None
+    assert snapshot.uc_diagnostics.skipped_order_counters == {"gst_api_invalid_data": 1}
+
+
+@pytest.mark.asyncio
+async def test_uc_rebuild_non_empty_extract_inspects_orders_and_logs_diagnostics(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("uc-non-empty-diagnostics")
+
+    async def fetcher(**_kwargs: Any) -> rebuild.SourceSnapshot:
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-UC-1",
+                    "line_hash": "hash-uc-1",
+                    "item_name": "Shirt",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-UC-1",
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+            zero_snapshot_class="unknown_ambiguous_empty",
+            uc_diagnostics=rebuild.UcSourceSnapshotDiagnostics(
+                gst_rows_count=1,
+                base_rows_count=1,
+                order_detail_rows_count=1,
+                order_detail_snapshot_rows_count=1,
+                booking_lookup_hits=1,
+                delivered_rows_scanned=2,
+                source_fetch_status="success",
+                extractor_status="success",
+            ),
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="uc-non-empty-diagnostics",
+        logger=logger,
+        fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
+    )
+
+    assert metrics[0].inspected_orders == 1
+    assert metrics[0].zero_snapshot_class is None
+    checkpoint_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_window"
+    ][-1]
+    assert checkpoint_event["uc_extraction_diagnostics"] == {
+        "gst_rows_count": 1,
+        "base_rows_count": 1,
+        "order_detail_rows_count": 1,
+        "payment_detail_rows_count": 0,
+        "order_detail_snapshot_rows_count": 1,
+        "skipped_order_counters": {},
+        "skipped_order_codes": [],
+        "booking_lookup_hits": 1,
+        "booking_lookup_misses": 0,
+        "delivered_rows_scanned": 2,
+        "source_fetch_status": "success",
+        "extractor_status": "success",
+    }
+
+
 @pytest.mark.asyncio
 async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    playwright = SimpleNamespace(name="td-playwright")
-    browser = _FakeBrowser()
     logger = SimpleNamespace(name="td-logger")
 
     async def fake_fetch_td_source_snapshot(**_kwargs: Any) -> Any:
