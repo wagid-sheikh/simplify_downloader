@@ -55,7 +55,7 @@ store_master = sa.Table(
     sa.Column("store_code", sa.Text, nullable=False, unique=True),
     sa.Column("store_name", sa.Text),
     sa.Column("gstin", sa.Text),
-    sa.Column("launch_date", sa.Date),
+    sa.Column("start_date", sa.Date),
     sa.Column("etl_flag", sa.Boolean, nullable=False, server_default=sa.text("false")),
     sa.Column("report_flag", sa.Boolean, nullable=False, server_default=sa.text("false")),
     sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
@@ -188,7 +188,7 @@ async def persist_dashboard_summary(
                     .values(
                         store_code=store_code,
                         store_name=dashboard_data.get("store_name"),
-                        launch_date=dashboard_data.get("launch_date"),
+                        start_date=dashboard_data.get("start_date"),
                         gstin=dashboard_data.get("gstin"),
                         is_active=True,
                     )
@@ -202,6 +202,15 @@ async def persist_dashboard_summary(
                 store_id = (
                     await session.execute(store_lookup.with_only_columns(store_master.c.id))
                 ).scalar_one()
+
+            dashboard_start_date = dashboard_data.get("start_date")
+            if dashboard_start_date is not None:
+                await session.execute(
+                    sa.update(store_master)
+                    .where(store_master.c.id == store_id)
+                    .where(store_master.c.start_date.is_(None))
+                    .values(start_date=dashboard_start_date, updated_at=sa.func.now())
+                )
 
             run_time = datetime.now(timezone.utc)
             insert_values = {
