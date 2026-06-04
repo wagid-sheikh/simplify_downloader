@@ -15,6 +15,7 @@ from app.config import config
 from app.crm_downloader.orders_sync_window import (
     build_non_overlapping_windows,
     resolve_crm_source_window_days,
+    should_retry_exception,
     should_retry_window_status,
 )
 from app.crm_downloader.browser import launch_browser
@@ -892,15 +893,7 @@ async def run_rebuild(
                     resume=resume,
                 )
                 continue
-            max_attempts = (
-                2
-                if should_retry_window_status(
-                    status=existing_status or "failed",
-                    error_message=None,
-                    status_note=None,
-                )
-                else 1
-            )
+            max_attempts = 2 if existing is None or existing_status else 1
             for attempt_no in range(1, max_attempts + 1):
                 try:
                     metric = await rebuild_window(
@@ -926,9 +919,7 @@ async def run_rebuild(
                             error_message=str(exc),
                             dry_run=False,
                         )
-                    if attempt_no < max_attempts and should_retry_window_status(
-                        status="failed", error_message=str(exc), status_note=None
-                    ):
+                    if attempt_no < max_attempts and should_retry_exception(exc):
                         log_event(
                             logger=logger,
                             phase="order_line_items_rebuild_window",
