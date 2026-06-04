@@ -10,7 +10,7 @@ Writes:
     store-list-rejected.csv
 
 Clean CSV schema:
-    launch_date, store_code, store_name, total_order, page, row_index
+    start_date, store_code, store_name, total_order, page, row_index
 
 Rejected CSV schema:
     raw_line, store_code, rejection_reason, page, row_index
@@ -182,7 +182,7 @@ def parse_page_stores(page, col_pos: dict, page_number: int):
                 launch_word = w
                 break
 
-        launch_date_iso = parse_date_to_iso(launch_word["text"]) if launch_word else ""
+        start_date_iso = parse_date_to_iso(launch_word["text"]) if launch_word else ""
 
         # 3) store name: words whose x0 fall between left_name and right_name
         name_words = [
@@ -216,7 +216,7 @@ def parse_page_stores(page, col_pos: dict, page_number: int):
 
         stores.append(
             {
-                "launch_date": launch_date_iso,
+                "start_date": start_date_iso,
                 "store_code": store_code,
                 "store_name": store_name,
                 "total_order": total_order,
@@ -259,7 +259,7 @@ def extract_all_stores(pdf_path: Path):
 
 
 def write_clean_csv(clean_rows: list[dict], path: Path) -> None:
-    fields = ["launch_date", "store_code", "store_name", "total_order", "page", "row_index"]
+    fields = ["start_date", "store_code", "store_name", "total_order", "page", "row_index"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()

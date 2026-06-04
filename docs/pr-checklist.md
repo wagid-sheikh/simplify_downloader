@@ -15,6 +15,7 @@ Use this before requesting review.
 - [ ] DB access uses shared async session patterns (`app/common/db.py` helpers).
 - [ ] Logging uses structured pipeline events (`JsonLogger` / `log_event`) where applicable.
 - [ ] Store scope logic continues to respect `store_master` flags (no hardcoded store lists unless explicitly justified).
+- [ ] Store start/launch-date logic uses `store_master.start_date`; non-null values are not overwritten without an intentional CRM/order-sync lower-bound decision.
 
 ## 3) Tests and verification
 

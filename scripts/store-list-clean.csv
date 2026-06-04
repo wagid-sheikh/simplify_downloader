@@ -1,4 +1,4 @@
-launch_date,store_code,store_name,total_order,page,row_index,,ETL_Flag,Near to,"('A398','Sohna, Gurgaon','GSTINA398','2023-09-24',true)"
+start_date,store_code,store_name,total_order,page,row_index,,ETL_Flag,Near to,"('A398','Sohna, Gurgaon','GSTINA398','2023-09-24',true)"
 ,TS0,Testing Store,724,1,3,,,,
 31/10/25,A814,Rani Bazar Bikaner,26,1,4,,,,
 28/09/25,A885,Nokha Bikaner,209,1,6,,,,

@@ -39,7 +39,7 @@ Practical map of where to work for major capabilities.
 - **Primary paths:**
   - `app/common/dashboard_store.py`
 - **Related tables:** `store_master`, `store_dashboard_summary`.
-- **Notes/Risks:** `store_code` normalization and upsert semantics are critical.
+- **Notes/Risks:** `store_code` normalization and upsert semantics are critical. `store_master.start_date` is the canonical store-level start/launch date; dashboard `Launch Date` values are persisted there and existing non-null values must not be casually overwritten because CRM/order-sync uses them as lower bounds.
 
 ## 5) TD orders sync
 

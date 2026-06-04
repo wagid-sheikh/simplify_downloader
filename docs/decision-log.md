@@ -8,6 +8,15 @@
 
 ---
 
+### DL-028
+- **Date:** 2026-06-04
+- **Status:** Active
+- **Decision:** Treat `store_master.start_date` as the single canonical store-level start/launch date.
+- **Context:** Dashboard UI labels still expose `Launch Date`, while CRM/order-sync already uses `store_master.start_date` as the lower bound when operators omit an explicit start date. Keeping two store-level date columns creates drift and can unexpectedly change sync windows.
+- **Evidence:** Dashboard ingestion now maps the dashboard `Launch Date` value into `store_master.start_date`; the forward migration backfills `start_date` from the legacy column before dropping it.
+- **Implications:** Runtime code, scripts, fixtures, and operator docs must use `start_date`; do not reintroduce the removed legacy column except in historical migration or downgrade compatibility code. Existing non-null `start_date` values should be preserved unless a deliberate CRM lower-bound change is approved.
+- **Follow-up:** Keep dashboard parsing label-specific only at the scraper boundary if the source UI continues to say `Launch Date`.
+
 ### DL-027
 - **Date:** 2026-06-02
 - **Status:** Active
@@ -269,7 +278,7 @@
 - **Implications:** Operational toggles can be changed without code deploy; devs must avoid bypassing this with inline lists.
 - **Follow-up:** Validate admin/operator process around flag lifecycle.
 
-### DL-004
+### DL-005
 - **Date:** Date unknown (reconstructed from repository state)
 - **Status:** Active
 - **Decision:** Maintain pipeline observability via structured run summaries and phase logs.
