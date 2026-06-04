@@ -33,6 +33,10 @@ from app.crm_downloader.orders_sync_window import (
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_rows, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_rows, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
+from app.crm_downloader.td_orders_sync.source_snapshot import (
+    TdSourceSnapshotConfig,
+    fetch_td_source_snapshot,
+)
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
 from app.crm_downloader.td_orders_sync.td_api_artifacts import (
     persist_td_api_artifacts,
@@ -7791,31 +7795,30 @@ async def _execute_api_primary_ingestion(
     stored_state_path: str | None,
     report_iframe_src: str | None = None,
     context_source: str = "iframe",
-) -> tuple[StoreReport | None, StoreReport | None, TdApiFetchResult, list[dict[str, Any]]]:
+) -> tuple[
+    StoreReport | None, StoreReport | None, TdApiFetchResult, list[dict[str, Any]]
+]:
     api_fetch_result = TdApiFetchResult()
     request_metadata: list[dict[str, Any]] = []
     artifact_warnings: list[str] = []
     try:
-        api_client = TdApiClient(
-            store_code=store.store_code,
+        source_snapshot = await fetch_td_source_snapshot(
+            store=store,
+            from_date=run_start_date,
+            to_date=run_end_date,
+            run_id=run_id,
+            logger=logger,
+            source_config=TdSourceSnapshotConfig(
+                source_mode=source_mode,
+                context_source=context_source,
+            ),
             context=context,
-            storage_state_path=store.storage_state_path,
             report_iframe_src=report_iframe_src,
         )
-        session_artifact = api_client.read_session_artifact()
-        log_event(
-            logger=logger,
-            phase="api",
-            message="Prepared API client from per-store session artifact",
-            store_code=store.store_code,
-            storage_state=stored_state_path,
-            artifact_has_cookies=bool(session_artifact.get("cookies")),
-            artifact_has_origins=bool(session_artifact.get("origins")),
-            source_mode=source_mode,
-            context_source=context_source,
-        )
-        api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
-        request_metadata.extend(api_fetch_result.request_metadata)
+        api_fetch_result = source_snapshot.api_fetch_result
+        request_metadata.extend(source_snapshot.request_metadata)
+        if source_snapshot.fetch_exception is not None:
+            raise source_snapshot.fetch_exception
         artifact_result = persist_td_api_artifacts(
             download_dir=download_dir,
             store_code=store.store_code,
@@ -8447,30 +8450,29 @@ async def _run_store_discovery(
                         initial_iframe_src=iframe_src,
                     )
                     try:
-                        api_client = TdApiClient(
-                            store_code=store.store_code,
+                        source_snapshot = await fetch_td_source_snapshot(
+                            store=store,
+                            from_date=run_start_date,
+                            to_date=run_end_date,
+                            run_id=run_id,
+                            logger=store_logger,
+                            source_config=TdSourceSnapshotConfig(
+                                source_mode=source_mode,
+                                context_source=api_context_source,
+                            ),
                             context=context,
-                            storage_state_path=store.storage_state_path,
+                            page=page,
                             report_iframe_src=report_iframe_src,
                         )
-                        session_artifact = api_client.read_session_artifact()
-                        log_event(
-                            logger=store_logger,
-                            phase="api",
-                            message="Prepared API client from per-store session artifact",
-                            store_code=store.store_code,
-                            storage_state=stored_state_path,
-                            artifact_has_cookies=bool(session_artifact.get("cookies")),
-                            artifact_has_origins=bool(session_artifact.get("origins")),
-                            source_mode=source_mode,
-                            context_source=api_context_source,
-                        )
-                        api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
-                        api_request_metadata.extend(api_fetch_result.request_metadata)
+                        api_fetch_result = source_snapshot.api_fetch_result
+                        api_request_metadata.extend(source_snapshot.request_metadata)
+                        if source_snapshot.fetch_exception is not None:
+                            raise source_snapshot.fetch_exception
                         endpoint_errors = api_fetch_result.endpoint_errors or {}
                         auth_error_codes = {"auth_unavailable", "http_401"}
                         api_all_endpoints_auth_failed = bool(endpoint_errors) and all(
-                            str(error_code) in auth_error_codes for error_code in endpoint_errors.values()
+                            str(error_code) in auth_error_codes
+                            for error_code in endpoint_errors.values()
                         )
                         artifact_result = persist_td_api_artifacts(
                             download_dir=download_dir,
