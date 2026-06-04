@@ -685,31 +685,25 @@ async def _load_store_start_dates(
 
 
 async def _ensure_progress_table(database_url: str) -> None:
+    """Verify the Alembic-managed rebuild progress table exists.
+
+    Runtime code intentionally does not create this table. Keeping schema
+    ownership in Alembic prevents production drift between application fallback
+    DDL and the migration chain.
+    """
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("""
-            CREATE TABLE IF NOT EXISTS order_line_items_rebuild_progress (
-                source TEXT NOT NULL,
-                store_code TEXT NOT NULL,
-                cost_center TEXT,
-                window_start DATE NOT NULL,
-                window_end DATE NOT NULL,
-                run_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                attempt_no INTEGER NOT NULL DEFAULT 1,
-                error_message TEXT,
-                complete_with_rows_orders INTEGER NOT NULL DEFAULT 0,
-                complete_empty_orders INTEGER NOT NULL DEFAULT 0,
-                skipped_incomplete_orders INTEGER NOT NULL DEFAULT 0,
-                deleted_rows INTEGER NOT NULL DEFAULT 0,
-                inserted_rows INTEGER NOT NULL DEFAULT 0,
-                orphan_rows INTEGER NOT NULL DEFAULT 0,
-                dry_run BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (source, store_code, window_start, window_end)
+        connection = await session.connection()
+        has_table = await connection.run_sync(
+            lambda sync_connection: sa.inspect(sync_connection).has_table(
+                "order_line_items_rebuild_progress"
             )
-        """))
-        await session.commit()
+        )
+    if not has_table:
+        raise RuntimeError(
+            "order_line_items_rebuild_progress table is missing; run Alembic "
+            "migrations before starting the order_line_items rebuild "
+            "(for example: poetry run python -m app db upgrade)."
+        )
 
 
 async def _fetch_progress_rows(
