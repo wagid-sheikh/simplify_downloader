@@ -80,6 +80,32 @@ def patch_config_and_stores(monkeypatch: pytest.MonkeyPatch, tmp_path):
     return db_url
 
 
+class _InMemoryLogger:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.default_context = {"run_id": run_id}
+        self.events: list[dict[str, Any]] = []
+
+    def info(
+        self, *, phase: str, status: str = "ok", message: str = "", **fields: Any
+    ) -> None:
+        self.events.append(
+            {
+                **self.default_context,
+                "phase": phase,
+                "status": status,
+                "message": message,
+                **fields,
+            }
+        )
+
+
+def _event_run_ids(events: list[dict[str, Any]], messages: set[str]) -> list[str]:
+    return [
+        str(event.get("run_id")) for event in events if event.get("message") in messages
+    ]
+
+
 class _FakeAsyncPlaywright:
     def __init__(self, playwright: Any) -> None:
         self._playwright = playwright
@@ -215,6 +241,141 @@ async def test_run_rebuild_generates_default_run_id_without_type_error(
     assert len(metrics) == 1
     assert len(seen_run_ids) == 1
     assert seen_run_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_run_rebuild_default_run_id_is_used_for_logger_store_and_window_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'rebuild-run-id.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    monkeypatch.setattr(rebuild, "new_run_id", lambda: "generated-rebuild-run")
+    loggers: list[_InMemoryLogger] = []
+
+    def fake_get_logger(run_id: str | None = None) -> _InMemoryLogger:
+        assert run_id is not None
+        logger = _InMemoryLogger(run_id)
+        logger.info(
+            phase="logger",
+            message="Initialized JSON logger",
+            run_id=logger.run_id,
+        )
+        loggers.append(logger)
+        return logger
+
+    async def fake_load_td_order_stores(*, logger, store_codes=None):
+        rebuild.log_event(
+            logger=logger,
+            phase="init",
+            message="Loaded TD store rows",
+            store_count=1,
+            stores=["TD001"],
+        )
+        return [SimpleNamespace(store_code="TD001", cost_center="CC01", sync_config={})]
+
+    async def fake_load_uc_order_stores(*, logger, store_codes=None):
+        rebuild.log_event(
+            logger=logger,
+            phase="init",
+            message="Loaded UC store rows",
+            store_count=1,
+            stores=["UC001"],
+        )
+        return [SimpleNamespace(store_code="UC001", cost_center="CC01", sync_config={})]
+
+    async def fetcher(**kwargs):
+        assert kwargs["run_id"] == "generated-rebuild-run"
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    monkeypatch.setattr(rebuild, "get_logger", fake_get_logger)
+    monkeypatch.setattr(rebuild, "_load_td_order_stores", fake_load_td_order_stores)
+    monkeypatch.setattr(rebuild, "_load_uc_order_stores", fake_load_uc_order_stores)
+
+    await rebuild.run_rebuild(
+        source_selection="both",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(loggers) == 1
+    expected_messages = {
+        "Initialized JSON logger",
+        "Loaded TD store rows",
+        "Loaded UC store rows",
+        "Starting order_line_items historical rebuild",
+        "order_line_items historical rebuild window checkpoint",
+        "No missing order_line_items rebuild windows detected",
+        "Completed order_line_items historical rebuild",
+    }
+    assert (
+        _event_run_ids(loggers[0].events, expected_messages)
+        == ["generated-rebuild-run"] * 8
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_rebuild_explicit_run_id_is_used_for_logger_store_and_window_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'rebuild-explicit-run-id.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    monkeypatch.setattr(
+        rebuild,
+        "new_run_id",
+        lambda: pytest.fail("new_run_id must not be called for explicit run_id"),
+    )
+    loggers: list[_InMemoryLogger] = []
+
+    def fake_get_logger(run_id: str | None = None) -> _InMemoryLogger:
+        logger = _InMemoryLogger(str(run_id))
+        loggers.append(logger)
+        return logger
+
+    async def fake_load_td_order_stores(*, logger, store_codes=None):
+        rebuild.log_event(
+            logger=logger,
+            phase="init",
+            message="Loaded TD store rows",
+            store_count=1,
+            stores=["TD001"],
+        )
+        return [SimpleNamespace(store_code="TD001", cost_center="CC01", sync_config={})]
+
+    async def fetcher(**kwargs):
+        assert kwargs["run_id"] == "explicit-cli-run"
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    monkeypatch.setattr(rebuild, "get_logger", fake_get_logger)
+    monkeypatch.setattr(rebuild, "_load_td_order_stores", fake_load_td_order_stores)
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="explicit-cli-run",
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(loggers) == 1
+    expected_messages = {
+        "Loaded TD store rows",
+        "Starting order_line_items historical rebuild",
+        "order_line_items historical rebuild window checkpoint",
+        "No missing order_line_items rebuild windows detected",
+        "Completed order_line_items historical rebuild",
+    }
+    assert (
+        _event_run_ids(loggers[0].events, expected_messages) == ["explicit-cli-run"] * 5
+    )
 
 
 @pytest.mark.asyncio
@@ -1498,12 +1659,15 @@ async def test_explicit_dates_override_store_and_current_defaults(
 
 
 def test_module_parser_accepts_omitted_dates() -> None:
-    args = rebuild._build_parser().parse_args(["--source", "both", "--resume"])
+    args = rebuild._build_parser().parse_args(
+        ["--source", "both", "--resume", "--run-id", "explicit-cli-run"]
+    )
 
     assert args.source == "both"
     assert args.start_date is None
     assert args.end_date is None
     assert args.resume is True
+    assert args.run_id == "explicit-cli-run"
 
 
 def test_async_entrypoint_exits_zero_when_rebuild_completes(
@@ -1518,10 +1682,20 @@ def test_async_entrypoint_exits_zero_when_rebuild_completes(
     monkeypatch.setattr(rebuild, "run_rebuild", fake_run_rebuild)
 
     rebuild.run(
-        ["--source", "td", "--start-date", "2025-01-01", "--end-date", "2025-01-01"]
+        [
+            "--source",
+            "td",
+            "--start-date",
+            "2025-01-01",
+            "--end-date",
+            "2025-01-01",
+            "--run-id",
+            "explicit-cli-run",
+        ]
     )
 
     assert captured[0]["source_selection"] == "td"
+    assert captured[0]["run_id"] == "explicit-cli-run"
 
 
 def test_async_entrypoint_exits_nonzero_when_rebuild_is_incomplete(
