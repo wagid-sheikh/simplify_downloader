@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
+from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
 REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
@@ -406,6 +407,8 @@ class TdApiClient:
         storage_state_path: Path,
         config: TdApiClientConfig | None = None,
         report_iframe_src: str | None = None,
+        run_id: str | None = None,
+        structured_logger: JsonLogger | None = None,
     ) -> None:
         self.store_code = store_code.upper().strip()
         self.context = context
@@ -416,6 +419,58 @@ class TdApiClient:
         self._metrics_counters: dict[str, int] = {}
         self._orders_cookie_shape_gate_state_logged = False
         self._orders_cookie_shape_gate_state_metadata_added = False
+        self.run_id = (run_id or "").strip() or None
+        self.structured_logger = structured_logger
+
+    def _emit_source_fetch_event(
+        self,
+        *,
+        phase: str = "td_order_line_items_source_fetch",
+        status: str,
+        message: str,
+        endpoint: str | None = None,
+        window_start: str | None = None,
+        window_end: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Emit TD source-fetch diagnostics through the pipeline JsonLogger when available."""
+        if self.structured_logger is None:
+            log_level = (
+                logger.error
+                if status == "error"
+                else logger.warning
+                if status == "warning"
+                else logger.info
+            )
+            log_level(
+                message,
+                extra={
+                    "run_id": self.run_id,
+                    "phase": phase,
+                    "status": status,
+                    "source": "td",
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    **fields,
+                },
+            )
+            return
+
+        log_event(
+            logger=self.structured_logger,
+            phase=phase,
+            status=status,
+            message=message,
+            **({"run_id": self.run_id} if self.run_id else {}),
+            source="td",
+            store_code=self.store_code,
+            endpoint=endpoint,
+            window_start=window_start,
+            window_end=window_end,
+            **fields,
+        )
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -695,16 +750,15 @@ class TdApiClient:
                 "cookies_found": has_cookie_auth,
             }
         )
-        logger.error(
-            "TD API auth unavailable; skipping endpoint fetches",
-            extra={
-                "store_code": self.store_code,
-                "outcome": "auth_unavailable",
-                "token_source": token_discovery.source,
-                "token_source_detail": token_discovery.detail,
-                "token_expiry": token_discovery.expiry,
-                "cookies_found": has_cookie_auth,
-            },
+        self._emit_source_fetch_event(
+            status="error",
+            message="TD API auth unavailable; skipping endpoint fetches",
+            failure_class="auth_unavailable",
+            outcome="auth_unavailable",
+            token_source=token_discovery.source,
+            token_source_detail=token_discovery.detail,
+            token_expiry=token_discovery.expiry,
+            cookies_found=has_cookie_auth,
         )
         return False
 
@@ -986,14 +1040,15 @@ class TdApiClient:
                         }
                     )
                 if page == 1 and page_result.status == 401:
-                    logger.error(
-                        "TD API endpoint unauthorized on first page",
-                        extra={
-                            "store_code": self.store_code,
-                            "endpoint": endpoint,
-                            "status": page_result.status,
-                            **diagnostics,
-                        },
+                    self._emit_source_fetch_event(
+                        status="error",
+                        message="TD API endpoint unauthorized on first page",
+                        endpoint=endpoint,
+                        window_start=window_start,
+                        window_end=window_end,
+                        http_status=page_result.status,
+                        failure_class=final_error,
+                        **diagnostics,
                     )
                 break
 
@@ -1387,46 +1442,57 @@ class TdApiClient:
                 reported_total_rows=total_rows_hint,
                 reported_total_pages=total_pages_hint,
             )
-            budget_log_level = logger.warning if garments_completion == "incomplete" else logger.info
-            budget_log_level(
-                garments_fetch_event,
-                extra={
-                    "store_code": self.store_code,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                    "endpoint": endpoint,
-                    "garments_budget_state": garments_budget_state,
-                    "garments_fetch_completeness": garments_completion,
-                    "elapsed_ms": total_wall_time_ms,
-                    "budget_ms": self.config.garments_max_wall_time_ms,
-                    "remaining_pages_estimate": remaining_pages_estimate,
-                    "page_size_requested": requested_page_size,
-                    "pages_attempted": garments_pages_attempted,
-                    "pages_succeeded": garments_pages_succeeded,
-                    "last_successful_page": last_successful_page,
-                    "reported_total_rows": garments_expected_total_rows,
-                    "reported_total_pages": garments_expected_page_count,
-                    "parsed_row_count": cumulative_rows,
-                    "unique_row_id_count": len(garments_unique_row_ids),
-                    "rows_without_identity_count": garments_rows_without_identity_count,
-                    "identity_strategy": _summarize_identity_strategy(garments_identity_strategy_counts),
-                    "stop_reason": garments_stop_reason,
-                    "garments_incomplete_reason": (
-                        _build_garments_incomplete_reason(
-                            endpoint_error=errors.get(endpoint),
-                            parsing_failure=garments_response_parsing_failure,
-                            pagination_budget_exhausted=garments_pagination_budget_exhausted,
-                        )
-                        if garments_completion == "incomplete"
-                        else None
-                    ),
-                    "expected_total_rows": garments_expected_total_rows,
-                    "fetched_unique_row_ids": len(garments_unique_row_ids),
-                    "duplicate_row_id_count": garments_duplicate_row_id_count,
-                    "completeness_basis": garments_completeness_basis,
-                    "details_message": garments_fetch_message,
-                    **({"page_number": max(last_successful_page, 1), "rows_in_page": 0, "cumulative_rows": cumulative_rows} if self.config.debug_logging else {}),
-                },
+            self._emit_source_fetch_event(
+                status="warning" if garments_completion == "incomplete" else "info",
+                message=garments_fetch_event,
+                endpoint=endpoint,
+                window_start=window_start,
+                window_end=window_end,
+                garments_budget_state=garments_budget_state,
+                garments_fetch_completeness=garments_completion,
+                elapsed_ms=total_wall_time_ms,
+                budget_ms=self.config.garments_max_wall_time_ms,
+                remaining_pages_estimate=remaining_pages_estimate,
+                page_size_requested=requested_page_size,
+                pages_attempted=garments_pages_attempted,
+                pages_succeeded=garments_pages_succeeded,
+                last_successful_page=last_successful_page,
+                reported_total_rows=garments_expected_total_rows,
+                reported_total_pages=garments_expected_page_count,
+                parsed_row_count=cumulative_rows,
+                unique_row_id_count=len(garments_unique_row_ids),
+                rows_without_identity_count=garments_rows_without_identity_count,
+                identity_strategy=_summarize_identity_strategy(garments_identity_strategy_counts),
+                stop_reason=garments_stop_reason,
+                failure_class=(
+                    errors.get(endpoint)
+                    if garments_completion == "incomplete"
+                    and errors.get(endpoint) in AUTH_FAILURE_ERROR_CLASSES
+                    else None
+                ),
+                garments_incomplete_reason=(
+                    _build_garments_incomplete_reason(
+                        endpoint_error=errors.get(endpoint),
+                        parsing_failure=garments_response_parsing_failure,
+                        pagination_budget_exhausted=garments_pagination_budget_exhausted,
+                    )
+                    if garments_completion == "incomplete"
+                    else None
+                ),
+                expected_total_rows=garments_expected_total_rows,
+                fetched_unique_row_ids=len(garments_unique_row_ids),
+                duplicate_row_id_count=garments_duplicate_row_id_count,
+                completeness_basis=garments_completeness_basis,
+                details_message=garments_fetch_message,
+                **(
+                    {
+                        "page_number": max(last_successful_page, 1),
+                        "rows_in_page": 0,
+                        "cumulative_rows": cumulative_rows,
+                    }
+                    if self.config.debug_logging
+                    else {}
+                ),
             )
             logger.info(
                 "TD API garments compact metrics summary",

@@ -700,6 +700,8 @@ async def default_fetch_snapshot(
                     store_code=store.store_code,
                     context=context,
                     storage_state_path=storage_state_path or Path(),
+                    run_id=run_id,
+                    structured_logger=logger,
                 )
                 result = await client.fetch_reports(
                     from_date=window.start, to_date=window.end
