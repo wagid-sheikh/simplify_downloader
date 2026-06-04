@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping
@@ -12,6 +13,7 @@ from playwright.async_api import Page
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     _extract_invoice_customer_address,
     InvoiceApiCallStats,
+    TOKEN_KEY_PATTERN,
     _extract_order_info,
     _fetch_invoice_html_with_retries,
     _parse_invoice_order_details,
@@ -142,6 +144,87 @@ def _build_headers(*, bearer_token: str | None) -> dict[str, str]:
         headers["Authorization"] = f"Bearer {bearer_token}"
     return headers
 
+
+def detect_archive_bearer_token_in_storage_state(
+    storage_state: Mapping[str, Any],
+) -> str | None:
+    """Return a UC archive bearer token from a Playwright storage-state artifact.
+
+    The archive/GST APIs depend on a browser-local bearer token.  This helper is
+    intentionally side-effect free so rebuild preflight can fail fast before it
+    opens historical rebuild windows.
+    """
+    token_regexes = (
+        re.compile(r"(?:^|\s)Bearer\s+([A-Za-z0-9\-_.~+/]+=*)", flags=re.I),
+        re.compile(r"^([A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+)$"),
+    )
+
+    def parse_token(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        for pattern in token_regexes:
+            match = pattern.match(trimmed)
+            if match:
+                return (match.group(1) or match.group(0)).strip()
+        return None
+
+    def deep_search(value: Any, depth: int = 0) -> str | None:
+        if value is None or depth > 4:
+            return None
+        direct = parse_token(value)
+        if direct:
+            return direct
+        if isinstance(value, str):
+            try:
+                parsed_value = json.loads(value)
+            except Exception:
+                parsed_value = None
+            if parsed_value is not None:
+                token = deep_search(parsed_value, depth + 1)
+                if token:
+                    return token
+        if isinstance(value, Mapping):
+            for key, nested_value in value.items():
+                if isinstance(key, str) and TOKEN_KEY_PATTERN.search(key):
+                    token = deep_search(nested_value, depth + 1)
+                    if token:
+                        return token
+            for nested_value in value.values():
+                token = deep_search(nested_value, depth + 1)
+                if token:
+                    return token
+        if isinstance(value, list):
+            for item in value:
+                token = deep_search(item, depth + 1)
+                if token:
+                    return token
+        return None
+
+    origins = storage_state.get("origins")
+    if not isinstance(origins, list):
+        return None
+    for origin in origins:
+        if not isinstance(origin, Mapping):
+            continue
+        local_storage = origin.get("localStorage")
+        if not isinstance(local_storage, list):
+            continue
+        for entry in local_storage:
+            if not isinstance(entry, Mapping):
+                continue
+            key = entry.get("name")
+            value = entry.get("value")
+            if isinstance(key, str) and TOKEN_KEY_PATTERN.search(key):
+                token = deep_search(value)
+                if token:
+                    return token
+            token = deep_search(value)
+            if token:
+                return token
+    return None
 
 
 def _build_payment_rows_from_booking(*, store_code: str, order_code: str, booking_row: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
