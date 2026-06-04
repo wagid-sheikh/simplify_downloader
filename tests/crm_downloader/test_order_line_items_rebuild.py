@@ -1086,6 +1086,71 @@ async def test_retryable_failed_window_is_retried(patch_config_and_stores) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TypeError("launch_browser() takes 0 positional arguments but 1 was given"),
+        RuntimeError("missing cost_center"),
+    ],
+)
+async def test_deterministic_rebuild_window_failures_are_not_retried(
+    patch_config_and_stores, exc: Exception
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    attempts = 0
+
+    async def fetcher(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise exc
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="deterministic",
+            fetch_snapshot=fetcher,
+        )
+
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_error_with_transient_navigation_token_is_retried(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    attempts = 0
+
+    async def fetcher(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("session timeout while loading archive orders page")
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="runtime-transient",
+        fetch_snapshot=fetcher,
+    )
+
+    assert attempts == 2
+    assert len(metrics) == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_window_detection_reports_failed_windows(
     patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
 ) -> None:

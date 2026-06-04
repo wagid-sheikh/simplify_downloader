@@ -26,6 +26,14 @@ TIMEOUT_NAVIGATION_RETRY_TOKENS = (
     "net::err",
 )
 
+DETERMINISTIC_RETRY_BLOCKED_EXCEPTION_TYPES = (
+    AttributeError,
+    ImportError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
 
 def resolve_window_settings(
     *,
@@ -181,6 +189,17 @@ def has_timeout_navigation_failure(*messages: str | None) -> bool:
     return any(token in combined for token in TIMEOUT_NAVIGATION_RETRY_TOKENS)
 
 
+def should_retry_exception(exc: BaseException) -> bool:
+    """Return True only for known transient browser/navigation/session failures.
+
+    Programming and configuration exceptions are deterministic and should not
+    receive another browser attempt just because a window failed.
+    """
+    if isinstance(exc, DETERMINISTIC_RETRY_BLOCKED_EXCEPTION_TYPES):
+        return False
+    return has_timeout_navigation_failure(type(exc).__name__, str(exc))
+
+
 def should_retry_window_status(
     *,
     status: str,
@@ -188,8 +207,6 @@ def should_retry_window_status(
     status_note: str | None,
     skip_reason: str | None = None,
 ) -> bool:
-    if status == "failed":
-        return True
-    if status not in {"skipped", "partial"}:
+    if status not in {"failed", "skipped", "partial"}:
         return False
     return has_timeout_navigation_failure(error_message, status_note, skip_reason)
