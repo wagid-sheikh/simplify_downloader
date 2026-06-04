@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
+from time import perf_counter
 from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
@@ -74,6 +75,30 @@ TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 EXCEL_DATETIME_NUMBER_FORMAT = "yyyy-mm-dd hh:mm:ss"
+
+
+def _elapsed_ms(start: float) -> int:
+    return int((perf_counter() - start) * 1000)
+
+
+def _log_timing(
+    *,
+    logger: object,
+    phase: str,
+    message: str,
+    report_date: date,
+    started_at: float,
+    **counts: object,
+) -> None:
+    log_event(
+        logger=logger,
+        phase=phase,
+        status="ok",
+        message=message,
+        report_date=report_date.isoformat(),
+        elapsed_ms=_elapsed_ms(started_at),
+        **counts,
+    )
 
 
 def _format_amount(value: Decimal | int | float | None) -> str:
@@ -447,11 +472,25 @@ async def _run(
             orders_sync_is_degraded=orders_sync_upstream.is_degraded,
         )
 
+        data_fetch_started_at = perf_counter()
         data = await fetch_daily_sales_report(
             database_url=database_url,
             report_date=resolved_date,
         )
         tracker.mark_phase("load_data", "ok")
+        _log_timing(
+            logger=logger,
+            phase="load_data",
+            message="daily sales data fetched",
+            report_date=resolved_date,
+            started_at=data_fetch_started_at,
+            rows=len(data.rows),
+            edited_orders=len(data.edited_orders),
+            missing_payment_rows=len(data.missing_payment_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            to_be_recovered_rows=len(getattr(data, "to_be_recovered", [])),
+            integrity_findings=len(getattr(data, "integrity_findings", [])),
+        )
         log_event(
             logger=logger,
             phase="load_data",
@@ -476,10 +515,37 @@ async def _run(
         else:
             tracker.mark_phase("validate_integrity", "ok")
 
+        context_started_at = perf_counter()
         context = _build_context(data, run_env, orders_sync_upstream)
+        _log_timing(
+            logger=logger,
+            phase="build_context",
+            message="daily sales context built",
+            report_date=resolved_date,
+            started_at=context_started_at,
+            rows=len(data.rows),
+            edited_orders=len(data.edited_orders),
+            missing_payment_rows=len(data.missing_payment_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            same_day_fulfillment_rows=len(
+                getattr(data, "same_day_fulfillment_rows", [])
+            ),
+        )
+        html_started_at = perf_counter()
         html = _render_html(context)
+        _log_timing(
+            logger=logger,
+            phase="render_html",
+            message="daily sales html rendered",
+            report_date=resolved_date,
+            started_at=html_started_at,
+            rows=len(data.rows),
+            missing_payment_rows=len(data.missing_payment_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+        )
         short_payments_pdf_generated = True
         actual_payments_not_found_pdf_generated = True
+        to_be_recovered_context_started_at = perf_counter()
         to_be_recovered_context = build_to_be_recovered_context(
             rows=data.to_be_recovered,
             report_date=resolved_date,
@@ -488,17 +554,44 @@ async def _run(
                 data, "auto_cleared_order_numbers_text", ""
             ),
         )
+        _log_timing(
+            logger=logger,
+            phase="build_context",
+            message="to-be-recovered context built",
+            report_date=resolved_date,
+            started_at=to_be_recovered_context_started_at,
+            to_be_recovered_rows=len(data.to_be_recovered),
+            auto_cleared_orders=len(getattr(data, "auto_cleared_order_numbers", [])),
+        )
+        to_be_recovered_html_started_at = perf_counter()
         to_be_recovered_html = _render_html(
             to_be_recovered_context,
             template_name=TO_BE_RECOVERED_TEMPLATE_NAME,
+        )
+        _log_timing(
+            logger=logger,
+            phase="render_html",
+            message="to-be-recovered html rendered",
+            report_date=resolved_date,
+            started_at=to_be_recovered_html_started_at,
+            to_be_recovered_rows=len(data.to_be_recovered),
         )
         mtd_attachment_generated = True
         mtd_rows = []
         same_day_html: str | None = None
         mtd_attachment_error: str | None = None
+        mtd_fetch_started_at = perf_counter()
         try:
             mtd_rows = await fetch_mtd_same_day_fulfillment(
                 database_url=database_url, report_date=resolved_date
+            )
+            _log_timing(
+                logger=logger,
+                phase="load_data",
+                message="mtd same-day fulfillment data fetched",
+                report_date=resolved_date,
+                started_at=mtd_fetch_started_at,
+                mtd_row_count=len(mtd_rows),
             )
         except Exception as exc:
             mtd_attachment_generated = False
@@ -521,11 +614,20 @@ async def _run(
         mtd_start = resolved_date.replace(day=1)
         mtd_end = resolved_date
         if mtd_attachment_generated:
+            mtd_html_started_at = perf_counter()
             same_day_html = render_mtd_same_day_html(
                 rows=mtd_rows,
                 report_date_display=resolved_date.strftime("%d-%b-%Y"),
                 mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
                 mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
+            )
+            _log_timing(
+                logger=logger,
+                phase="render_html",
+                message="mtd same-day fulfillment html rendered",
+                report_date=resolved_date,
+                started_at=mtd_html_started_at,
+                mtd_row_count=len(mtd_rows),
             )
             tracker.mark_phase("render_html", "ok")
         log_event(
@@ -576,33 +678,77 @@ async def _run(
         if actual_payments_not_found_workbook_output_path.exists():
             actual_payments_not_found_workbook_output_path.unlink()
         try:
+            pdf_started_at = perf_counter()
             await render_pdf_with_configured_browser(
                 html,
                 output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
+            _log_timing(
+                logger=logger,
+                phase="render_pdf",
+                message="daily sales pdf rendered",
+                report_date=resolved_date,
+                started_at=pdf_started_at,
+                rows=len(data.rows),
+                file_path=str(output_path),
+            )
+
+            pdf_started_at = perf_counter()
             await render_pdf_with_configured_browser(
                 to_be_recovered_html,
                 to_be_recovered_output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
+            _log_timing(
+                logger=logger,
+                phase="render_pdf",
+                message="to-be-recovered pdf rendered",
+                report_date=resolved_date,
+                started_at=pdf_started_at,
+                to_be_recovered_rows=len(data.to_be_recovered),
+                file_path=str(to_be_recovered_output_path),
+            )
+
+            pdf_started_at = perf_counter()
             short_payments_output_path = await _generate_short_payments_pdf(
                 context=context,
                 report_date=resolved_date,
                 logger=logger,
             )
+            _log_timing(
+                logger=logger,
+                phase="render_pdf",
+                message="short payments pdf rendered",
+                report_date=resolved_date,
+                started_at=pdf_started_at,
+                short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+                file_path=str(short_payments_output_path),
+            )
+
             actual_payments_not_found_html = _render_html(
                 context,
                 template_name=ACTUAL_PAYMENTS_NOT_FOUND_TEMPLATE_NAME,
             )
+            pdf_started_at = perf_counter()
             await render_pdf_with_configured_browser(
                 actual_payments_not_found_html,
                 actual_payments_not_found_output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
+            _log_timing(
+                logger=logger,
+                phase="render_pdf",
+                message="actual payments not found pdf rendered",
+                report_date=resolved_date,
+                started_at=pdf_started_at,
+                actual_payments_not_found_rows=len(data.missing_payment_rows),
+                file_path=str(actual_payments_not_found_output_path),
+            )
+
             log_event(
                 logger=logger,
                 phase="render_xlsx",
@@ -612,6 +758,7 @@ async def _run(
                 run_id=run_id,
                 rows=len(data.missing_payment_rows),
             )
+            workbook_started_at = perf_counter()
             _, rows_processed, datetime_fields_normalized = (
                 _build_actual_payments_not_found_workbook(
                     rows=list(data.missing_payment_rows),
@@ -619,23 +766,34 @@ async def _run(
                     business_timezone=tz,
                 )
             )
-            log_event(
+            _log_timing(
                 logger=logger,
                 phase="render_xlsx",
-                status="ok",
                 message="actual payments not found workbook generated",
-                report_date=resolved_date.isoformat(),
+                report_date=resolved_date,
+                started_at=workbook_started_at,
                 run_id=run_id,
                 rows_processed=rows_processed,
                 datetime_fields_normalized=datetime_fields_normalized,
                 timezone=str(getattr(tz, "key", tz)),
+                file_path=str(actual_payments_not_found_workbook_output_path),
             )
             if mtd_attachment_generated and same_day_html is not None:
+                pdf_started_at = perf_counter()
                 await render_pdf_with_configured_browser(
                     same_day_html,
                     same_day_output_path,
                     pdf_options={"format": "A4", "landscape": True},
                     logger=logger,
+                )
+                _log_timing(
+                    logger=logger,
+                    phase="render_pdf",
+                    message="mtd same-day fulfillment pdf rendered",
+                    report_date=resolved_date,
+                    started_at=pdf_started_at,
+                    mtd_row_count=len(mtd_rows),
+                    file_path=str(same_day_output_path),
                 )
         except asyncio.TimeoutError as exc:
             tracker.mark_phase("render_pdf", "error")
@@ -706,6 +864,8 @@ async def _run(
             actual_payments_not_found_pdf_generated=actual_payments_not_found_pdf_generated,
         )
 
+        persist_documents_started_at = perf_counter()
+        documents_persisted = 0
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
@@ -713,6 +873,7 @@ async def _run(
             file_path=output_path,
             doc_type="daily_sales_report_pdf",
         )
+        documents_persisted += 1
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
@@ -720,6 +881,7 @@ async def _run(
             file_path=to_be_recovered_output_path,
             doc_type=TO_BE_RECOVERED_DOCUMENT_TYPE,
         )
+        documents_persisted += 1
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
@@ -727,6 +889,7 @@ async def _run(
             file_path=short_payments_output_path,
             doc_type=SHORT_PAYMENTS_DOCUMENT_TYPE,
         )
+        documents_persisted += 1
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
@@ -734,6 +897,7 @@ async def _run(
             file_path=actual_payments_not_found_output_path,
             doc_type=ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE,
         )
+        documents_persisted += 1
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
@@ -741,6 +905,7 @@ async def _run(
             file_path=actual_payments_not_found_workbook_output_path,
             doc_type=ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_DOCUMENT_TYPE,
         )
+        documents_persisted += 1
         if mtd_attachment_generated:
             await _persist_document(
                 database_url=database_url,
@@ -749,6 +914,16 @@ async def _run(
                 file_path=same_day_output_path,
                 doc_type="mtd_same_day_fulfillment_pdf",
             )
+            documents_persisted += 1
+        _log_timing(
+            logger=logger,
+            phase="persist_documents",
+            message="daily sales documents persisted",
+            report_date=resolved_date,
+            started_at=persist_documents_started_at,
+            documents_persisted=documents_persisted,
+            mtd_attachment_generated=mtd_attachment_generated,
+        )
         tracker.mark_phase(
             "persist_documents", "warning" if not mtd_attachment_generated else "ok"
         )
@@ -826,6 +1001,7 @@ async def _run(
         pre_record = tracker.build_record(pre_finished_at)
         await persist_summary_record(database_url, pre_record)
 
+        notification_started_at = perf_counter()
         try:
             notification_result = await send_notifications_for_run(
                 PIPELINE_NAME, run_id
@@ -833,6 +1009,16 @@ async def _run(
             emails_planned = int(notification_result.get("emails_planned") or 0)
             emails_sent = int(notification_result.get("emails_sent") or 0)
             notification_errors = notification_result.get("errors") or []
+            _log_timing(
+                logger=logger,
+                phase="send_email",
+                message="daily sales notification sent",
+                report_date=resolved_date,
+                started_at=notification_started_at,
+                emails_planned=emails_planned,
+                emails_sent=emails_sent,
+                notification_error_count=len(notification_errors),
+            )
             if emails_sent > 0:
                 tracker.mark_phase("send_email", "ok")
                 log_event(

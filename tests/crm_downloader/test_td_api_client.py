@@ -27,6 +27,7 @@ from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClientConfig,
     build_garment_order_snapshots,
     _build_garments_incomplete_reason,
+    _extract_row_ids,
     _extract_rows,
     _filter_summary_rows,
 )
@@ -40,6 +41,48 @@ from app.crm_downloader.td_orders_sync.td_api_compare import (
 ORDERS_IGNORABLE_API_ONLY_FIELDS = {"bookingSlipUrl", "storeName", "deliveryDate"}
 SALES_IGNORABLE_API_ONLY_FIELDS = {"printer", "storeName", "storeId"}
 
+
+def _har_fixture_pages() -> list[dict[str, object]]:
+    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / "td_garment_details_sample.json"
+    return json.loads(fixture_path.read_text(encoding="utf-8"))["pages"]
+
+
+def _har_fixture_rows() -> list[dict[str, object]]:
+    return [
+        row
+        for page in _har_fixture_pages()
+        for row in page["response"]["data"]["rows"]  # type: ignore[index]
+    ]
+
+
+def _garment_row(index: int, *, barcode: str | None = None) -> dict[str, object]:
+    barcode_value = barcode if barcode is not None else f"*T{2400 + index}-{index}-1170*"
+    return {
+        "orderNumber": f"T{2400 + index}",
+        "orderDate": "01 Mar 2026",
+        "orderTime": "12:32:33 PM",
+        "garment": "Women - BLOUSE",
+        "subGarment": "Blouse",
+        "barcode": barcode_value,
+        "primaryService": "CL",
+        "garmentStatus": "Delivered",
+    }
+
+
+def _api_result(payload: dict[str, object]) -> object:
+    return type(
+        "_Result",
+        (),
+        {
+            "ok": True,
+            "payload": payload,
+            "error": None,
+            "status": 200,
+            "attempts": 1,
+            "latency_ms": 10,
+            "timeout_failures": 0,
+        },
+    )()
 
 @pytest.fixture
 def representative_orders_api_row() -> dict[str, str]:
@@ -81,6 +124,74 @@ def test_extract_rows_handles_common_response_shapes() -> None:
     assert _extract_rows({"data": "bad"}) == []
 
 
+
+
+
+
+def test_extract_row_ids_prefers_har_barcodes_and_casing_variants() -> None:
+    rows = [
+        {"barcode": "*T2401-1-1170*"},
+        {"barCode": "*T2401-2-1170*"},
+        {"Barcode": "*T2401-3-1170*"},
+        {"garmentBarcode": "*T2401-4-1170*"},
+    ]
+
+    ids = _extract_row_ids(rows)
+
+    assert ids == {
+        "barcode:*T2401-1-1170*",
+        "barCode:*T2401-2-1170*",
+        "Barcode:*T2401-3-1170*",
+        "garmentBarcode:*T2401-4-1170*",
+    }
+
+
+def test_extract_row_ids_uses_har_composite_when_barcode_missing() -> None:
+    rows = [
+        {
+            "orderNumber": "T2401",
+            "orderDate": "01 Mar 2026",
+            "orderTime": "12:32:33 PM",
+            "garment": "Women - BLOUSE",
+            "subGarment": "Blouse",
+            "primaryService": "CL",
+        },
+        {
+            "orderNumber": "T2401",
+            "orderDate": "01 Mar 2026",
+            "orderTime": "12:32:33 PM",
+            "garment": "Women - SAREE PLAIN",
+            "subGarment": "Saree Plain",
+            "primaryService": "CL",
+        },
+    ]
+
+    ids = _extract_row_ids(rows)
+
+    assert ids == {
+        "composite:orderNumber=T2401|garment=Women - BLOUSE|subGarment=Blouse|primaryService=CL|orderDate=01 Mar 2026|orderTime=12:32:33 PM",
+        "composite:orderNumber=T2401|garment=Women - SAREE PLAIN|subGarment=Saree Plain|primaryService=CL|orderDate=01 Mar 2026|orderTime=12:32:33 PM",
+    }
+
+
+def test_sanitized_garment_details_fixture_matches_har_shape() -> None:
+    pages = _har_fixture_pages()
+    first_payload = pages[0]["response"]
+    final_payload = pages[-1]["response"]
+    rows = _extract_rows(first_payload)
+    all_rows = _har_fixture_rows()
+    forbidden_identifier_fields = {"id", "_id", "api_line_item_id", "apiGarmentId"}
+
+    assert first_payload["data"]["count"] == 2227
+    assert len(pages) == 23
+    assert pages[0]["request"]["pageSize"] == 100
+    assert pages[-1]["request"]["page"] == 23
+    assert len(final_payload["data"]["rows"]) == 27
+    assert len(all_rows) == 2227
+    assert len(rows) == 100
+    assert all(forbidden_identifier_fields.isdisjoint(row) for row in all_rows)
+    assert all(str(row.get("barcode") or "").strip() for row in all_rows)
+    assert _extract_row_ids(rows) == {f"barcode:{row['barcode']}" for row in rows}
 
 
 def test_filter_summary_rows_removes_footer_like_rows() -> None:
@@ -982,6 +1093,9 @@ class _TokenRefreshingClient(TdApiClient):
         super().__init__(**kwargs)
         self.discovery_calls: list[bool] = []
 
+    def _has_cookie_auth_source(self) -> bool:  # type: ignore[override]
+        return True
+
     async def _discover_reporting_token(self, *, force_refresh: bool = False):  # type: ignore[override]
         self.discovery_calls.append(force_refresh)
         if self._auth_state.token_discovery is not None and not force_refresh:
@@ -1109,7 +1223,7 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
         item for item in result.request_metadata if item["endpoint"] == "/reports/order-report" and item["status"] == 401
     ]
     assert len(auth_refresh_items) == 1
-    assert auth_refresh_items[0]["retry_reason"] == "auth_refresh"
+    assert auth_refresh_items[0]["retry_reason"] == "http_401"
 
     sales_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/sales-and-deliveries/sales" and item["status"] == 200)
     assert sales_metadata["query_params"]["startDate"] == ["2026-01-01"]
@@ -1125,7 +1239,7 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert garments_metadata["query_params"]["startDate"] == ["2026-01-01"]
     assert garments_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert garments_metadata["query_params"]["page"] == ["1"]
-    assert garments_metadata["query_params"]["pageSize"] == ["500"]
+    assert garments_metadata["query_params"]["pageSize"] == ["100"]
     assert garments_metadata["query_params"]["token"] == ["fresh-token"]
     assert garments_metadata["auth_shape"] == "legacy"
     assert garments_metadata["primary_auth_shape"] == "legacy"
@@ -2131,6 +2245,177 @@ def test_garments_incomplete_reason_normalizes_operator_categories() -> None:
     assert _build_garments_incomplete_reason(endpoint_error=None, parsing_failure=False, pagination_budget_exhausted=False) == {"code": "unknown", "message": "unknown"}
 
 
+
+
+@pytest.mark.asyncio
+async def test_garments_har_shaped_count_rows_and_barcode_ids_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0, page_size=1000),
+    )
+    all_rows = [_garment_row(index) for index in range(1, 2228)]
+    responses = iter(
+        [
+            _api_result({"success": True, "data": {"count": 2227, "rows": all_rows[:1000]}}),
+            _api_result({"success": True, "data": {"count": 2227, "rows": all_rows[1000:2000]}}),
+            _api_result({"success": True, "data": {"count": 2227, "rows": all_rows[2000:]}}),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    rows_payload = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-03-01", "endDate": "2026-03-30", "page": 1, "pageSize": 1000},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert len(rows_payload["data"]) == 2227
+    assert health["garments_expected_total_rows"] == 2227
+    assert health["garments_final_row_count"] == 2227
+    assert health["garments_fetched_unique_row_ids"] == 2227
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_completeness_basis"] == "unique_row_ids"
+
+
+@pytest.mark.asyncio
+async def test_garments_duplicate_barcode_across_pages_does_not_inflate_unique_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0),
+    )
+    responses = iter(
+        [
+            _api_result({"success": True, "data": {"count": 3, "rows": [_garment_row(1, barcode="*DUP*"), _garment_row(2, barcode="*T2*")]}}),
+            _api_result({"success": True, "data": {"count": 3, "rows": [_garment_row(3, barcode="*DUP*"), _garment_row(4, barcode="*T4*")]}}),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-03-01", "endDate": "2026-03-30", "page": 1, "pageSize": 2},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetched_unique_row_ids"] == 3
+    assert health["garments_duplicate_row_id_count"] == 1
+    assert health["garments_fetch_completeness"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_garments_row_count_complete_with_duplicate_ids_records_diagnostics_not_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0),
+    )
+    responses = iter(
+        [
+            _api_result({"success": True, "data": {"count": 2, "rows": [_garment_row(1, barcode="*DUP*")]}}),
+            _api_result({"success": True, "data": {"count": 2, "rows": [_garment_row(2, barcode="*DUP*")]}}),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-03-01", "endDate": "2026-03-30", "page": 1, "pageSize": 1},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_final_row_count"] == 2
+    assert health["garments_fetched_unique_row_ids"] == 1
+    assert health["garments_duplicate_row_id_count"] == 1
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_completeness_basis"] == "parsed_row_count_with_duplicate_row_ids"
+    assert health["garments_incomplete_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_garments_har_count_drives_complete_final_page_without_empty_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0, page_size=500, max_pages=30),
+    )
+    pages_by_number = {page["request"]["page"]: page for page in _har_fixture_pages()}
+    requested_pages: list[int] = []
+    requested_page_sizes: list[int] = []
+
+    async def _fake_get_json(**kwargs: object) -> object:
+        params = kwargs["params"]
+        page_number = int(params["page"])  # type: ignore[index]
+        requested_pages.append(page_number)
+        requested_page_sizes.append(int(params["pageSize"]))  # type: ignore[index]
+        return _api_result(pages_by_number[page_number]["response"])
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-03-01", "endDate": "2026-03-30", "page": 1, "pageSize": 500},
+        metadata=[],
+        errors={},
+        error_diagnostics={},
+        endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert requested_pages == list(range(1, 24))
+    assert set(requested_page_sizes) == {500}
+    assert result["pagination"]["pages_fetched"] == 23
+    assert result["pagination"]["total_rows"] == 2227
+    assert result["pagination"]["reported_total_rows"] == 2227
+    assert len(result["data"]) == 2227
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_incomplete_reason"] is None
+    assert health["garments_expected_total_rows"] == 2227
+    assert health["garments_expected_page_count"] == 23
+    assert health["garments_completed_page_count"] == 23
+    assert health["garments_final_row_count"] == 2227
+    assert health["garments_fetched_unique_row_ids"] == 2227
+    assert health["garments_completeness_basis"] == "unique_row_ids"
+
+
 @pytest.mark.asyncio
 async def test_garments_fetch_complete_records_structured_page_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = TdApiClient(
@@ -2202,6 +2487,7 @@ async def test_garments_timeout_exhaustion_records_structured_reason(tmp_path: P
     assert health["garments_completed_page_count"] == 0
     assert health["garments_timeout_count"] == 2
     assert health["garments_retry_count"] == 1
+    assert health["stop_reason"] == "timeout_budget"
 
 
 @pytest.mark.asyncio
@@ -2221,6 +2507,7 @@ async def test_garments_pagination_budget_exhaustion_records_structured_reason(t
     assert health["garments_attempted_page_count"] == 1
     assert health["garments_completed_page_count"] == 1
     assert health["garments_expected_page_count"] == 3
+    assert health["stop_reason"] == "max_pages"
 
 
 def test_build_garment_order_snapshots_marks_rows_empty_and_incomplete() -> None:
@@ -2245,3 +2532,74 @@ def test_build_garment_order_snapshots_marks_rows_empty_and_incomplete() -> None
         {"order_number": "1001", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
         {"order_number": "9999", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
     ]
+
+
+@pytest.mark.asyncio
+async def test_garments_complete_final_page_stop_reason_reached_total_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+    responses = iter(
+        [
+            type("_Result", (), {"ok": True, "payload": {"data": {"rows": [{"barcode": "B-1"}, {"barcode": "B-2"}], "count": 3}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+            type("_Result", (), {"ok": True, "payload": {"data": {"rows": [{"barcode": "B-3"}], "count": 3}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 2}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["stop_reason"] == "reached_total_rows"
+    assert health["page_size_requested"] == 2
+    assert health["pages_attempted"] == 2
+    assert health["pages_succeeded"] == 2
+    assert health["last_successful_page"] == 2
+    assert health["reported_total_rows"] == 3
+    assert health["reported_total_pages"] == 2
+    assert health["parsed_row_count"] == 3
+    assert health["unique_row_id_count"] == 3
+    assert health["rows_without_identity_count"] == 0
+    assert health["identity_strategy"] == "barcode"
+
+
+@pytest.mark.asyncio
+async def test_garments_parsing_failure_stop_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": {"count": 5, "unexpected": [{"barcode": "B-1"}]}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 100}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["stop_reason"] == "parsing_failure"
+    assert health["garments_incomplete_reason"] == {"code": "response_parsing_failure", "message": "response parsing failure"}
+    assert health["pages_attempted"] == 1
+    assert health["pages_succeeded"] == 0
+    assert health["parsed_row_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_garments_missing_identity_fields_use_composite_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": [{"orderNumber": "O-1", "garment": "Shirt", "subGarment": "Cotton", "primaryService": "DC"}, {"customerName": "No identity"}], "count": 2}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 100}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["identity_strategy"] == "composite"
+    assert health["unique_row_id_count"] == 1
+    assert health["rows_without_identity_count"] == 1
+    assert health["parsed_row_count"] == 2

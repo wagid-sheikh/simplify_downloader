@@ -8,6 +8,12 @@ from typing import Any
 
 import sqlalchemy as sa
 
+from app.reports.shared.payment_reconciliation import reconcile_payments
+from app.reports.shared.short_payments import (
+    QUALIFYING_PAYMENT_SOURCE_TYPES,
+    fetch_payment_rows_for_orders,
+)
+
 
 @dataclass
 class SameDayFulfillmentRecord:
@@ -144,53 +150,9 @@ async def fetch_same_day_fulfillment_rows(
         "payment_collections",
         sa.column("cost_center"),
         sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
     )
-
-    normalized_order_number = sa.func.lower(sa.func.replace(sa.func.coalesce(orders.c.order_number, ""), " ", ""))
-
-    if dialect_name == "postgresql":
-        split_tokens = (
-            sa.select(
-                sa.func.regexp_split_to_table(
-                    sa.func.coalesce(payment_collections.c.order_number, ""),
-                    r"[,/]",
-                ).label("token")
-            )
-            .lateral()
-            .alias("split_tokens")
-        )
-        payment_proof_exists = sa.exists(
-            sa.select(sa.literal(1))
-            .select_from(payment_collections.join(split_tokens, sa.true()))
-            .where(payment_collections.c.cost_center == orders.c.cost_center)
-            .where(sa.func.length(sa.func.trim(split_tokens.c.token)) > 0)
-            .where(
-                sa.func.lower(sa.func.replace(sa.func.trim(split_tokens.c.token), " ", ""))
-                == normalized_order_number
-            )
-        )
-    else:
-        normalized_collection_orders = sa.func.lower(
-            sa.func.replace(
-                sa.func.replace(sa.func.coalesce(payment_collections.c.order_number, ""), "/", ","),
-                " ",
-                "",
-            )
-        )
-
-        payment_proof_exists = sa.exists(
-            sa.select(sa.literal(1))
-            .select_from(payment_collections)
-            .where(payment_collections.c.cost_center == orders.c.cost_center)
-            .where(
-                sa.func.instr(
-                    sa.literal(",") + normalized_collection_orders + sa.literal(","),
-                    sa.literal(",") + normalized_order_number + sa.literal(","),
-                )
-                > 0
-            )
-        )
-
 
     stmt = (
         sa.select(
@@ -227,7 +189,6 @@ async def fetch_same_day_fulfillment_rows(
             same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=timezone_name)
             == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=timezone_name)
         )
-        .where(~payment_proof_exists)
         .group_by(
             orders.c.cost_center,
             store_master.c.store_code,
@@ -242,7 +203,39 @@ async def fetch_same_day_fulfillment_rows(
     )
 
     result = await session.execute(stmt)
-    entries = list(result.mappings())
+    entries = [dict(entry) for entry in result.mappings()]
+
+    # Full/over payment proof should remove a same-day candidate, but proof
+    # existence alone must not hide short payments. Reuse the canonical payment
+    # reconciliation graph so grouped comma/slash evidence follows the same
+    # tolerance and allocation rules as APNF and Short Payments.
+    payment_rows = await fetch_payment_rows_for_orders(
+        session=session, payment_collections=payment_collections, order_rows=entries
+    )
+    reconciliation = reconcile_payments(
+        order_rows=[{**entry, "recovery_status": "NONE"} for entry in entries],
+        sales_rows=[
+            {
+                "cost_center": entry.get("cost_center"),
+                "order_number": entry.get("order_number"),
+                "payment_received": entry.get("payment_received"),
+            }
+            for entry in entries
+        ],
+        payment_evidence_rows=payment_rows,
+        valid_source_types=QUALIFYING_PAYMENT_SOURCE_TYPES,
+    )
+    paid_order_keys = {
+        (order.cost_center, order.order_number)
+        for order in reconciliation.orders
+        if order.status == "paid"
+    }
+    entries = [
+        entry
+        for entry in entries
+        if (str(entry.get("cost_center") or ""), str(entry.get("order_number") or ""))
+        not in paid_order_keys
+    ]
 
     order_keys = {(str(entry.get("cost_center") or ""), str(entry.get("order_number") or "")) for entry in entries}
     line_items_by_order: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
