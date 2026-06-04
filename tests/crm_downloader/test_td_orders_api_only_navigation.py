@@ -576,7 +576,7 @@ async def test_overdue_popup_store_skip_does_not_stop_other_api_only_stores(
 
 
 @pytest.mark.asyncio
-async def test_valid_empty_td_orders_api_response_is_clean_store_window(
+async def test_summary_only_td_orders_api_response_is_clean_store_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[dict[str, object]] = []
@@ -590,16 +590,29 @@ async def test_valid_empty_td_orders_api_response_is_clean_store_window(
 
         async def fetch_reports(self, **_kwargs: object) -> td_orders_main.TdApiFetchResult:
             return td_orders_main.TdApiFetchResult(
-                raw_orders_payload={"data": {"rows": [], "count": 0}},
+                raw_orders_payload={
+                    "data": {
+                        "rows": [
+                            {
+                                "order_number": "Total Order",
+                                "order_amount": "0.00",
+                                "row_type": "summary",
+                            }
+                        ],
+                        "count": 1,
+                    }
+                },
                 raw_sales_payload={"data": {"rows": [{"order_number": "A668-1"}], "count": 1}},
                 raw_garments_payload={"data": {"rows": [], "count": 0}},
                 orders_rows=[],
+                orders_summary_rows_filtered=1,
                 sales_rows=[{"order_number": "A668-1"}],
                 garments_rows=[],
+                endpoint_errors={},
                 endpoint_health={
                     "/reports/order-report": {
                         "success": True,
-                        "reported_total_rows": 0,
+                        "reported_total_rows": 1,
                         "parsed_row_count": 0,
                     },
                     "/sales-and-deliveries/sales": {
@@ -680,9 +693,10 @@ async def test_valid_empty_td_orders_api_response_is_clean_store_window(
     ]
 
     assert fetch_result.orders_rows == []
+    assert fetch_result.orders_summary_rows_filtered == 1
     assert zero_row_events[-1]["status"] == "ok"
     assert zero_row_events[-1]["orders_status"] == "ok"
-    assert zero_row_events[-1]["orders_zero_row_classification"] == "valid_empty_endpoint"
+    assert zero_row_events[-1]["orders_zero_row_classification"] == "valid_empty_summary_only_endpoint"
     assert orders_report.status == "ok"
     assert orders_report.warnings == []
     assert orders_report.warning_rows == []
@@ -691,6 +705,8 @@ async def test_valid_empty_td_orders_api_response_is_clean_store_window(
     assert store_summary["status"] == "ok"
     assert store_summary["data_ingest_status"] == "success"
     assert store_summary["observability_warnings"] == []
+    assert store_summary["orders"]["status"] == "ok"
+    assert store_summary["sales"]["status"] == "ok"
     assert td_orders_main._resolve_sync_log_status(
         orders_report=orders_report,
         sales_report=sales_report,
@@ -698,7 +714,26 @@ async def test_valid_empty_td_orders_api_response_is_clean_store_window(
         run_sales=True,
     ) == "success"
     assert summary.overall_status() == "success"
+    assert summary.orders_overall_status() == "success"
+    assert summary.sales_overall_status() == "success"
     assert record["overall_status"] == "success"
+    assert record["metrics_json"]["orders"]["overall_status"] == "success"
+    assert record["metrics_json"]["sales"]["overall_status"] == "success"
+    assert "success_with_warnings" not in {
+        summary.overall_status(),
+        summary.orders_overall_status(),
+        summary.sales_overall_status(),
+        record["overall_status"],
+        record["metrics_json"]["orders"]["overall_status"],
+        record["metrics_json"]["sales"]["overall_status"],
+        td_orders_main._resolve_sync_log_status(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=True,
+            run_sales=True,
+        ),
+    }
+
 
 def test_zero_orders_nonzero_sales_complete_empty_garments_compare_pass_is_success() -> None:
     summary = td_orders_main.TdOrdersDiscoverySummary(

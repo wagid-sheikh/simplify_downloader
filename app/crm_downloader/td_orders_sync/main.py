@@ -3008,6 +3008,8 @@ def _classify_orders_zero_rows(api_fetch_result: TdApiFetchResult) -> str | None
         return "endpoint_error"
     if not health.get("endpoint_success"):
         return "endpoint_unsuccessful"
+    if endpoint_health.get("success") and api_fetch_result.orders_summary_rows_filtered > 0:
+        return "valid_empty_summary_only_endpoint"
     if not _rows_container_present(api_fetch_result.raw_orders_payload):
         return "malformed_payload"
     if health.get("reported_total_rows") == 0 and health.get("total_rows") == 0:
@@ -3025,7 +3027,10 @@ def _resolve_api_orders_status(
     if not run_orders:
         return "skipped", None
     zero_row_classification = _classify_orders_zero_rows(api_fetch_result)
-    if api_fetch_result.orders_rows or zero_row_classification == "valid_empty_endpoint":
+    if api_fetch_result.orders_rows or zero_row_classification in {
+        "valid_empty_endpoint",
+        "valid_empty_summary_only_endpoint",
+    }:
         orders_status = "ok"
     else:
         orders_status = empty_failure_status
@@ -3035,7 +3040,10 @@ def _resolve_api_orders_status(
 
 
 def _api_orders_zero_row_log_status(*, orders_status: str, zero_row_classification: str | None) -> str:
-    if zero_row_classification == "valid_empty_endpoint" and orders_status == "ok":
+    if (
+        zero_row_classification in {"valid_empty_endpoint", "valid_empty_summary_only_endpoint"}
+        and orders_status == "ok"
+    ):
         return "ok"
     if zero_row_classification:
         return "warning"

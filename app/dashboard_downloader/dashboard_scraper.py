@@ -367,7 +367,7 @@ async def extract_dashboard_summary(
             "store_code": store_code,
             "store_name": None,
             "dashboard_date": None,
-            "launch_date": None,
+            "start_date": None,
             "gstin": None,
         }
     )
@@ -503,7 +503,7 @@ async def extract_dashboard_summary(
             if launch_text:
                 parsed_launch = _parse_ddmmyyyy(launch_text)
                 if parsed_launch:
-                    dashboard_data["launch_date"] = parsed_launch
+                    dashboard_data["start_date"] = parsed_launch
                 else:
                     _log(
                         "warning",
