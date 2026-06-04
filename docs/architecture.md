@@ -368,25 +368,29 @@ Operational notes:
 
 ### Operator-triggered `order_line_items` historical rebuild
 
-The dedicated historical rebuild command is `python -m app crm rebuild-order-line-items` (alias: `python -m app crm order-line-items-rebuild`). It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
+The dedicated operator CLI is `python -m app crm rebuild-order-line-items` (alias: `python -m app crm order-line-items-rebuild`). It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
 
 Typical invocations:
 
 ```bash
-# Safe full historical sequence: simulate first, then run the live resumable rebuild.
-poetry run python -m app crm rebuild-order-line-items --source both --dry-run
+# Small dry-run smoke test: validate CRM access and replacement planning without writes.
+poetry run python -m app crm rebuild-order-line-items --source both --from-date YYYY-MM-DD --to-date YYYY-MM-DD --window-days 7 --dry-run
+
+# Full live rebuild: first live historical run; writes replacements and live resume progress.
+poetry run python -m app crm rebuild-order-line-items --source both
+
+# Interrupted live recovery: continue a previously interrupted live rebuild.
 poetry run python -m app crm rebuild-order-line-items --source both --resume
 
-# Small-window dry runs/smoke tests can still pin explicit dates.
-poetry run python -m app crm rebuild-order-line-items --source td --stores TD001 --start-date 2024-01-01 --end-date 2024-01-31 --dry-run
-bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --start-date 2024-01-01 --end-date 2024-01-31 --resume
+# Optional local wrapper for the same CLI; pass the same flags after the script name.
+bash scripts/run_local_order_line_items_rebuild.sh --source both --from-date YYYY-MM-DD --to-date YYYY-MM-DD --window-days 7 --dry-run
 ```
 
 Operational behavior and limitations:
 
 - Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
-- CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`; when `--end-date`/`--to-date` is omitted, the rebuild ends on the current pipeline date (`aware_now(get_timezone()).date()`). Explicit dates remain supported for smoke tests and dry runs.
-- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items`, staging tables, or live resume progress. Dry-run window results are log-only, so the safe operator sequence is to run `--dry-run` first and then rerun the same source/date/store scope without `--dry-run` (usually with `--resume`).
+- CRM source fetch windows are capped at 30 days. Omitted `--window-size`/`--window-days` resolves to CRM-safe source windows capped at 30 days, and a lower store/source config limit is honored. Larger explicit values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`; when `--end-date`/`--to-date` is omitted, the rebuild ends on the current pipeline date (`aware_now(get_timezone()).date()`). Explicit dates remain supported for smoke tests and dry runs.
+- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items`, staging tables, or live resume progress. Dry-run window results are log-only: a dry run is useful as a small smoke test, but it does not prepare or advance a later live `--resume`. The normal first live full rebuild omits `--resume`; use `--resume` only to recover a live rebuild that was interrupted after it had written live progress rows.
 - TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
 - Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
 - Every window emits a structured checkpoint (`source`, `store_code`, `cost_center`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`. Resume mode (`--resume`) uses live-run rows in `order_line_items_rebuild_progress` keyed by source, store, window start, and window end to skip successful windows and retry retryable failed windows; dry-run rows are not written by the current rebuild and any legacy dry-run rows are ignored for resume decisions. The rebuild reports any missing windows at completion.
