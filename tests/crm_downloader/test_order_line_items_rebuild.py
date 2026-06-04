@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import sqlalchemy as sa
+
+import app.__main__ as app_main
 
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
@@ -904,6 +906,200 @@ async def test_store_start_date_used_when_start_date_omitted(
     )
 
     assert seen == [date(2025, 2, 10)]
+
+
+@pytest.mark.asyncio
+async def test_end_date_defaults_to_current_pipeline_date(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(
+        rebuild,
+        "aware_now",
+        lambda tz: datetime(2025, 2, 12, 8, 30, tzinfo=timezone.utc),
+    )
+    seen: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 2, 12),
+        end_date=None,
+        window_size_days=1,
+        dry_run=True,
+        run_id="default-end",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [(date(2025, 2, 12), date(2025, 2, 12))]
+
+
+@pytest.mark.asyncio
+async def test_omitted_dates_use_store_start_through_current_pipeline_date(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT, sync_group TEXT, start_date DATE
+            )
+        """))
+        await session.execute(
+            sa.text("INSERT INTO store_master VALUES ('TD001', 'TD', '2025-02-10')")
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        rebuild,
+        "aware_now",
+        lambda tz: datetime(2025, 2, 12, 8, 30, tzinfo=timezone.utc),
+    )
+    seen: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=None,
+        end_date=None,
+        window_size_days=1,
+        dry_run=True,
+        run_id="default-both",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [
+        (date(2025, 2, 10), date(2025, 2, 10)),
+        (date(2025, 2, 11), date(2025, 2, 11)),
+        (date(2025, 2, 12), date(2025, 2, 12)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_dates_override_store_and_current_defaults(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT, sync_group TEXT, start_date DATE
+            )
+        """))
+        await session.execute(
+            sa.text("INSERT INTO store_master VALUES ('TD001', 'TD', '2025-02-01')")
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        rebuild,
+        "aware_now",
+        lambda tz: datetime(2025, 2, 12, 8, 30, tzinfo=timezone.utc),
+    )
+    seen: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 2, 5),
+        end_date=date(2025, 2, 6),
+        window_size_days=1,
+        dry_run=True,
+        run_id="explicit-dates",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [
+        (date(2025, 2, 5), date(2025, 2, 5)),
+        (date(2025, 2, 6), date(2025, 2, 6)),
+    ]
+
+
+def test_module_parser_accepts_omitted_dates() -> None:
+    args = rebuild._build_parser().parse_args(["--source", "both", "--resume"])
+
+    assert args.source == "both"
+    assert args.start_date is None
+    assert args.end_date is None
+    assert args.resume is True
+
+
+def test_top_level_canonical_and_alias_cli_accept_omitted_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str] | None] = []
+
+    def fake_runner(argv: list[str] | None = None) -> None:
+        captured.append(argv)
+
+    monkeypatch.setattr("app.crm_downloader.order_line_items_rebuild.run", fake_runner)
+
+    canonical_exit = app_main.main(
+        ["crm", "rebuild-order-line-items", "--source", "both", "--resume"]
+    )
+    alias_exit = app_main.main(
+        ["crm", "order-line-items-rebuild", "--source", "both", "--resume"]
+    )
+
+    assert canonical_exit == 0
+    assert alias_exit == 0
+    assert captured == [
+        ["--source", "both", "--resume"],
+        ["--source", "both", "--resume"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_completed_windows_with_default_end_date(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items_rebuild_progress
+            (source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no)
+            VALUES ('td', 'TD001', 'CC01', '2025-02-10', '2025-02-10', 'old', 'success', 1)
+        """))
+        await session.commit()
+    monkeypatch.setattr(
+        rebuild,
+        "aware_now",
+        lambda tz: datetime(2025, 2, 11, 8, 30, tzinfo=timezone.utc),
+    )
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 2, 10),
+        end_date=None,
+        window_size_days=1,
+        dry_run=True,
+        resume=True,
+        run_id="resume-default-end",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 2, 11)]
 
 
 @pytest.mark.asyncio

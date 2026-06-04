@@ -731,7 +731,7 @@ async def run_rebuild(
     source_selection: Literal["td", "uc", "both"],
     store_codes: Sequence[str] | None,
     start_date: date | None,
-    end_date: date,
+    end_date: date | None,
     window_size_days: int | None,
     dry_run: bool,
     resume: bool = False,
@@ -745,6 +745,7 @@ async def run_rebuild(
         )
     logger = logger or get_logger("order_line_items_rebuild")
     run_id = run_id or new_run_id("order-line-items-rebuild")
+    end_date = end_date or aware_now(get_timezone()).date()
     run_date = aware_now(get_timezone())
     sources: list[Source] = (
         ["td", "uc"] if source_selection == "both" else [source_selection]
@@ -1000,7 +1001,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--start-date", "--from-date", dest="start_date", type=_parse_date, default=None
     )
     parser.add_argument(
-        "--end-date", "--to-date", dest="end_date", type=_parse_date, required=True
+        "--end-date",
+        "--to-date",
+        dest="end_date",
+        type=_parse_date,
+        default=None,
+        help="End date (YYYY-MM-DD); defaults to the current pipeline date",
     )
     parser.add_argument(
         "--window-size",

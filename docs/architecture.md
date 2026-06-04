@@ -373,15 +373,18 @@ The dedicated historical rebuild command is `python -m app crm rebuild-order-lin
 Typical invocations:
 
 ```bash
-poetry run python -m app crm rebuild-order-line-items --source td --stores TD001 --start-date 2024-01-01 --end-date 2025-03-31 --dry-run
-poetry run python -m app crm rebuild-order-line-items --source both --start-date 2024-01-01 --end-date 2025-03-31 --resume
-bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --start-date 2024-01-01 --end-date 2025-03-31 --resume
+# Full historical rebuild: defaults each store to store_master.start_date through the current pipeline date.
+poetry run python -m app crm rebuild-order-line-items --source both --resume
+
+# Small-window dry runs/smoke tests can still pin explicit dates.
+poetry run python -m app crm rebuild-order-line-items --source td --stores TD001 --start-date 2024-01-01 --end-date 2024-01-31 --dry-run
+bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --start-date 2024-01-01 --end-date 2024-01-31 --resume
 ```
 
 Operational behavior and limitations:
 
 - Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group. Operators submit one command for the full historical range; the rebuild splits that range internally into CRM-safe source windows, so operators should not run one command per window.
-- CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`. `--end-date` and `--to-date` are equivalent.
+- CRM source fetch windows are capped at 30 days. A lower operator `--window-size`/`--window-days` or lower store/source config limit is honored; larger values are capped before source fetch. When `--start-date`/`--from-date` is omitted, each store starts at `store_master.start_date`; when `--end-date`/`--to-date` is omitted, the rebuild ends on the current pipeline date (`aware_now(get_timezone()).date()`). Explicit dates remain supported for smoke tests and dry runs.
 - `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items` or staging tables.
 - TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
 - Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
