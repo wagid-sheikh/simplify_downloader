@@ -161,6 +161,166 @@ async def test_dry_run_reports_planned_replacements_without_mutation(
     assert metrics[0].inserted_rows == 1
     rows = await _rows(db_url, "SELECT garment_name FROM order_line_items")
     assert [row.garment_name for row in rows] == ["Old"]
+    await rebuild._ensure_progress_table(db_url)
+    progress = await _rows(
+        db_url,
+        "SELECT run_id FROM order_line_items_rebuild_progress WHERE run_id='dry'",
+    )
+    assert progress == []
+
+
+@pytest.mark.asyncio
+async def test_live_resume_after_dry_run_still_processes_window(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) "
+                "VALUES (1,'CC01','TD001','ORD-DRY-LIVE')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items "
+                "(run_id, cost_center, store_code, order_id, order_number, line_item_key, line_item_uid, garment_name, ingest_row_seq) "
+                "VALUES ('old','CC01','TD001',1,'ORD-DRY-LIVE','old','old','Old',1)"
+            )
+        )
+        await session.commit()
+
+    seen: list[tuple[bool, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["run_id"] == "dry-before-live", kwargs["window"].start))
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-DRY-LIVE",
+                    "line_item_key": "new",
+                    "garment_name": "New Live",
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-DRY-LIVE",
+                    "garment_snapshot_outcome": "complete_with_rows",
+                }
+            ],
+        )
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="dry-before-live",
+        fetch_snapshot=fetcher,
+    )
+    await rebuild._ensure_progress_table(db_url)
+    dry_progress = await _rows(
+        db_url,
+        "SELECT run_id FROM order_line_items_rebuild_progress WHERE run_id='dry-before-live'",
+    )
+    assert dry_progress == []
+
+    live_metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        resume=True,
+        run_id="live-after-dry",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [(True, date(2025, 1, 1)), (False, date(2025, 1, 1))]
+    assert len(live_metrics) == 1
+    assert live_metrics[0].inserted_rows == 1
+    rows = await _rows(
+        db_url,
+        "SELECT garment_name, run_id FROM order_line_items WHERE order_number='ORD-DRY-LIVE'",
+    )
+    assert [(row.garment_name, row.run_id) for row in rows] == [
+        ("New Live", "live-after-dry")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_live_resume_ignores_legacy_dry_run_progress_success(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items_rebuild_progress "
+                "(source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no, dry_run) "
+                "VALUES ('td', 'TD001', 'CC01', '2025-01-01', '2025-01-01', 'legacy-dry', 'success', 1, TRUE)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) "
+                "VALUES (1,'CC01','TD001','ORD-LEGACY-DRY')"
+            )
+        )
+        await session.commit()
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-LEGACY-DRY",
+                    "line_item_key": "live",
+                    "garment_name": "Live After Legacy Dry",
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-LEGACY-DRY",
+                    "garment_snapshot_outcome": "complete_with_rows",
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        resume=True,
+        run_id="live-after-legacy-dry",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 1, 1)]
+    assert len(metrics) == 1
+    rows = await _rows(
+        db_url,
+        "SELECT garment_name FROM order_line_items WHERE order_number='ORD-LEGACY-DRY'",
+    )
+    assert [row.garment_name for row in rows] == ["Live After Legacy Dry"]
+    progress = await _rows(
+        db_url,
+        "SELECT run_id, dry_run FROM order_line_items_rebuild_progress "
+        "WHERE source='td' AND store_code='TD001' AND window_start='2025-01-01'",
+    )
+    assert [(row.run_id, bool(row.dry_run)) for row in progress] == [
+        ("live-after-legacy-dry", False)
+    ]
 
 
 @pytest.mark.asyncio
@@ -819,11 +979,12 @@ async def test_retryable_failed_window_is_retried(patch_config_and_stores) -> No
 
     assert attempts == 2
     assert len(metrics) == 1
+    await rebuild._ensure_progress_table(db_url)
     rows = await _rows(
         db_url,
         "SELECT status, attempt_no FROM order_line_items_rebuild_progress WHERE run_id='retry'",
     )
-    assert [(row.status, row.attempt_no) for row in rows] == [("success", 2)]
+    assert rows == []
 
 
 @pytest.mark.asyncio
