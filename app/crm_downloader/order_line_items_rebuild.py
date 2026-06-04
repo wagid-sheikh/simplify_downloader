@@ -26,7 +26,10 @@ from app.crm_downloader.td_orders_sync.garment_ingest import (
     ingest_td_garment_rows,
     order_line_items_table,
 )
-from app.crm_downloader.td_orders_sync.main import _load_td_order_stores
+from app.crm_downloader.td_orders_sync.main import (
+    _load_td_order_stores,
+    prepare_td_api_context_for_store,
+)
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiUnauthorizedError,
@@ -697,16 +700,28 @@ async def default_fetch_snapshot(
     if source == "td":
         from playwright.async_api import async_playwright
 
+        td_store = store.raw_store
+        if td_store is None:
+            raise ValueError("TD rebuild stores must include the raw TdStore auth config")
+
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
             try:
-                context = await browser.new_context(storage_state=storage_state)
+                api_context = await prepare_td_api_context_for_store(
+                    browser=browser,
+                    store=td_store,
+                    logger=logger,
+                    run_id=run_id,
+                    run_start_date=window.start,
+                    run_end_date=window.end,
+                )
                 client = TdApiClient(
                     store_code=store.store_code,
-                    context=context,
+                    context=api_context.context,
                     storage_state_path=storage_state_path or Path(),
                     run_id=run_id,
                     structured_logger=logger,
+                    report_iframe_src=api_context.report_iframe_src,
                 )
                 result = await client.fetch_reports(
                     from_date=window.start, to_date=window.end

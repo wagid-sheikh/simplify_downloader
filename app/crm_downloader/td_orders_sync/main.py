@@ -2069,6 +2069,18 @@ class SessionProbeResult:
     home_card_visible: bool | None = None
 
 
+@dataclass
+class TdApiContext:
+    context: BrowserContext
+    page: Page
+    stored_state_path: str | None
+    report_iframe_src: str | None
+    session_reused: bool
+    login_performed: bool
+    verification_seen: bool
+    probe_result: SessionProbeResult | None = None
+
+
 async def _load_td_order_stores(
     *, logger: JsonLogger, store_codes: Sequence[str] | None = None
 ) -> List[TdStore]:
@@ -5218,6 +5230,298 @@ async def _resolve_report_iframe_auth_source_for_api(
             iframe_src_hostname=resolved_hostname,
         )
     return report_iframe_src
+
+
+async def prepare_td_api_context_for_store(
+    *,
+    browser: Browser | None = None,
+    context: BrowserContext | None = None,
+    page: Page | None = None,
+    store: TdStore,
+    logger: JsonLogger,
+    run_id: str,
+    run_start_date: date,
+    run_end_date: date,
+    run_date: datetime | None = None,
+    nav_timeout_ms: int = DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS,
+    navigate_to_report_iframe: bool = True,
+    accept_downloads: bool = True,
+) -> TdApiContext:
+    """Prepare the browser session state required by ``TdApiClient``.
+
+    This is the shared TD API auth handoff used by API consumers that need the
+    same mature session lifecycle as the orders sync: storage-state probing,
+    login/OTP recovery, home readiness validation, refreshed storage-state
+    persistence, and report iframe auth-source resolution.
+    """
+    del run_date  # Reserved for callers that pass standard TD run metadata.
+
+    storage_state_exists = store.storage_state_path.exists()
+    owns_context = context is None
+    if context is None:
+        if browser is None:
+            raise ValueError("browser is required when context is not provided")
+        context = await browser.new_context(
+            storage_state=str(store.storage_state_path) if storage_state_exists else None,
+            accept_downloads=accept_downloads,
+        )
+    if page is None:
+        page = await context.new_page()
+
+    nav_selector = store.reports_nav_selector
+    auth_diagnostics = collect_auth_diagnostics(
+        store.storage_state_path if storage_state_exists else None
+    )
+    log_event(
+        logger=logger,
+        phase="session",
+        message="Redacted auth/session diagnostics",
+        run_id=run_id,
+        store_code=store.store_code,
+        from_date=run_start_date,
+        to_date=run_end_date,
+        **auth_diagnostics.as_dict(),
+    )
+
+    session_reused = False
+    login_performed = False
+    verification_seen = False
+    verification_ok = True
+    probe_result: SessionProbeResult | None = None
+    probe_reason: str | None = None
+
+    if storage_state_exists:
+        log_event(
+            logger=logger,
+            phase="session",
+            message="Storage state found; probing session validity",
+            store_code=store.store_code,
+            storage_state=str(store.storage_state_path),
+            run_id=run_id,
+        )
+        probe_result = await _probe_session(
+            page, store=store, logger=logger, timeout_ms=nav_timeout_ms
+        )
+        probe_reason = probe_result.reason or "state_valid"
+        verification_seen = bool(probe_result.verification_seen)
+        if probe_result.valid:
+            session_reused = True
+            log_event(
+                logger=logger,
+                phase="session",
+                message="Storage state probe valid; reusing session",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
+                probe_valid=probe_result.valid,
+                probe_result="valid",
+                login_followup_status="not_required",
+                re_login_performed=login_performed,
+                run_id=run_id,
+            )
+        else:
+            probe_severity = "info" if probe_reason == "login_form_visible" else "warning"
+            log_event(
+                logger=logger,
+                phase="session",
+                status=probe_severity,
+                message="Storage state probe invalid; performing login",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
+                probe_valid=probe_result.valid,
+                probe_result="invalid",
+                login_followup_status="started",
+                verification_seen=verification_seen,
+                nav_visible=probe_result.nav_visible,
+                home_card_visible=probe_result.home_card_visible,
+                re_login_performed=True,
+                run_id=run_id,
+            )
+            session_reused = await _perform_login(
+                page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms
+            )
+            login_performed = True
+            log_event(
+                logger=logger,
+                phase="session",
+                status=(
+                    "info"
+                    if probe_reason == "login_form_visible" and session_reused
+                    else ("ok" if session_reused else "warning")
+                ),
+                message="Storage state probe follow-up login outcome",
+                store_code=store.store_code,
+                probe_reason=probe_reason,
+                probe_result="invalid",
+                login_followup_status="success" if session_reused else "failed",
+                re_login_performed=login_performed,
+                run_id=run_id,
+            )
+    else:
+        probe_reason = "no_storage_state"
+        log_event(
+            logger=logger,
+            phase="session",
+            message="No storage state found; performing login",
+            store_code=store.store_code,
+            re_login_performed=True,
+            run_id=run_id,
+        )
+        session_reused = await _perform_login(
+            page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms
+        )
+        login_performed = True
+
+    if session_reused and not login_performed:
+        log_event(
+            logger=logger,
+            phase="session",
+            message="state reused (no OTP)",
+            store_code=store.store_code,
+            final_url=page.url,
+            storage_state=str(store.storage_state_path),
+            probe_reason=probe_reason,
+            probe_valid=probe_result.valid if probe_result else None,
+            re_login_performed=login_performed,
+            run_id=run_id,
+        )
+        verification_ok = True
+        verification_seen = False
+    elif session_reused and login_performed:
+        log_event(
+            logger=logger,
+            phase="session",
+            message="Login completed; session ready",
+            store_code=store.store_code,
+            final_url=page.url,
+            storage_state=str(store.storage_state_path),
+            probe_reason=probe_reason,
+            probe_valid=probe_result.valid if probe_result else None,
+            login_performed=login_performed,
+            re_login_performed=login_performed,
+            run_id=run_id,
+        )
+        verification_ok = True
+        verification_seen = False
+    else:
+        log_event(
+            logger=logger,
+            phase="session",
+            status="warning",
+            message="Session invalid after probe/login attempt",
+            store_code=store.store_code,
+            storage_state=str(store.storage_state_path),
+            probe_reason=probe_reason,
+            verification_seen=verification_seen,
+            probe_valid=probe_result.valid if probe_result else None,
+            re_login_performed=login_performed,
+            run_id=run_id,
+        )
+        if not login_performed:
+            session_reused = await _perform_login(
+                page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms
+            )
+            login_performed = True
+
+    if not session_reused:
+        if owns_context:
+            with contextlib.suppress(Exception):
+                await context.close()
+        raise RuntimeError(f"Login failed with provided credentials for {store.store_code}")
+
+    if login_performed or verification_seen:
+        verification_ok, verification_seen = await _wait_for_otp_verification(
+            page, store=store, logger=logger, nav_selector=nav_selector
+        )
+        if verification_ok:
+            log_event(
+                logger=logger,
+                phase="session",
+                message="Session ready after OTP/verification wait",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                final_url=page.url,
+                verification_seen=verification_seen,
+                login_performed=login_performed,
+                run_id=run_id,
+            )
+
+    if not verification_ok:
+        if owns_context:
+            with contextlib.suppress(Exception):
+                await context.close()
+        raise RuntimeError(f"OTP was not completed before dwell deadline for {store.store_code}")
+
+    home_ready = await _wait_for_home(
+        page, store=store, logger=logger, nav_selector=nav_selector, timeout_ms=nav_timeout_ms
+    )
+    if not home_ready:
+        if owns_context:
+            with contextlib.suppress(Exception):
+                await context.close()
+        raise RuntimeError(f"Home page not ready after login/verification for {store.store_code}")
+
+    store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    await context.storage_state(path=str(store.storage_state_path))
+    stored_state_path = str(store.storage_state_path)
+    log_event(
+        logger=logger,
+        phase="session",
+        message="Stored refreshed session state after home detection",
+        store_code=store.store_code,
+        storage_state=stored_state_path,
+        verification_seen=verification_seen,
+        run_id=run_id,
+    )
+
+    report_iframe_src: str | None = None
+    if navigate_to_report_iframe:
+        navigation_result = _coerce_orders_navigation_result(
+            await _navigate_to_orders_container(
+                page,
+                store=store,
+                logger=logger,
+                nav_selector=nav_selector,
+                nav_timeout_ms=nav_timeout_ms,
+                capture_left_nav=True,
+                nav_snapshot_context="orders_iframe",
+                sales_only_mode=False,
+            )
+        )
+        if not navigation_result.ready:
+            if owns_context:
+                with contextlib.suppress(Exception):
+                    await context.close()
+            raise RuntimeError(
+                "Orders container did not load from Reports navigation"
+                + (f": {navigation_result.reason}" if navigation_result.reason else "")
+            )
+        iframe_locator, iframe_src = await _wait_for_iframe(
+            page, store=store, logger=logger
+        )
+        if iframe_locator is None:
+            if owns_context:
+                with contextlib.suppress(Exception):
+                    await context.close()
+            raise RuntimeError("Report iframe did not attach for TD API auth handoff")
+        report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
+            page,
+            store=store,
+            logger=logger,
+            initial_iframe_src=iframe_src,
+        )
+
+    return TdApiContext(
+        context=context,
+        page=page,
+        stored_state_path=stored_state_path,
+        report_iframe_src=report_iframe_src,
+        session_reused=session_reused,
+        login_performed=login_performed,
+        verification_seen=verification_seen,
+        probe_result=probe_result,
+    )
 
 
 async def _observe_iframe_hydration(
