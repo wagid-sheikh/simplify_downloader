@@ -31,6 +31,11 @@ from app.crm_downloader.td_orders_sync.main import (
     _load_td_order_stores,
     prepare_td_api_context_for_store,
 )
+from app.crm_downloader.td_orders_sync.source_snapshot import (
+    TdSourceSnapshotConfig,
+    TdSourceSnapshotFetchResult,
+    fetch_td_source_snapshot,
+)
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiUnauthorizedError,
@@ -824,123 +829,29 @@ async def default_fetch_snapshot(
     )
 
     if source == "td":
-        from playwright.async_api import async_playwright
-
         td_store = store.raw_store
         if td_store is None:
             raise ValueError(
                 "TD rebuild stores must include the raw TdStore auth config"
             )
-
-        async with async_playwright() as playwright:
-            browser = await launch_browser(playwright=playwright, logger=logger)
-            try:
-                api_context = await prepare_td_api_context_for_store(
-                    browser=browser,
-                    store=td_store,
-                    logger=logger,
-                    run_id=run_id,
-                    run_start_date=window.start,
-                    run_end_date=window.end,
-                )
-                client = TdApiClient(
-                    store_code=store.store_code,
-                    context=api_context.context,
-                    storage_state_path=storage_state_path or Path(),
-                    run_id=run_id,
-                    structured_logger=logger,
-                    report_iframe_src=api_context.report_iframe_src,
-                )
-                result = await client.fetch_reports(
-                    from_date=window.start, to_date=window.end
-                )
-                garments_health = _garments_health_from_result(result)
-                raw_completeness = garments_health.get("garments_fetch_completeness")
-                assume_complete_for_legacy_result = raw_completeness is None and not (
-                    getattr(result, "endpoint_errors", None)
-                    or getattr(result, "source_fetch_status", None)
-                )
-                effective_completeness = (
-                    "complete"
-                    if assume_complete_for_legacy_result
-                    else raw_completeness
-                )
-                garments_fetch_completeness = (
-                    str(effective_completeness or "unknown").strip().lower()
-                )
-                source_fetch_error_class = _source_fetch_error_class(
-                    result, garments_health
-                )
-                endpoint_diagnostics = _garments_endpoint_diagnostics_from_result(
-                    result
-                )
-                auth_failed_endpoints = td_api_fetch_auth_failure_endpoints(result)
-                if auth_failed_endpoints:
-                    if hasattr(logger, "info"):
-                        log_event(
-                            logger=logger,
-                            phase="order_line_items_rebuild_td_source_snapshot",
-                            status="error",
-                            message="TD garments source snapshot is not authoritative",
-                            run_id=run_id,
-                            source="td",
-                            store_code=store.store_code,
-                            cost_center=store.cost_center,
-                            window_start=window.start.isoformat(),
-                            window_end=window.end.isoformat(),
-                            garments_fetch_completeness=garments_fetch_completeness,
-                            source_fetch_error_class=source_fetch_error_class,
-                            endpoint_health=garments_health,
-                            endpoint_error_diagnostics=endpoint_diagnostics,
-                        )
-                    raise TdApiUnauthorizedError(
-                        store_code=store.store_code,
-                        failed_endpoints=auth_failed_endpoints,
-                        error_class=source_fetch_error_class,
-                    )
-                if garments_fetch_completeness != "complete":
-                    exc = TdGarmentsFetchIncomplete(
-                        store_code=store.store_code,
-                        window_start=window.start,
-                        window_end=window.end,
-                        garments_fetch_completeness=garments_fetch_completeness,
-                        source_fetch_error_class=source_fetch_error_class,
-                        endpoint_health=garments_health,
-                        endpoint_error_diagnostics=endpoint_diagnostics,
-                    )
-                    if hasattr(logger, "info"):
-                        log_event(
-                            logger=logger,
-                            phase="order_line_items_rebuild_td_source_snapshot",
-                            status="error",
-                            message="TD garments source snapshot is not authoritative",
-                            run_id=run_id,
-                            source="td",
-                            store_code=store.store_code,
-                            cost_center=store.cost_center,
-                            window_start=window.start.isoformat(),
-                            window_end=window.end.isoformat(),
-                            garments_fetch_completeness=garments_fetch_completeness,
-                            source_fetch_error_class=source_fetch_error_class,
-                            endpoint_health=garments_health,
-                            endpoint_error_diagnostics=endpoint_diagnostics,
-                            retryable=exc.retryable,
-                        )
-                    raise exc
-                return SourceSnapshot(
-                    line_item_rows=result.garments_rows,
-                    order_snapshots=result.garment_order_snapshots,
-                    garments_fetch_completeness=(
-                        None
-                        if assume_complete_for_legacy_result
-                        else garments_fetch_completeness
-                    ),
-                    source_fetch_error_class=source_fetch_error_class,
-                    endpoint_health=garments_health,
-                    endpoint_error_diagnostics=endpoint_diagnostics,
-                )
-            finally:
-                await browser.close()
+        source_result = await fetch_td_source_snapshot(
+            store=td_store,
+            from_date=window.start,
+            to_date=window.end,
+            run_id=run_id,
+            logger=logger,
+            source_config=TdSourceSnapshotConfig(
+                source_mode="api_only",
+                context_source="order_line_items_rebuild",
+            ),
+        )
+        return _source_snapshot_from_td_source_result(
+            source_result=source_result,
+            store=store,
+            window=window,
+            run_id=run_id,
+            logger=logger,
+        )
 
     from playwright.async_api import async_playwright
 
@@ -968,6 +879,101 @@ async def default_fetch_snapshot(
         finally:
             await browser.close()
 
+
+def _source_snapshot_from_td_source_result(
+    *,
+    source_result: TdSourceSnapshotFetchResult,
+    store: RebuildStore,
+    window: RebuildWindow,
+    run_id: str,
+    logger: JsonLogger,
+) -> SourceSnapshot:
+    result = source_result.api_fetch_result
+    garments_health = source_result.garments_endpoint_health
+    raw_completeness = source_result.garments_fetch_completeness
+    assume_complete_for_legacy_result = raw_completeness is None and not (
+        getattr(result, "endpoint_errors", None)
+        or getattr(result, "source_fetch_status", None)
+    )
+    effective_completeness = (
+        "complete" if assume_complete_for_legacy_result else raw_completeness
+    )
+    garments_fetch_completeness = (
+        str(effective_completeness or "unknown").strip().lower()
+    )
+    source_fetch_error_class = (
+        source_result.source_fetch_error_class
+        or _source_fetch_error_class(result, garments_health)
+        or source_result.failure_class
+    )
+    endpoint_diagnostics = dict(
+        source_result.endpoint_error_diagnostics.get("/garments/details") or {}
+    )
+    auth_failed_endpoints = source_result.auth_failed_endpoints
+    if auth_failed_endpoints:
+        if hasattr(logger, "info"):
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_td_source_snapshot",
+                status="error",
+                message="TD garments source snapshot is not authoritative",
+                run_id=run_id,
+                source="td",
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                window_start=window.start.isoformat(),
+                window_end=window.end.isoformat(),
+                garments_fetch_completeness=garments_fetch_completeness,
+                source_fetch_error_class=source_fetch_error_class,
+                failure_class=source_result.failure_class,
+                endpoint_health=garments_health,
+                endpoint_error_diagnostics=endpoint_diagnostics,
+            )
+        raise TdApiUnauthorizedError(
+            store_code=store.store_code,
+            failed_endpoints=auth_failed_endpoints,
+            error_class=source_fetch_error_class,
+        )
+    if garments_fetch_completeness != "complete":
+        exc = TdGarmentsFetchIncomplete(
+            store_code=store.store_code,
+            window_start=window.start,
+            window_end=window.end,
+            garments_fetch_completeness=garments_fetch_completeness,
+            source_fetch_error_class=source_fetch_error_class,
+            endpoint_health=garments_health,
+            endpoint_error_diagnostics=endpoint_diagnostics,
+        )
+        if hasattr(logger, "info"):
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_td_source_snapshot",
+                status="error",
+                message="TD garments source snapshot is not authoritative",
+                run_id=run_id,
+                source="td",
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                window_start=window.start.isoformat(),
+                window_end=window.end.isoformat(),
+                garments_fetch_completeness=garments_fetch_completeness,
+                source_fetch_error_class=source_fetch_error_class,
+                failure_class=source_result.failure_class,
+                endpoint_health=garments_health,
+                endpoint_error_diagnostics=endpoint_diagnostics,
+                retryable=exc.retryable,
+            )
+        raise exc
+    return SourceSnapshot(
+        line_item_rows=source_result.garments_rows,
+        order_snapshots=source_result.garment_order_snapshots,
+        garments_fetch_completeness=(
+            None if assume_complete_for_legacy_result else garments_fetch_completeness
+        ),
+        source_fetch_error_class=source_fetch_error_class,
+        endpoint_health=garments_health,
+        endpoint_error_diagnostics=endpoint_diagnostics,
+    )
 
 def _coerce_date(value: Any) -> date | None:
     if isinstance(value, datetime):

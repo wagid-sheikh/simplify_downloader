@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ import app.__main__ as app_main
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
 from app.crm_downloader.td_orders_sync import main as td_orders_main
+from app.dashboard_downloader.json_logger import JsonLogger
 
 
 def _write_td_storage_state(path: Path, *, expires: int = 4_102_444_800) -> Path:
@@ -373,30 +375,27 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
 
     monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
 
-    class FakeTdApiClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-            td_client_kwargs.append(kwargs)
-
-        async def fetch_reports(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(garments_rows=[], garment_order_snapshots=[])
-
-    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
+    async def fake_fetch_td_source_snapshot(**kwargs: Any) -> Any:
         prepare_calls.append(kwargs)
-        context = await kwargs["browser"].new_context(storage_state=None)
-        return SimpleNamespace(
-            context=context,
+        return rebuild.TdSourceSnapshotFetchResult(
+            api_fetch_result=td_orders_main.TdApiFetchResult(source_fetch_status=""),
+            garments_rows=[],
+            garment_order_snapshots=[],
+            endpoint_health={},
+            source_fetch_status="unknown",
+            failure_class=None,
+            source_fetch_error_class=None,
+            request_metadata=[],
+            endpoint_errors={},
+            endpoint_error_diagnostics={},
             report_iframe_src="https://reports.quickdrycleaning.com/r",
         )
 
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
         return SimpleNamespace(order_detail_rows=[], order_detail_snapshot_rows=[])
 
-    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
     monkeypatch.setattr(
-        rebuild,
-        "prepare_td_api_context_for_store",
-        fake_prepare_td_api_context_for_store,
+        rebuild, "fetch_td_source_snapshot", fake_fetch_td_source_snapshot
     )
     monkeypatch.setattr(
         rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
@@ -419,17 +418,16 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     )
 
     assert snapshot == rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
-    assert launch_calls == [(playwright, logger)]
     if source == "td":
+        assert launch_calls == []
         assert len(prepare_calls) == 1
         assert prepare_calls[0]["store"].storage_state_path == tmp_path / "td.json"
-        assert (
-            td_client_kwargs[0]["report_iframe_src"]
-            == "https://reports.quickdrycleaning.com/r"
-        )
+        assert prepare_calls[0]["source_config"].context_source == "order_line_items_rebuild"
+        assert browser.closed is False
     else:
+        assert launch_calls == [(playwright, logger)]
         assert prepare_calls == []
-    assert browser.closed is True
+        assert browser.closed is True
 
 
 @pytest.mark.asyncio
@@ -440,47 +438,34 @@ async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
     browser = _FakeBrowser()
     logger = SimpleNamespace(name="td-logger")
 
-    monkeypatch.setattr(
-        "playwright.async_api.async_playwright",
-        lambda: _FakeAsyncPlaywright(playwright),
-    )
-
-    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
-        return browser
-
-    class FakeTdApiClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-        async def fetch_reports(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(
-                garments_rows=[],
-                garment_order_snapshots=[],
-                endpoint_errors={"/garments/details": "http_401"},
-                endpoint_health={
-                    "/garments/details": {
-                        "success": False,
-                        "final_error_class": "http_401",
-                    }
-                },
-                source_fetch_status="auth_failed",
-                source_fetch_error_class="http_401",
-                source_fetch_failed_endpoints=["/garments/details"],
-            )
-
-    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
-        context = await kwargs["browser"].new_context(storage_state=None)
-        return SimpleNamespace(
-            context=context,
-            report_iframe_src="https://reports.quickdrycleaning.com/r",
+    async def fake_fetch_td_source_snapshot(**_kwargs: Any) -> Any:
+        api_result = td_orders_main.TdApiFetchResult(
+            endpoint_errors={"/garments/details": "http_401"},
+            endpoint_health={
+                "/garments/details": {
+                    "success": False,
+                    "final_error_class": "http_401",
+                }
+            },
+            source_fetch_status="auth_failed",
+            source_fetch_error_class="http_401",
+            source_fetch_failed_endpoints=["/garments/details"],
+        )
+        return rebuild.TdSourceSnapshotFetchResult(
+            api_fetch_result=api_result,
+            garments_rows=[],
+            garment_order_snapshots=[],
+            endpoint_health=api_result.endpoint_health,
+            source_fetch_status=api_result.source_fetch_status,
+            failure_class="store_auth_failure",
+            source_fetch_error_class=api_result.source_fetch_error_class,
+            request_metadata=[],
+            endpoint_errors=api_result.endpoint_errors,
+            endpoint_error_diagnostics={},
         )
 
-    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
-    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
     monkeypatch.setattr(
-        rebuild,
-        "prepare_td_api_context_for_store",
-        fake_prepare_td_api_context_for_store,
+        rebuild, "fetch_td_source_snapshot", fake_fetch_td_source_snapshot
     )
 
     with pytest.raises(rebuild.TdApiUnauthorizedError, match="TD API unauthorized"):
@@ -497,7 +482,6 @@ async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
             logger=logger,
         )
 
-    assert browser.closed is True
 
 
 @pytest.mark.asyncio
@@ -605,57 +589,41 @@ async def test_prepare_td_api_context_invalid_storage_state_logs_in_and_refreshe
 async def test_default_fetch_snapshot_successful_td_garments_response_is_authoritative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    playwright = SimpleNamespace(name="td-playwright")
-    browser = _FakeBrowser()
     logger = SimpleNamespace(name="td-logger")
 
-    monkeypatch.setattr(
-        "playwright.async_api.async_playwright",
-        lambda: _FakeAsyncPlaywright(playwright),
-    )
-
-    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
-        return browser
-
-    async def fake_prepare_td_api_context_for_store(**kwargs: Any) -> Any:
-        context = await kwargs["browser"].new_context(storage_state=None)
-        return SimpleNamespace(
-            context=context,
+    async def fake_fetch_td_source_snapshot(**_kwargs: Any) -> Any:
+        api_result = td_orders_main.TdApiFetchResult(
+            garments_rows=[{"order_number": "ORD-1", "garment_name": "Shirt"}],
+            garment_order_snapshots=[
+                {
+                    "order_number": "ORD-1",
+                    "garment_snapshot_outcome": "complete_with_rows",
+                }
+            ],
+            endpoint_health={
+                "/garments/details": {
+                    "success": True,
+                    "garments_fetch_completeness": "complete",
+                }
+            },
+        )
+        return rebuild.TdSourceSnapshotFetchResult(
+            api_fetch_result=api_result,
+            garments_rows=api_result.garments_rows,
+            garment_order_snapshots=api_result.garment_order_snapshots,
+            endpoint_health=api_result.endpoint_health,
+            source_fetch_status=api_result.source_fetch_status,
+            failure_class=None,
+            source_fetch_error_class=None,
+            request_metadata=[],
+            endpoint_errors={},
+            endpoint_error_diagnostics={},
             report_iframe_src="https://reports.quickdrycleaning.com/orders?auth=1",
         )
 
-    class FakeTdApiClient:
-        def __init__(self, **kwargs: Any) -> None:
-            assert (
-                kwargs["report_iframe_src"]
-                == "https://reports.quickdrycleaning.com/orders?auth=1"
-            )
-
-        async def fetch_reports(self, **_kwargs: Any) -> Any:
-            return SimpleNamespace(
-                garments_rows=[{"order_number": "ORD-1", "garment_name": "Shirt"}],
-                garment_order_snapshots=[
-                    {
-                        "order_number": "ORD-1",
-                        "garment_snapshot_outcome": "complete_with_rows",
-                    }
-                ],
-                endpoint_errors={},
-                endpoint_health={
-                    "/garments/details": {
-                        "success": True,
-                        "garments_fetch_completeness": "complete",
-                    }
-                },
-            )
-
-    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
     monkeypatch.setattr(
-        rebuild,
-        "prepare_td_api_context_for_store",
-        fake_prepare_td_api_context_for_store,
+        rebuild, "fetch_td_source_snapshot", fake_fetch_td_source_snapshot
     )
-    monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
 
     snapshot = await rebuild.default_fetch_snapshot(
         source="td",
@@ -675,7 +643,6 @@ async def test_default_fetch_snapshot_successful_td_garments_response_is_authori
     assert (
         snapshot.order_snapshots[0]["garment_snapshot_outcome"] == "complete_with_rows"
     )
-    assert browser.closed is True
 
 
 @pytest.mark.asyncio
@@ -3713,3 +3680,91 @@ def test_cli_parser_accepts_fail_on_zero_snapshot() -> None:
 
     assert args.dry_run is True
     assert args.fail_on_zero_snapshot is True
+
+
+def test_td_orders_and_rebuild_import_same_source_snapshot_helper() -> None:
+    from app.crm_downloader.td_orders_sync.source_snapshot import fetch_td_source_snapshot
+
+    assert rebuild.fetch_td_source_snapshot is fetch_td_source_snapshot
+    assert td_orders_main.fetch_td_source_snapshot is fetch_td_source_snapshot
+
+
+@pytest.mark.asyncio
+async def test_td_orders_sync_api_primary_uses_shared_source_snapshot_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+    api_result = td_orders_main.TdApiFetchResult(
+        orders_rows=[{"order_number": "ORD-1"}],
+        sales_rows=[{"order_number": "ORD-1"}],
+        garments_rows=[{"order_number": "ORD-1", "garment_name": "Shirt"}],
+        garment_order_snapshots=[
+            {"order_number": "ORD-1", "garment_snapshot_outcome": "complete_with_rows"}
+        ],
+        endpoint_health={
+            "/garments/details": {"garments_fetch_completeness": "complete"}
+        },
+        request_metadata=[{"endpoint": "/garments/details"}],
+    )
+
+    async def fake_fetch_td_source_snapshot(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return rebuild.TdSourceSnapshotFetchResult(
+            api_fetch_result=api_result,
+            garments_rows=api_result.garments_rows,
+            garment_order_snapshots=api_result.garment_order_snapshots,
+            endpoint_health=api_result.endpoint_health,
+            source_fetch_status=api_result.source_fetch_status,
+            failure_class=None,
+            source_fetch_error_class=None,
+            request_metadata=api_result.request_metadata,
+            endpoint_errors={},
+            endpoint_error_diagnostics={},
+            report_iframe_src=kwargs.get("report_iframe_src"),
+        )
+
+    monkeypatch.setattr(
+        td_orders_main, "fetch_td_source_snapshot", fake_fetch_td_source_snapshot
+    )
+    monkeypatch.setattr(
+        td_orders_main,
+        "persist_td_api_artifacts",
+        lambda **_kwargs: SimpleNamespace(warnings=[]),
+    )
+
+    store = td_orders_main.TdStore(
+        store_code="TD001", store_name="TD001", cost_center="CC01", sync_config={}
+    )
+    _, _, returned_result, request_metadata = await td_orders_main._execute_api_primary_ingestion(
+        context=SimpleNamespace(name="context"),
+        store=store,
+        logger=JsonLogger(stream=io.StringIO(), log_file_path=None),
+        source_mode="api_shadow",
+        run_id="shared-helper-run",
+        run_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        run_start_date=date(2026, 1, 1),
+        run_end_date=date(2026, 1, 1),
+        run_orders=True,
+        run_sales=True,
+        download_dir=tmp_path,
+        summary=td_orders_main.TdOrdersDiscoverySummary(
+            run_id="shared-helper-run",
+            run_env="test",
+            report_date=date(2026, 1, 1),
+            report_end_date=date(2026, 1, 1),
+        ),
+        stored_state_path="/tmp/state.json",
+        report_iframe_src="https://reports.quickdrycleaning.com/orders?auth=1",
+        context_source="iframe",
+    )
+
+    assert returned_result is api_result
+    assert request_metadata == [{"endpoint": "/garments/details"}]
+    assert len(calls) == 1
+    assert calls[0]["store"] is store
+    assert calls[0]["source_config"].source_mode == "api_shadow"
+    assert calls[0]["source_config"].context_source == "iframe"
+    assert (
+        calls[0]["report_iframe_src"]
+        == "https://reports.quickdrycleaning.com/orders?auth=1"
+    )
