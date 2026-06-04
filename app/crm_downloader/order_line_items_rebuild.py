@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -31,7 +32,10 @@ from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiUnauthorizedError,
     td_api_fetch_auth_failure_endpoints,
 )
-from app.crm_downloader.uc_orders_sync.gst_api_extract import collect_gst_orders_via_api
+from app.crm_downloader.uc_orders_sync.gst_api_extract import (
+    collect_gst_orders_via_api,
+    detect_archive_bearer_token_in_storage_state,
+)
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     publish_uc_gst_order_details_to_line_items,
 )
@@ -157,6 +161,7 @@ class RebuildPreflightResult:
     stores: list[RebuildStore]
     source_window_days_by_store: dict[tuple[Source, str], int]
     missing_storage_states: list[dict[str, str]]
+    auth_readiness: dict[str, str]
 
 
 @dataclass
@@ -981,6 +986,78 @@ async def _check_browser_launch_contract(*, logger: JsonLogger) -> None:
             await result
 
 
+def _read_storage_state(path: Path | None) -> Mapping[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _cookie_is_unexpired(cookie: Mapping[str, Any], *, now_timestamp: float) -> bool:
+    expires = cookie.get("expires")
+    if expires in (None, ""):
+        return True
+    try:
+        expires_value = float(expires)
+    except (TypeError, ValueError):
+        return False
+    # Playwright uses -1 for session cookies; any positive timestamp must be in
+    # the future to prove the persisted source session is still usable.
+    return expires_value < 0 or expires_value > now_timestamp
+
+
+def _td_storage_state_auth_status(store: RebuildStore) -> str:
+    path = _storage_state_path(store)
+    state = _read_storage_state(path)
+    if not state:
+        return "unauthorized"
+    cookies = state.get("cookies")
+    now_timestamp = aware_now(get_timezone()).timestamp()
+    has_unexpired_cookie = isinstance(cookies, list) and any(
+        isinstance(cookie, Mapping)
+        and _cookie_is_unexpired(cookie, now_timestamp=now_timestamp)
+        for cookie in cookies
+    )
+    if has_unexpired_cookie:
+        return "authorized"
+    return "unauthorized"
+
+
+def _uc_storage_state_auth_status(store: RebuildStore) -> str:
+    state = _read_storage_state(_storage_state_path(store))
+    if not state:
+        return "missing_token"
+    token = detect_archive_bearer_token_in_storage_state(state)
+    return "token_detected" if token else "missing_token"
+
+
+def _source_auth_readiness(
+    stores: Sequence[RebuildStore],
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    readiness: dict[str, str] = {}
+    failures: list[dict[str, str]] = []
+    for store in stores:
+        key = f"{store.source}:{store.store_code.upper()}"
+        status = (
+            _td_storage_state_auth_status(store)
+            if store.source == "td"
+            else _uc_storage_state_auth_status(store)
+        )
+        readiness[key] = status
+        if status in {"unauthorized", "missing_token"}:
+            failures.append(
+                {
+                    "source": store.source,
+                    "store_code": store.store_code,
+                    "status": status,
+                }
+            )
+    return readiness, failures
+
+
 def _storage_state_concerns(stores: Sequence[RebuildStore]) -> list[dict[str, str]]:
     concerns: list[dict[str, str]] = []
     for store in stores:
@@ -1015,6 +1092,7 @@ async def preflight_rebuild(
     requested_window_size_days: int | None,
     run_id: str,
     logger: JsonLogger,
+    skip_auth_preflight: bool = False,
 ) -> RebuildPreflightResult:
     selected_stores = list(stores)
     selected_store_codes = [store.store_code for store in selected_stores]
@@ -1026,6 +1104,8 @@ async def preflight_rebuild(
         if not str(store.cost_center or "").strip()
     ]
     errors: list[str] = []
+    auth_readiness: dict[str, str] = {}
+    auth_failures: list[dict[str, str]] = []
 
     if not database_url:
         errors.append("database_url is required")
@@ -1106,6 +1186,17 @@ async def preflight_rebuild(
             )
 
     missing_storage_states = _storage_state_concerns(hydrated_stores)
+    auth_readiness, auth_failures = _source_auth_readiness(hydrated_stores)
+    if auth_failures and not skip_auth_preflight:
+        auth_refs = ", ".join(
+            f"{item['source']}:{item['store_code']}={item['status']}"
+            for item in auth_failures
+        )
+        errors.append(
+            "source auth readiness failed for selected stores; use "
+            "--skip-auth-preflight only for an intentional operator override: "
+            f"{auth_refs}"
+        )
     if missing_storage_states:
         log_event(
             logger=logger,
@@ -1120,6 +1211,8 @@ async def preflight_rebuild(
             stores=selected_store_codes,
             missing_start_dates=missing_start_dates,
             missing_storage_states=missing_storage_states,
+            auth_readiness=auth_readiness,
+            skip_auth_preflight=skip_auth_preflight,
             browser_backend=_browser_backend(),
         )
 
@@ -1140,6 +1233,9 @@ async def preflight_rebuild(
             stores=selected_store_codes,
             missing_start_dates=missing_start_dates,
             missing_storage_states=missing_storage_states,
+            auth_readiness=auth_readiness,
+            auth_failures=auth_failures,
+            skip_auth_preflight=skip_auth_preflight,
             missing_cost_centers=missing_cost_centers,
             browser_backend=_browser_backend(),
             errors=errors,
@@ -1156,6 +1252,9 @@ async def preflight_rebuild(
         stores=selected_store_codes,
         missing_start_dates=missing_start_dates,
         missing_storage_states=missing_storage_states,
+        auth_readiness=auth_readiness,
+        auth_failures=auth_failures,
+        skip_auth_preflight=skip_auth_preflight,
         source_window_days={
             f"{source}:{store_code}": days
             for (source, store_code), days in source_window_days_by_store.items()
@@ -1166,6 +1265,7 @@ async def preflight_rebuild(
         stores=hydrated_stores,
         source_window_days_by_store=source_window_days_by_store,
         missing_storage_states=missing_storage_states,
+        auth_readiness=auth_readiness,
     )
 
 
@@ -1216,6 +1316,7 @@ async def run_rebuild(
     run_id: str | None = None,
     logger: JsonLogger | None = None,
     fetch_snapshot: SnapshotFetcher = default_fetch_snapshot,
+    skip_auth_preflight: bool = False,
 ) -> list[WindowMetrics]:
     if resume_run_id and not resume:
         raise ValueError("resume_run_id requires resume=True")
@@ -1255,6 +1356,7 @@ async def run_rebuild(
         requested_window_size_days=window_size_days,
         run_id=run_id,
         logger=logger,
+        skip_auth_preflight=skip_auth_preflight,
     )
     stores = preflight.stores
     progress_rows = (
@@ -1688,6 +1790,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicitly ignore order_line_items_rebuild_progress (default without --resume).",
     )
+    parser.add_argument(
+        "--skip-auth-preflight",
+        action="store_true",
+        help=(
+            "Operator override: continue even when selected source/store "
+            "sessions fail TD/UC auth-readiness checks. Use only after "
+            "independently verifying source sessions."
+        ),
+    )
     parser.add_argument("--run-id", default=None)
     return parser
 
@@ -1710,6 +1821,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
             resume=args.resume,
             resume_run_id=args.resume_run_id,
             run_id=args.run_id,
+            skip_auth_preflight=args.skip_auth_preflight,
         )
     except (
         OrderLineItemsRebuildIncomplete,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,54 @@ import app.__main__ as app_main
 
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
+
+
+def _write_td_storage_state(path: Path, *, expires: int = 4_102_444_800) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "td_session",
+                        "value": "valid",
+                        "domain": ".tumbledry.in",
+                        "path": "/",
+                        "expires": expires,
+                    }
+                ],
+                "origins": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_uc_storage_state(
+    path: Path, *, token: str | None = "header.payload.signature"
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = (
+        json.dumps({"accessToken": token})
+        if token
+        else json.dumps({"other": "value"})
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "cookies": [],
+                "origins": [
+                    {
+                        "origin": "https://store.ucleanlaundry.com",
+                        "localStorage": [{"name": "auth", "value": value}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _load_oli_progress_migration():
@@ -188,18 +237,31 @@ def patch_config_and_stores(monkeypatch: pytest.MonkeyPatch, tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'rebuild.sqlite'}"
     monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
 
+    td_state = _write_td_storage_state(
+        tmp_path / "profiles" / "TD001_storage_state.json"
+    )
+    uc_state = _write_uc_storage_state(
+        tmp_path / "profiles" / "UC001_storage_state.json"
+    )
+
     async def load_stores(*, sources, store_codes, logger):
         stores = []
         if "td" in sources:
             stores.append(
                 rebuild.RebuildStore(
-                    source="td", store_code="TD001", cost_center="CC01"
+                    source="td",
+                    store_code="TD001",
+                    cost_center="CC01",
+                    raw_store=SimpleNamespace(storage_state_path=td_state),
                 )
             )
         if "uc" in sources:
             stores.append(
                 rebuild.RebuildStore(
-                    source="uc", store_code="UC001", cost_center="CC01"
+                    source="uc",
+                    store_code="UC001",
+                    cost_center="CC01",
+                    raw_store=SimpleNamespace(storage_state_path=uc_state),
                 )
             )
         return stores
@@ -530,6 +592,7 @@ def test_cli_exits_nonzero_when_all_td_windows_are_unauthorized(
                 "--window-size",
                 "1",
                 "--dry-run",
+                "--skip-auth-preflight",
                 "--run-id",
                 "cli-unauthorized",
             ]
@@ -719,6 +782,7 @@ async def test_preflight_logs_warning_for_missing_storage_state(
         run_id="preflight-storage-warning",
         logger=logger,
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     warning_events = [
@@ -736,6 +800,175 @@ async def test_preflight_logs_warning_for_missing_storage_state(
             "reason": "storage_state_file_missing",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_td_expired_auth_fails_preflight_before_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-expired.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    expired_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A817_storage_state.json", expires=1
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A817",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=expired_state),
+            )
+        ]
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    logger = _InMemoryLogger("td-expired-preflight")
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    with pytest.raises(RuntimeError, match="source auth readiness failed"):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="td-expired-preflight",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert window_seen is False
+    error_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "error"
+    ][-1]
+    assert error_event["auth_readiness"] == {"td:A817": "unauthorized"}
+
+
+@pytest.mark.asyncio
+async def test_uc_missing_token_fails_preflight_before_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'uc-missing-token.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    storage_state = _write_uc_storage_state(
+        tmp_path / "profiles" / "UC567_storage_state.json", token=None
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="uc",
+                store_code="UC567",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=storage_state),
+            )
+        ]
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    logger = _InMemoryLogger("uc-missing-token-preflight")
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    with pytest.raises(RuntimeError, match="source auth readiness failed"):
+        await rebuild.run_rebuild(
+            source_selection="uc",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="uc-missing-token-preflight",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert window_seen is False
+    error_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "error"
+    ][-1]
+    assert error_event["auth_readiness"] == {"uc:UC567": "missing_token"}
+
+
+@pytest.mark.asyncio
+async def test_valid_storage_and_token_pass_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'valid-auth.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    td_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A668_storage_state.json"
+    )
+    uc_state = _write_uc_storage_state(
+        tmp_path / "profiles" / "UC610_storage_state.json"
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A668",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=td_state),
+            ),
+            rebuild.RebuildStore(
+                source="uc",
+                store_code="UC610",
+                cost_center="CC02",
+                raw_store=SimpleNamespace(storage_state_path=uc_state),
+            ),
+        ]
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    logger = _InMemoryLogger("valid-auth-preflight")
+    seen_stores: list[str] = []
+
+    async def fetcher(**kwargs):
+        seen_stores.append(kwargs["store"].store_code)
+        return rebuild.SourceSnapshot()
+
+    await rebuild.run_rebuild(
+        source_selection="both",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="valid-auth-preflight",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen_stores == ["A668", "UC610"]
+    completed = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("message") == "order_line_items rebuild preflight completed"
+    ][-1]
+    assert completed["auth_readiness"] == {
+        "td:A668": "authorized",
+        "uc:UC610": "token_detected",
+    }
 
 
 @pytest.mark.asyncio
@@ -825,6 +1058,7 @@ async def test_run_rebuild_default_run_id_is_used_for_logger_store_and_window_ev
         window_size_days=1,
         dry_run=True,
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert len(loggers) == 1
@@ -888,6 +1122,7 @@ async def test_run_rebuild_explicit_run_id_is_used_for_logger_store_and_window_e
         dry_run=True,
         run_id="explicit-cli-run",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert len(loggers) == 1
@@ -1208,6 +1443,7 @@ async def test_uc_rebuild_uses_publish_replacement_path(
         dry_run=False,
         run_id="uc",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert metrics[0].deleted_rows == 1
@@ -1266,6 +1502,7 @@ async def test_uc_rebuild_stages_and_publishes_each_window_with_child_run_ids(
         dry_run=False,
         run_id="parent",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert [metric.uc_child_run_id for metric in metrics] == [
@@ -1341,6 +1578,7 @@ async def test_uc_same_order_in_multiple_windows_uses_distinct_staging_identity(
         dry_run=False,
         run_id="same-parent",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert len(metrics) == 2
@@ -1410,6 +1648,7 @@ async def test_uc_later_window_metrics_are_scoped_to_later_child_run(
         dry_run=False,
         run_id="metrics-parent",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert [metric.inspected_orders for metric in metrics] == [2, 1]
@@ -1477,6 +1716,7 @@ async def test_source_both_preserves_td_parent_and_uc_child_window_behavior(
         dry_run=False,
         run_id="both-parent",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert [(metric.source, metric.uc_child_run_id) for metric in metrics] == [
@@ -1559,6 +1799,7 @@ async def test_resume_progress_uses_source_store_window_while_uc_staging_uses_ch
         run_id="resume-parent",
         logger=logger,
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert seen == [date(2025, 1, 2)]
@@ -1703,6 +1944,7 @@ async def test_resumability_emits_source_store_window_checkpoints(
         dry_run=True,
         run_id="resume",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert [
@@ -1925,6 +2167,7 @@ async def test_store_specific_auth_failure_does_not_suppress_other_sources(
             dry_run=True,
             run_id="store-auth",
             fetch_snapshot=fetcher,
+            skip_auth_preflight=True,
         )
 
     assert seen == ["td", "uc"]
@@ -2295,6 +2538,7 @@ async def test_both_source_full_live_uses_each_store_master_start_date(
         dry_run=True,
         run_id="full-live-both",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert seen == [
@@ -2591,6 +2835,7 @@ async def test_source_specific_lower_limit_overrides_thirty_day_cap(
         dry_run=True,
         run_id="lower-limit",
         fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
     )
 
     assert seen == [
