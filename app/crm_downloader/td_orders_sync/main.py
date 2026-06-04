@@ -2963,6 +2963,77 @@ def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_repo
     }
 
 
+def _rows_container_present(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, Mapping):
+        return False
+    for key in ("rows", "items", "results", "records", "garments", "details"):
+        if isinstance(payload.get(key), list):
+            return True
+    for envelope_key in ("data", "payload", "result", "response"):
+        value = payload.get(envelope_key)
+        if isinstance(value, list):
+            return True
+        if isinstance(value, Mapping) and _rows_container_present(value):
+            return True
+    return False
+
+
+def _extract_reported_total_rows(payload: Any, *, depth: int = 0) -> int | None:
+    if depth > 3 or not isinstance(payload, Mapping):
+        return None
+    for key in ("reported_total_rows", "total_rows", "totalRows", "total", "totalCount", "count"):
+        value = payload.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    for envelope_key in ("data", "payload", "result", "response", "pagination"):
+        nested = _extract_reported_total_rows(payload.get(envelope_key), depth=depth + 1)
+        if nested is not None:
+            return nested
+    return None
+
+
+def _classify_orders_zero_rows(api_fetch_result: TdApiFetchResult) -> str | None:
+    if api_fetch_result.orders_rows:
+        return None
+    endpoint_errors = api_fetch_result.endpoint_errors or {}
+    endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/reports/order-report") or {})
+    health = _dataset_completion_health(
+        api_fetch_result.raw_orders_payload if isinstance(api_fetch_result.raw_orders_payload, Mapping) else {},
+        endpoint_error=endpoint_errors.get("/reports/order-report"),
+        endpoint_health=endpoint_health,
+    )
+    if health.get("endpoint_error"):
+        return "endpoint_error"
+    if not health.get("endpoint_success"):
+        return "endpoint_unsuccessful"
+    if not _rows_container_present(api_fetch_result.raw_orders_payload):
+        return "malformed_payload"
+    if health.get("reported_total_rows") == 0 and health.get("total_rows") == 0:
+        return "valid_empty_endpoint"
+    return "empty_unconfirmed"
+
+
+def _resolve_api_orders_status(
+    *,
+    api_fetch_result: TdApiFetchResult,
+    run_orders: bool,
+    api_orders_ingest_result: TdOrdersIngestResult | None,
+    empty_failure_status: str,
+) -> tuple[str, str | None]:
+    if not run_orders:
+        return "skipped", None
+    zero_row_classification = _classify_orders_zero_rows(api_fetch_result)
+    if api_fetch_result.orders_rows or zero_row_classification == "valid_empty_endpoint":
+        orders_status = "ok"
+    else:
+        orders_status = empty_failure_status
+    if api_orders_ingest_result and api_orders_ingest_result.warnings:
+        orders_status = "warning"
+    return orders_status, zero_row_classification
+
+
 def _dataset_completion_health(
     payload: Mapping[str, Any] | None,
     *,
@@ -2972,9 +3043,16 @@ def _dataset_completion_health(
     pagination = (payload or {}).get("pagination") if isinstance(payload, Mapping) else {}
     pagination = pagination if isinstance(pagination, Mapping) else {}
     pages_fetched = int(pagination.get("pages_fetched") or 0)
+    health = endpoint_health if isinstance(endpoint_health, Mapping) else {}
     reported_total_pages = pagination.get("reported_total_pages")
+    if reported_total_pages is None:
+        reported_total_pages = health.get("reported_total_pages")
     reported_total_rows = pagination.get("reported_total_rows")
-    total_rows = int(pagination.get("total_rows") or 0)
+    if reported_total_rows is None:
+        reported_total_rows = health.get("reported_total_rows")
+    if reported_total_rows is None:
+        reported_total_rows = _extract_reported_total_rows(payload)
+    total_rows = int(pagination.get("total_rows") or health.get("parsed_row_count") or health.get("rows_total") or 0)
 
     completed_by_pages = isinstance(reported_total_pages, int) and pages_fetched >= reported_total_pages
     completed_by_rows = isinstance(reported_total_rows, int) and total_rows >= reported_total_rows
@@ -2987,7 +3065,11 @@ def _dataset_completion_health(
     elif not readiness:
         degraded_reason = "pagination_incomplete"
 
-    health = endpoint_health if isinstance(endpoint_health, Mapping) else {}
+    zero_row_classification = (
+        "valid_empty_endpoint"
+        if (readiness and not endpoint_error and bool(health.get("success")) and reported_total_rows == 0 and total_rows == 0)
+        else None
+    )
     return {
         "ready": readiness,
         "degraded_reason": degraded_reason,
@@ -2999,6 +3081,7 @@ def _dataset_completion_health(
         "reported_total_pages": reported_total_pages,
         "total_rows": total_rows,
         "reported_total_rows": reported_total_rows,
+        "orders_zero_row_classification": zero_row_classification,
     }
 
 
@@ -7491,9 +7574,22 @@ async def _execute_api_primary_ingestion(
         except Exception as exc:
             raise TdApiPrimaryIngestionError(str(exc)) from exc
 
-    orders_status = "ok" if api_fetch_result.orders_rows else ("skipped" if not run_orders else "error")
-    if api_orders_ingest_result and api_orders_ingest_result.warnings:
-        orders_status = "warning"
+    orders_status, orders_zero_row_classification = _resolve_api_orders_status(
+        api_fetch_result=api_fetch_result,
+        run_orders=run_orders,
+        api_orders_ingest_result=api_orders_ingest_result,
+        empty_failure_status="error",
+    )
+    log_event(
+        logger=logger,
+        phase="api_ingest",
+        status="ok" if orders_status == "ok" else "warning",
+        message="Classified TD API orders zero-row result",
+        store_code=store.store_code,
+        orders_rows=len(api_fetch_result.orders_rows),
+        orders_status=orders_status,
+        orders_zero_row_classification=orders_zero_row_classification,
+    )
     sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
     if api_sales_ingest_result and api_sales_ingest_result.warnings:
         sales_status = "warning"
@@ -8259,9 +8355,22 @@ async def _run_store_discovery(
                                 source_mode=source_mode,
                             )
 
-                        orders_status = "ok" if api_fetch_result.orders_rows else "warning"
-                        if api_orders_ingest_result and api_orders_ingest_result.warnings:
-                            orders_status = "warning"
+                        orders_status, orders_zero_row_classification = _resolve_api_orders_status(
+                            api_fetch_result=api_fetch_result,
+                            run_orders=run_orders,
+                            api_orders_ingest_result=api_orders_ingest_result,
+                            empty_failure_status="warning",
+                        )
+                        log_event(
+                            logger=store_logger,
+                            phase="api_ingest",
+                            status="ok" if orders_status == "ok" else "warning",
+                            message="Classified TD API orders zero-row result",
+                            store_code=store.store_code,
+                            orders_rows=len(api_fetch_result.orders_rows),
+                            orders_status=orders_status,
+                            orders_zero_row_classification=orders_zero_row_classification,
+                        )
 
                         sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
                         if api_sales_ingest_result and api_sales_ingest_result.warnings:
