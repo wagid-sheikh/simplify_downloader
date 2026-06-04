@@ -16,6 +16,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _persist_compare_excel_artifact,
     _resolve_td_api_artifact_dir,
     _dataset_completion_health,
+    _resolve_api_orders_status,
 )
 from app.crm_downloader.td_orders_sync.td_api_artifacts import (
     _validate_xlsx,
@@ -25,6 +26,7 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import (
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
+    TdApiFetchResult,
     build_garment_order_snapshots,
     _build_garments_incomplete_reason,
     _extract_row_ids,
@@ -2118,6 +2120,62 @@ def test_dataset_completion_health_includes_endpoint_health_fields() -> None:
     assert health["ready"] is True
     assert health["endpoint_success"] is True
     assert health["endpoint_attempts"] == 4
+
+
+def test_td_api_orders_zero_rows_with_zero_count_is_valid_empty_success() -> None:
+    fetch_result = TdApiFetchResult(
+        raw_orders_payload={"data": {"rows": [], "count": 0}},
+        orders_rows=[],
+        endpoint_health={"/reports/order-report": {"success": True, "reported_total_rows": 0, "parsed_row_count": 0}},
+    )
+
+    status, classification = _resolve_api_orders_status(
+        api_fetch_result=fetch_result,
+        run_orders=True,
+        api_orders_ingest_result=None,
+        empty_failure_status="warning",
+    )
+
+    assert status == "ok"
+    assert classification == "valid_empty_endpoint"
+
+
+def test_td_api_orders_zero_rows_with_endpoint_error_stays_warning() -> None:
+    fetch_result = TdApiFetchResult(
+        raw_orders_payload={"data": {"rows": [], "count": 0}},
+        orders_rows=[],
+        endpoint_errors={"/reports/order-report": "read_timeout"},
+        endpoint_health={"/reports/order-report": {"success": False, "reported_total_rows": 0, "parsed_row_count": 0}},
+    )
+
+    status, classification = _resolve_api_orders_status(
+        api_fetch_result=fetch_result,
+        run_orders=True,
+        api_orders_ingest_result=None,
+        empty_failure_status="warning",
+    )
+
+    assert status == "warning"
+    assert classification == "endpoint_error"
+
+
+def test_td_api_orders_zero_rows_malformed_payload_is_not_valid_empty() -> None:
+    fetch_result = TdApiFetchResult(
+        raw_orders_payload={"data": {"count": 0}},
+        orders_rows=[],
+        endpoint_health={"/reports/order-report": {"success": True, "reported_total_rows": 0, "parsed_row_count": 0}},
+    )
+
+    status, classification = _resolve_api_orders_status(
+        api_fetch_result=fetch_result,
+        run_orders=True,
+        api_orders_ingest_result=None,
+        empty_failure_status="warning",
+    )
+
+    assert status == "warning"
+    assert classification == "malformed_payload"
+
 
 
 @pytest.mark.asyncio
