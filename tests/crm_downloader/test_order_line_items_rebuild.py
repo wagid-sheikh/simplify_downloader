@@ -265,7 +265,11 @@ def patch_config_and_stores(monkeypatch: pytest.MonkeyPatch, tmp_path):
             )
         return stores
 
+    async def td_auth_ready(store, *, run_id, logger):
+        return "session_valid"
+
     monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
     return db_url
 
 
@@ -1087,7 +1091,11 @@ async def test_td_expired_auth_fails_preflight_before_windows(
             )
         ]
 
+    async def td_auth_not_ready(store, *, run_id, logger):
+        return "unauthorized"
+
     monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_not_ready)
     logger = _InMemoryLogger("td-expired-preflight")
     window_seen = False
 
@@ -1117,6 +1125,230 @@ async def test_td_expired_auth_fails_preflight_before_windows(
         and event.get("status") == "error"
     ][-1]
     assert error_event["auth_readiness"] == {"td:A817": "unauthorized"}
+
+
+@pytest.mark.asyncio
+async def test_td_stale_storage_state_can_pass_after_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-refresh.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    storage_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A817_storage_state.json"
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A817",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=storage_state),
+            )
+        ]
+
+    async def td_auth_ready(store, *, run_id, logger):
+        return "login_refresh_required"
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
+    logger = _InMemoryLogger("td-refresh-preflight")
+    seen_windows: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen_windows.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot()
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="td-refresh-preflight",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen_windows == [(date(2025, 1, 1), date(2025, 1, 1))]
+    completed = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("message") == "order_line_items rebuild preflight completed"
+    ][-1]
+    assert completed["auth_readiness"] == {"td:A817": "login_refresh_required"}
+
+
+@pytest.mark.asyncio
+async def test_td_valid_session_passes_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-valid-session.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    storage_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A817_storage_state.json"
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A817",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=storage_state),
+            )
+        ]
+
+    async def td_auth_ready(store, *, run_id, logger):
+        return "session_valid"
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
+    logger = _InMemoryLogger("td-valid-session-preflight")
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="td-valid-session-preflight",
+        logger=logger,
+        fetch_snapshot=fetcher,
+    )
+
+    assert window_seen is True
+    completed = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("message") == "order_line_items rebuild preflight completed"
+    ][-1]
+    assert completed["auth_readiness"] == {"td:A817": "session_valid"}
+
+
+@pytest.mark.asyncio
+async def test_td_missing_iframe_or_token_fails_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-missing-iframe.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    storage_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A817_storage_state.json"
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A817",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=storage_state),
+            )
+        ]
+
+    async def td_auth_not_ready(store, *, run_id, logger):
+        return "unauthorized"
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_not_ready)
+    logger = _InMemoryLogger("td-missing-iframe-preflight")
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    with pytest.raises(RuntimeError, match="source auth readiness failed"):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="td-missing-iframe-preflight",
+            logger=logger,
+            fetch_snapshot=fetcher,
+        )
+
+    assert window_seen is False
+    error_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "error"
+    ][-1]
+    assert error_event["auth_readiness"] == {"td:A817": "unauthorized"}
+
+
+@pytest.mark.asyncio
+async def test_preflight_failure_cli_exits_nonzero_before_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-cli-fail.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    storage_state = _write_td_storage_state(
+        tmp_path / "profiles" / "A817_storage_state.json"
+    )
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="A817",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(storage_state_path=storage_state),
+            )
+        ]
+
+    async def td_auth_not_ready(store, *, run_id, logger):
+        return "unauthorized"
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_not_ready)
+    window_seen = False
+
+    async def fetcher(**_kwargs):
+        nonlocal window_seen
+        window_seen = True
+        return rebuild.SourceSnapshot()
+
+    monkeypatch.setattr(rebuild, "default_fetch_snapshot", fetcher)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await rebuild._async_entrypoint(
+            [
+                "--source",
+                "td",
+                "--start-date",
+                "2025-01-01",
+                "--end-date",
+                "2025-01-01",
+                "--window-size",
+                "1",
+                "--dry-run",
+                "--run-id",
+                "td-cli-fail",
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    assert window_seen is False
 
 
 @pytest.mark.asyncio
@@ -1202,7 +1434,11 @@ async def test_valid_storage_and_token_pass_preflight(
             ),
         ]
 
+    async def td_auth_ready(store, *, run_id, logger):
+        return "session_valid"
+
     monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
     logger = _InMemoryLogger("valid-auth-preflight")
     seen_stores: list[str] = []
 
@@ -1230,7 +1466,7 @@ async def test_valid_storage_and_token_pass_preflight(
         and event.get("message") == "order_line_items rebuild preflight completed"
     ][-1]
     assert completed["auth_readiness"] == {
-        "td:A668": "authorized",
+        "td:A668": "session_valid",
         "uc:UC610": "token_detected",
     }
 
