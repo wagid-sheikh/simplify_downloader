@@ -1221,6 +1221,17 @@ def _extract_td_garment_warning_from_summary(
         "garments_final_row_count": final_count,
         "garments_budget_state": budget_state,
         "garments_incomplete_reason": reason,
+        "page_size_requested": orders_store.get("page_size_requested"),
+        "pages_attempted": orders_store.get("pages_attempted"),
+        "pages_succeeded": orders_store.get("pages_succeeded"),
+        "last_successful_page": orders_store.get("last_successful_page"),
+        "reported_total_rows": orders_store.get("reported_total_rows"),
+        "reported_total_pages": orders_store.get("reported_total_pages"),
+        "parsed_row_count": orders_store.get("parsed_row_count"),
+        "unique_row_id_count": orders_store.get("unique_row_id_count"),
+        "rows_without_identity_count": orders_store.get("rows_without_identity_count"),
+        "identity_strategy": orders_store.get("identity_strategy"),
+        "stop_reason": orders_store.get("stop_reason"),
         "garments_attempted_page_count": orders_store.get("garments_attempted_page_count"),
         "garments_completed_page_count": orders_store.get("garments_completed_page_count"),
         "garments_expected_page_count": orders_store.get("garments_expected_page_count"),
@@ -1228,6 +1239,20 @@ def _extract_td_garment_warning_from_summary(
         "garments_retry_count": orders_store.get("garments_retry_count"),
         "is_incomplete": completeness == TD_GARMENT_INCOMPLETE_COMPLETENESS,
     }
+
+
+def _td_garment_incomplete_reason_message(window: Mapping[str, Any]) -> str:
+    reason = _coerce_dict(window.get("garments_incomplete_reason"))
+    message = str(reason.get("message") or "").strip()
+    if message and message != "unknown":
+        return message
+    stop_reason = str(window.get("stop_reason") or "").strip()
+    if stop_reason:
+        return stop_reason
+    completeness = str(window.get("garments_fetch_completeness") or "").strip()
+    if completeness:
+        return completeness
+    return "unknown"
 
 
 def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
@@ -1247,6 +1272,17 @@ def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None
                 "garments_final_row_count": warning.get("garments_final_row_count"),
                 "garments_budget_state": _sanitize_profiler_window_text(warning.get("garments_budget_state")),
                 "garments_incomplete_reason": _coerce_dict(warning.get("garments_incomplete_reason")) or None,
+                "page_size_requested": warning.get("page_size_requested"),
+                "pages_attempted": warning.get("pages_attempted"),
+                "pages_succeeded": warning.get("pages_succeeded"),
+                "last_successful_page": warning.get("last_successful_page"),
+                "reported_total_rows": warning.get("reported_total_rows"),
+                "reported_total_pages": warning.get("reported_total_pages"),
+                "parsed_row_count": warning.get("parsed_row_count"),
+                "unique_row_id_count": warning.get("unique_row_id_count"),
+                "rows_without_identity_count": warning.get("rows_without_identity_count"),
+                "identity_strategy": _sanitize_profiler_window_text(warning.get("identity_strategy")),
+                "stop_reason": _sanitize_profiler_window_text(warning.get("stop_reason")),
                 "garments_attempted_page_count": warning.get("garments_attempted_page_count"),
                 "garments_completed_page_count": warning.get("garments_completed_page_count"),
                 "garments_expected_page_count": warning.get("garments_expected_page_count"),
@@ -1852,9 +1888,12 @@ def _build_profiler_summary_text(
                     "    - "
                     f"{window.get('from_date')} to {window.get('to_date')}: "
                     f"final_garment_rows={window.get('garments_final_row_count')}; "
-                    f"reason={(window.get('garments_incomplete_reason') or {}).get('message', 'unknown')}; "
-                    f"pages={window.get('garments_completed_page_count')}/{window.get('garments_expected_page_count') or '?'} "
-                    f"completed ({window.get('garments_attempted_page_count')} attempted); "
+                    f"reason={_td_garment_incomplete_reason_message(window)}; "
+                    f"stop_reason={window.get('stop_reason') or 'unknown'}; "
+                    f"rows={window.get('parsed_row_count')}; unique_ids={window.get('unique_row_id_count')}; "
+                    f"missing_identity={window.get('rows_without_identity_count')}; identity={window.get('identity_strategy') or 'unknown'}; "
+                    f"pages={window.get('pages_succeeded') or window.get('garments_completed_page_count')}/{window.get('reported_total_pages') or window.get('garments_expected_page_count') or '?'} "
+                    f"completed ({window.get('pages_attempted') or window.get('garments_attempted_page_count')} attempted); "
                     f"timeouts={window.get('garments_timeout_count')}; retries={window.get('garments_retry_count')}"
                 )
         if entry.get("status_conflict_count"):

@@ -2487,6 +2487,7 @@ async def test_garments_timeout_exhaustion_records_structured_reason(tmp_path: P
     assert health["garments_completed_page_count"] == 0
     assert health["garments_timeout_count"] == 2
     assert health["garments_retry_count"] == 1
+    assert health["stop_reason"] == "timeout_budget"
 
 
 @pytest.mark.asyncio
@@ -2506,6 +2507,7 @@ async def test_garments_pagination_budget_exhaustion_records_structured_reason(t
     assert health["garments_attempted_page_count"] == 1
     assert health["garments_completed_page_count"] == 1
     assert health["garments_expected_page_count"] == 3
+    assert health["stop_reason"] == "max_pages"
 
 
 def test_build_garment_order_snapshots_marks_rows_empty_and_incomplete() -> None:
@@ -2530,3 +2532,74 @@ def test_build_garment_order_snapshots_marks_rows_empty_and_incomplete() -> None
         {"order_number": "1001", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
         {"order_number": "9999", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
     ]
+
+
+@pytest.mark.asyncio
+async def test_garments_complete_final_page_stop_reason_reached_total_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+    responses = iter(
+        [
+            type("_Result", (), {"ok": True, "payload": {"data": {"rows": [{"barcode": "B-1"}, {"barcode": "B-2"}], "count": 3}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+            type("_Result", (), {"ok": True, "payload": {"data": {"rows": [{"barcode": "B-3"}], "count": 3}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 2}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["stop_reason"] == "reached_total_rows"
+    assert health["page_size_requested"] == 2
+    assert health["pages_attempted"] == 2
+    assert health["pages_succeeded"] == 2
+    assert health["last_successful_page"] == 2
+    assert health["reported_total_rows"] == 3
+    assert health["reported_total_pages"] == 2
+    assert health["parsed_row_count"] == 3
+    assert health["unique_row_id_count"] == 3
+    assert health["rows_without_identity_count"] == 0
+    assert health["identity_strategy"] == "barcode"
+
+
+@pytest.mark.asyncio
+async def test_garments_parsing_failure_stop_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": {"count": 5, "unexpected": [{"barcode": "B-1"}]}}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 100}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["stop_reason"] == "parsing_failure"
+    assert health["garments_incomplete_reason"] == {"code": "response_parsing_failure", "message": "response parsing failure"}
+    assert health["pages_attempted"] == 1
+    assert health["pages_succeeded"] == 0
+    assert health["parsed_row_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_garments_missing_identity_fields_use_composite_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": [{"orderNumber": "O-1", "garment": "Shirt", "subGarment": "Cotton", "primaryService": "DC"}, {"customerName": "No identity"}], "count": 2}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 100}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["identity_strategy"] == "composite"
+    assert health["unique_row_id_count"] == 1
+    assert health["rows_without_identity_count"] == 1
+    assert health["parsed_row_count"] == 2

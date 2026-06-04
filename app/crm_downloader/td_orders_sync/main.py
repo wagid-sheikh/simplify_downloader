@@ -258,8 +258,25 @@ def _build_garments_health_summary(
             "code": "orphaned_parent_order_relationship",
             "message": "orphaned parent-order relationship",
         }
+    parsed_row_count = int(endpoint_health.get("parsed_row_count") or endpoint_health.get("garments_final_row_count") or row_count)
+    unique_row_id_count = int(endpoint_health.get("unique_row_id_count") or endpoint_health.get("garments_fetched_unique_row_ids") or 0)
+    rows_without_identity_count = int(
+        endpoint_health.get("rows_without_identity_count")
+        or endpoint_health.get("garments_rows_without_identity_count")
+        or 0
+    )
     return {
+        "page_size_requested": endpoint_health.get("page_size_requested"),
         "pages_attempted": int(endpoint_health.get("pages_attempted") or 0),
+        "pages_succeeded": int(endpoint_health.get("pages_succeeded") or endpoint_health.get("garments_completed_page_count") or 0),
+        "last_successful_page": endpoint_health.get("last_successful_page"),
+        "reported_total_rows": endpoint_health.get("reported_total_rows") or endpoint_health.get("garments_expected_total_rows"),
+        "reported_total_pages": endpoint_health.get("reported_total_pages") or endpoint_health.get("garments_expected_page_count"),
+        "parsed_row_count": parsed_row_count,
+        "unique_row_id_count": unique_row_id_count,
+        "rows_without_identity_count": rows_without_identity_count,
+        "identity_strategy": endpoint_health.get("identity_strategy") or endpoint_health.get("garments_identity_strategy"),
+        "stop_reason": endpoint_health.get("stop_reason") or endpoint_health.get("garments_stop_reason"),
         "timeout_count": int(endpoint_health.get("timeout_count") or 0),
         "retry_count": int(endpoint_health.get("retry_count") or 0),
         "retry_success_count": int(endpoint_health.get("retry_success_count") or 0),
@@ -267,11 +284,16 @@ def _build_garments_health_summary(
         "orphan_rows": orphan_rows,
         "garments_fetch_completeness": completeness,
         "garments_incomplete_reason": incomplete_reason,
-        "garments_attempted_page_count": int(endpoint_health.get("garments_attempted_page_count") or 0),
-        "garments_completed_page_count": int(endpoint_health.get("garments_completed_page_count") or 0),
-        "garments_expected_page_count": endpoint_health.get("garments_expected_page_count"),
+        "garments_attempted_page_count": int(endpoint_health.get("garments_attempted_page_count") or endpoint_health.get("pages_attempted") or 0),
+        "garments_completed_page_count": int(endpoint_health.get("garments_completed_page_count") or endpoint_health.get("pages_succeeded") or 0),
+        "garments_expected_page_count": endpoint_health.get("garments_expected_page_count") or endpoint_health.get("reported_total_pages"),
         "garments_timeout_count": int(endpoint_health.get("garments_timeout_count") or 0),
         "garments_retry_count": int(endpoint_health.get("garments_retry_count") or 0),
+        "garments_final_row_count": parsed_row_count,
+        "garments_fetched_unique_row_ids": unique_row_id_count,
+        "garments_rows_without_identity_count": rows_without_identity_count,
+        "garments_identity_strategy": endpoint_health.get("garments_identity_strategy") or endpoint_health.get("identity_strategy"),
+        "garments_stop_reason": endpoint_health.get("garments_stop_reason") or endpoint_health.get("stop_reason"),
         **replacement_metrics,
     }
 
