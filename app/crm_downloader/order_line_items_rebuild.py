@@ -673,14 +673,18 @@ async def _load_store_start_dates(
     params: dict[str, Any] = {}
     for index, store in enumerate(stores):
         clauses.append(
-            f"(UPPER(store_code) = :store_code_{index} AND sync_group = :sync_group_{index})"
+            f"(UPPER(store_code) = :store_code_{index} "
+            f"AND UPPER(sync_group) = :sync_group_{index})"
         )
         params[f"store_code_{index}"] = store.store_code.upper()
+        # Keep the SQL bind value aligned to the DB contract (TD/UC) while
+        # comparing case-insensitively in SQL for older lowercase rows.
         params[f"sync_group_{index}"] = store.source.upper()
     async with session_scope(database_url) as session:
         result = await session.execute(
             sa.text(
-                "SELECT UPPER(store_code) AS store_code, sync_group, start_date "
+                "SELECT UPPER(store_code) AS store_code, "
+                "UPPER(sync_group) AS sync_group, start_date "
                 f"FROM store_master WHERE {' OR '.join(clauses)}"
             ),
             params,
@@ -945,14 +949,35 @@ async def preflight_rebuild(
             for store in selected_stores
         ]
         missing_start_dates = [
-            {"source": store.source, "store_code": store.store_code}
+            {
+                "source": store.source,
+                "store_code": store.store_code,
+                "cost_center": store.cost_center,
+            }
             for store in hydrated_stores
             if store.start_date is None
         ]
         if missing_start_dates:
+            missing_start_date_refs = ", ".join(
+                f"{item['source']}:{item['store_code']} "
+                f"cost_center={item['cost_center'] or '<missing>'}"
+                for item in missing_start_dates
+            )
             errors.append(
-                "start_date is required because store_master.start_date is not set "
-                "for every selected store"
+                "store_master.start_date is required for full-live rebuild when "
+                "--start-date is omitted; missing start dates: "
+                f"{missing_start_date_refs}"
+            )
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_preflight",
+                status="error",
+                message="store_master.start_date is missing for selected stores",
+                run_id=run_id,
+                sources=list(sources),
+                stores=selected_store_codes,
+                missing_start_dates=missing_start_dates,
+                browser_backend=_browser_backend(),
             )
 
     for store in hydrated_stores:
