@@ -101,6 +101,39 @@ async def _rows(db_url: str, sql: str) -> list[Any]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sync_group", ["td", "TD"])
+async def test_load_store_start_dates_matches_sync_group_case_insensitively(
+    tmp_path, sync_group: str
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path / f'start-{sync_group}.sqlite'}"
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT, sync_group TEXT, start_date DATE
+            )
+        """))
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (store_code, sync_group, start_date) "
+                "VALUES ('TD001', :sync_group, '2025-02-10')"
+            ),
+            {"sync_group": sync_group},
+        )
+        await session.commit()
+
+    start_dates = await rebuild._load_store_start_dates(
+        database_url=db_url,
+        stores=[
+            rebuild.RebuildStore(
+                source="td", store_code="TD001", cost_center="CC01"
+            )
+        ],
+    )
+
+    assert start_dates == {("td", "TD001"): date(2025, 2, 10)}
+
+
+@pytest.mark.asyncio
 async def test_ensure_progress_table_requires_alembic_migration(tmp_path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'missing-progress.sqlite'}"
 
@@ -358,8 +391,19 @@ async def test_preflight_missing_store_master_start_date_fails_before_windows(
     ]
     assert preflight_errors
     assert preflight_errors[-1]["missing_start_dates"] == [
-        {"source": "td", "store_code": "TD001"}
+        {"source": "td", "store_code": "TD001", "cost_center": "CC01"}
     ]
+    assert preflight_errors[-1]["errors"] == [
+        "store_master.start_date is required for full-live rebuild when "
+        "--start-date is omitted; missing start dates: "
+        "td:TD001 cost_center=CC01"
+    ]
+    assert any(
+        event.get("message") == "store_master.start_date is missing for selected stores"
+        and event.get("missing_start_dates")
+        == [{"source": "td", "store_code": "TD001", "cost_center": "CC01"}]
+        for event in preflight_errors
+    )
 
 
 @pytest.mark.asyncio
@@ -1997,6 +2041,60 @@ async def test_omitted_dates_use_store_start_through_current_pipeline_date(
         (date(2025, 2, 10), date(2025, 2, 10)),
         (date(2025, 2, 11), date(2025, 2, 11)),
         (date(2025, 2, 12), date(2025, 2, 12)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_both_source_full_live_uses_each_store_master_start_date(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT, sync_group TEXT, start_date DATE
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO store_master (store_code, sync_group, start_date) VALUES
+            ('TD001', 'td', '2025-02-10'),
+            ('UC001', 'UC', '2025-02-11')
+        """))
+        await session.commit()
+    monkeypatch.setattr(
+        rebuild,
+        "aware_now",
+        lambda tz: datetime(2025, 2, 11, 8, 30, tzinfo=timezone.utc),
+    )
+    seen: list[tuple[str, str, date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append(
+            (
+                kwargs["store"].source,
+                kwargs["store"].store_code,
+                kwargs["window"].start,
+                kwargs["window"].end,
+            )
+        )
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="both",
+        store_codes=None,
+        start_date=None,
+        end_date=None,
+        window_size_days=1,
+        dry_run=True,
+        run_id="full-live-both",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [
+        ("td", "TD001", date(2025, 2, 10), date(2025, 2, 10)),
+        ("td", "TD001", date(2025, 2, 11), date(2025, 2, 11)),
+        ("uc", "UC001", date(2025, 2, 11), date(2025, 2, 11)),
     ]
 
 
