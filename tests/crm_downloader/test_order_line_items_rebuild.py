@@ -153,9 +153,7 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
             return SimpleNamespace(garments_rows=[], garment_order_snapshots=[])
 
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
-        return SimpleNamespace(
-            order_detail_rows=[], order_detail_snapshot_rows=[]
-        )
+        return SimpleNamespace(order_detail_rows=[], order_detail_snapshot_rows=[])
 
     monkeypatch.setattr(rebuild, "TdApiClient", FakeTdApiClient)
     monkeypatch.setattr(
@@ -178,6 +176,7 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     assert snapshot == rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
     assert launch_calls == [(playwright, logger)]
     assert browser.closed is True
+
 
 def test_bounded_window_progression() -> None:
     windows = rebuild.iter_windows(date(2025, 1, 1), date(2025, 1, 10), 4)
@@ -1104,18 +1103,23 @@ async def test_missing_window_detection_reports_failed_windows(
         return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
 
     monkeypatch.setattr(rebuild, "log_event", capture_log_event)
-    metrics = await rebuild.run_rebuild(
-        source_selection="td",
-        store_codes=None,
-        start_date=date(2025, 1, 1),
-        end_date=date(2025, 1, 2),
-        window_size_days=1,
-        dry_run=True,
-        run_id="missing",
-        fetch_snapshot=fetcher,
-    )
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 2),
+            window_size_days=1,
+            dry_run=True,
+            run_id="missing",
+            fetch_snapshot=fetcher,
+        )
 
-    assert len(metrics) == 1
+    assert exc_info.value.run_id == "missing"
+    assert exc_info.value.expected_window_count == 2
+    assert exc_info.value.completed_window_count == 1
+    assert exc_info.value.missing_window_count == 1
+    assert exc_info.value.missing_windows == ("td:TD001:2025-01-02..2025-01-02",)
     assert missing_events[-1]["missing_window_count"] == 1
     assert missing_events[-1]["missing_windows"] == [
         {
@@ -1325,6 +1329,74 @@ def test_module_parser_accepts_omitted_dates() -> None:
     assert args.start_date is None
     assert args.end_date is None
     assert args.resume is True
+
+
+def test_async_entrypoint_exits_zero_when_rebuild_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    async def fake_run_rebuild(**kwargs):
+        captured.append(kwargs)
+        return []
+
+    monkeypatch.setattr(rebuild, "run_rebuild", fake_run_rebuild)
+
+    rebuild.run(
+        ["--source", "td", "--start-date", "2025-01-01", "--end-date", "2025-01-01"]
+    )
+
+    assert captured[0]["source_selection"] == "td"
+
+
+def test_async_entrypoint_exits_nonzero_when_rebuild_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_rebuild(**kwargs):
+        raise rebuild.OrderLineItemsRebuildIncomplete(
+            run_id="cli-failed",
+            expected_window_count=1,
+            completed_window_count=0,
+            missing_window_count=1,
+            missing_windows=("td:TD001:2025-01-01..2025-01-01",),
+        )
+
+    monkeypatch.setattr(rebuild, "run_rebuild", fake_run_rebuild)
+
+    with pytest.raises(SystemExit) as exc_info:
+        rebuild.run(
+            ["--source", "td", "--start-date", "2025-01-01", "--end-date", "2025-01-01"]
+        )
+
+    assert exc_info.value.code == 1
+
+
+@pytest.mark.asyncio
+async def test_smoke_run_with_expected_windows_but_zero_completed_windows_fails_process(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+
+    async def fetcher(**kwargs):
+        raise RuntimeError("crm snapshot unavailable")
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="smoke-missing",
+            fetch_snapshot=fetcher,
+        )
+
+    assert exc_info.value.expected_window_count == 1
+    assert exc_info.value.completed_window_count == 0
+    assert exc_info.value.missing_window_count == 1
+    assert exc_info.value.missing_windows == ("td:TD001:2025-01-01..2025-01-01",)
 
 
 def test_top_level_canonical_and_alias_cli_accept_omitted_dates(
