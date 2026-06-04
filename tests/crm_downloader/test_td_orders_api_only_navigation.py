@@ -572,3 +572,56 @@ async def test_overdue_popup_store_skip_does_not_stop_other_api_only_stores(
     assert stores_summary["A817"]["failure_stage"] == td_orders_main.ORDERS_OVERDUE_POPUP_BLOCKED_REASON
     assert stores_summary["A817"]["data_ingest_status"] == "skipped"
     assert stores_summary["A818"]["data_ingest_status"] == "success"
+
+
+def test_zero_orders_nonzero_sales_complete_empty_garments_compare_pass_is_success() -> None:
+    summary = td_orders_main.TdOrdersDiscoverySummary(
+        run_id="run-valid-empty",
+        run_env="test",
+        report_date=date(2026, 1, 1),
+        report_end_date=date(2026, 1, 1),
+    )
+    orders_report = td_orders_main.StoreReport(
+        status="ok",
+        source_mode="api_only",
+        rows_downloaded=0,
+        rows_ingested=0,
+        final_rows=0,
+        compare_rows_orders=[],
+        garment_reconciliation={
+            "complete_empty_orders": 0,
+            "final_row_count": 0,
+        },
+        garments_fetch_completeness="complete",
+        garments_final_row_count=0,
+        gate_verdict={"overall_pass": True},
+    )
+    sales_report = td_orders_main.StoreReport(
+        status="ok",
+        source_mode="api_only",
+        rows_downloaded=2,
+        rows_ingested=2,
+        final_rows=2,
+        compare_rows_sales=[{"order_number": "A817-1"}, {"order_number": "A817-2"}],
+    )
+    outcome = td_orders_main.StoreOutcome(status="ok", message="API primary path executed")
+
+    summary.record_store(
+        "A817",
+        outcome,
+        orders_result=orders_report,
+        sales_result=sales_report,
+    )
+    record = summary.build_record(finished_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    store_summary = record["metrics_json"]["stores_summary"]["stores"]["A817"]
+
+    assert td_orders_main._resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=True,
+        run_sales=True,
+    ) == "success"
+    assert store_summary["status"] == "ok"
+    assert store_summary["data_ingest_status"] == "success"
+    assert store_summary["observability_warnings"] == []
+    assert record["overall_status"] == "success"
