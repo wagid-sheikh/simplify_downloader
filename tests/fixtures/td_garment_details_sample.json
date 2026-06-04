@@ -1,0 +1,111 @@
+{
+  "description": "Sanitized /garments/details fixture derived from docs/garment-details.har. The real HAR pageSize=100 March 2026 capture reports data.count=2227 and rows keyed by barcode.",
+  "pages": [
+    {
+      "request": {
+        "page": 1,
+        "pageSize": 100,
+        "startDate": "2026-03-01",
+        "endDate": "2026-03-30"
+      },
+      "response": {
+        "success": true,
+        "data": {
+          "count": 2227,
+          "rows": [
+            {
+              "orderNumber": "T2401",
+              "orderDate": "01 Mar 2026",
+              "orderTime": "12:32:33 PM",
+              "garment": "Women - BLOUSE",
+              "subGarment": "Blouse",
+              "barcode": "*T2401-1-1170*",
+              "primaryService": "CL",
+              "grossAmount": 120,
+              "discount": 24,
+              "netAmount": 96,
+              "garmentStatus": "Delivered",
+              "deliveredOn": "07 Mar 2026 null"
+            },
+            {
+              "orderNumber": "T2401",
+              "orderDate": "01 Mar 2026",
+              "orderTime": "12:32:33 PM",
+              "garment": "Women - SAREE PLAIN",
+              "subGarment": "Saree Plain",
+              "barcode": "*T2401-10-1170*",
+              "primaryService": "CL",
+              "grossAmount": 300,
+              "discount": 60,
+              "netAmount": 240,
+              "garmentStatus": "Delivered",
+              "deliveredOn": "07 Mar 2026 null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "page": 2,
+        "pageSize": 100,
+        "startDate": "2026-03-01",
+        "endDate": "2026-03-30"
+      },
+      "response": {
+        "success": true,
+        "data": {
+          "count": 2227,
+          "rows": [
+            {
+              "orderNumber": "T2410",
+              "orderDate": "01 Mar 2026",
+              "orderTime": "3:02:36 PM",
+              "garment": "Men - LAUNDRY GARMENT",
+              "subGarment": "Garment 39",
+              "barcode": "*T2410-39-1170*",
+              "primaryService": "WSI",
+              "grossAmount": 20.65,
+              "discount": 3.1,
+              "netAmount": 17.56,
+              "garmentStatus": "Delivered",
+              "deliveredOn": "09 Mar 2026 null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "page": 23,
+        "pageSize": 100,
+        "startDate": "2026-03-01",
+        "endDate": "2026-03-30"
+      },
+      "response": {
+        "success": true,
+        "data": {
+          "count": 2227,
+          "rows": [
+            {
+              "orderNumber": "T2641",
+              "orderDate": "30 Mar 2026",
+              "orderTime": "4:58:01 PM",
+              "garment": "Men - LAUNDRY GARMENT",
+              "subGarment": "Garment 13",
+              "barcode": "*T2641-13-1170*",
+              "primaryService": "WSI",
+              "grossAmount": 24,
+              "discount": 3.6,
+              "netAmount": 20.4,
+              "package": "Select3500: 15% Savings",
+              "garmentStatus": "Delivered",
+              "ready": "01 Apr 2026 10:16:07 AM",
+              "deliveredOn": "21 Apr 2026 2:05:17 PM"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
