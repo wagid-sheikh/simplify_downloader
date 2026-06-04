@@ -522,6 +522,117 @@ def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
 
 
 @pytest.mark.asyncio
+async def test_td_profiler_keeps_valid_empty_orders_window_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "orders": {
+                    "stores": {
+                        "TD01": {
+                            "rows_downloaded": 0,
+                            "rows_ingested": 0,
+                            "final_rows": 0,
+                            "warnings": [],
+                            "warning_rows": [],
+                            "garments_fetch_completeness": "complete",
+                            "garments_final_row_count": 0,
+                            "garments_budget_state": "within_budget",
+                        }
+                    }
+                },
+                "sales": {
+                    "stores": {
+                        "TD01": {
+                            "rows_downloaded": 1,
+                            "rows_ingested": 1,
+                            "final_rows": 1,
+                            "warnings": [],
+                            "warning_rows": [],
+                        }
+                    }
+                },
+                "stores_summary": {
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "data_ingest_status": "success",
+                            "observability_warnings": [],
+                        }
+                    }
+                },
+            },
+        }
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {
+            "id": 1,
+            "status": "success",
+            "error_message": None,
+            "primary_rows_downloaded": 0,
+            "primary_rows_ingested": 0,
+            "primary_final_rows": 0,
+            "secondary_rows_downloaded": 1,
+            "secondary_rows_ingested": 1,
+            "secondary_final_rows": 1,
+        }
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert status_counts["success_with_warnings"] == 0
+    assert window_audit[0]["status"] == "success"
+    assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["warning_count"] == 0
+    assert window_audit[0]["ingestion_counts"]["primary"]["rows_ingested"] == 0
+    assert window_audit[0]["ingestion_counts"]["secondary"]["rows_ingested"] == 1
+    assert inserted_summaries[0]["overall_status"] == "success"
+
+@pytest.mark.asyncio
 async def test_td_garment_incomplete_degrades_success_without_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
