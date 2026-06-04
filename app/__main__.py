@@ -149,8 +149,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--end-date",
         "--to-date",
         dest="end_date",
-        required=True,
-        help="End date (YYYY-MM-DD)",
+        default=None,
+        help="End date (YYYY-MM-DD); defaults to the current pipeline date",
     )
     oli_rebuild.add_argument(
         "--window-size",
@@ -211,7 +211,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         }:
             from app.crm_downloader.order_line_items_rebuild import run as rebuild_run
 
-            rebuild_args = ["--source", parsed.source, "--end-date", parsed.end_date]
+            rebuild_args = ["--source", parsed.source]
+            if parsed.end_date:
+                rebuild_args.extend(["--end-date", parsed.end_date])
             if parsed.start_date:
                 rebuild_args.extend(["--start-date", parsed.start_date])
             if parsed.window_size:

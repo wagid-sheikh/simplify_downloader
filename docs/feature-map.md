@@ -106,8 +106,8 @@ Practical map of where to work for major capabilities.
   - `app/crm_downloader/td_orders_sync/garment_ingest.py`
   - `app/crm_downloader/uc_orders_sync/gst_publish.py`
   - `scripts/run_local_order_line_items_rebuild.sh`
-- **CLI:** `poetry run python -m app crm rebuild-order-line-items --source td|uc|both --end-date YYYY-MM-DD [--start-date YYYY-MM-DD] [--window-size N] [--stores ...] [--dry-run] [--resume]` (aliases: `order-line-items-rebuild`, `--from-date`, `--to-date`, `--window-days`).
-- **Notes/Risks:** Operators run one full-range command; the rebuild internally expands the range into CRM-safe windows capped at 30 days unless a lower source/store limit applies. If `--start-date` is omitted, the start comes from `store_master.start_date`. Only `complete_with_rows` and `complete_empty` snapshots replace local rows; `incomplete_or_failed` preserves existing rows. Structured checkpoints and `order_line_items_rebuild_progress` are the resume contract, and the command reports missing windows after the run. The command depends on valid CRM auth/session state for live source fetching.
+- **CLI:** Full rebuild: `poetry run python -m app crm rebuild-order-line-items --source both --resume`. Small-window tests/dry runs may pin `--start-date`/`--from-date`, `--end-date`/`--to-date`, `--window-size`/`--window-days`, and `--stores ...` (alias: `order-line-items-rebuild`).
+- **Notes/Risks:** Operators run one full-range command; the rebuild internally expands the range into CRM-safe windows capped at 30 days unless a lower source/store limit applies. If `--start-date` is omitted, the start comes from `store_master.start_date`; if `--end-date` is omitted, the end comes from the current pipeline date. Only `complete_with_rows` and `complete_empty` snapshots replace local rows; `incomplete_or_failed` preserves existing rows. Structured checkpoints and `order_line_items_rebuild_progress` are the resume contract, and the command reports missing windows after the run. The command depends on valid CRM auth/session state for live source fetching.
 
 ## 8) Daily/weekly/monthly/pending reporting
 
