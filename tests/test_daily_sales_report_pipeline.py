@@ -1147,3 +1147,180 @@ def test_daily_sales_template_renders_invalid_data_integrity_section() -> None:
     html = pipeline._render_html(pipeline._build_context(payload, "test"))
     assert "INVALID DATA REPORT" in html
     assert "CC1: FTD count does not match the report-day order population." in html
+
+
+@pytest.mark.asyncio
+async def test_daily_pipeline_emits_diagnostic_timing_logs_in_order(
+    tmp_path, monkeypatch
+) -> None:
+    report_date = date(2026, 4, 29)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+
+    monkeypatch.setattr(pipeline, "OUTPUT_ROOT", output_root)
+    monkeypatch.setattr(
+        pipeline,
+        "config",
+        SimpleNamespace(
+            database_url="sqlite+aiosqlite:///diagnostic-timing.db",
+            pdf_render_timeout_seconds=30,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(pipeline, "resolve_run_env", lambda env: "test")
+    monkeypatch.setattr(pipeline, "new_run_id", lambda: "run-diagnostics")
+
+    perf_values = (index * 0.25 for index in range(100))
+    monkeypatch.setattr(pipeline, "perf_counter", lambda: next(perf_values))
+
+    captured_logs: list[dict[str, object]] = []
+
+    class _FakeLogger:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(pipeline, "get_logger", lambda run_id: _FakeLogger())
+
+    def _capture_log_event(**kwargs):
+        captured_logs.append(kwargs)
+
+    monkeypatch.setattr(pipeline, "log_event", _capture_log_event)
+
+    async def _fake_fetch_daily_sales_report(*args, **kwargs):
+        return SimpleNamespace(
+            report_date=report_date,
+            rows=[
+                SimpleNamespace(cost_center="CC1"),
+                SimpleNamespace(cost_center="CC2"),
+            ],
+            totals=SimpleNamespace(),
+            edited_orders=[SimpleNamespace(order_number="EDIT-1")],
+            edited_orders_summary=None,
+            edited_orders_totals=None,
+            missed_leads=[],
+            cancelled_leads=[],
+            lead_performance_summary=[],
+            to_be_recovered=[SimpleNamespace(order_number="REC-1")],
+            to_be_compensated=[],
+            to_be_recovered_total_order_value=Decimal("0"),
+            to_be_compensated_total_order_value=Decimal("0"),
+            auto_cleared_order_numbers=["AUTO-1"],
+            auto_cleared_order_numbers_text="AUTO-1",
+            same_day_fulfillment_rows=[SimpleNamespace(order_number="SD-1")],
+            missing_payment_rows=[SimpleNamespace(order_number="APNF-1")],
+            short_payment_rows=[SimpleNamespace(order_number="SHORT-1")],
+            report_day_orders_by_cost_center=[],
+            integrity_findings=[],
+        )
+
+    monkeypatch.setattr(
+        pipeline, "fetch_daily_sales_report", _fake_fetch_daily_sales_report
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_build_context",
+        lambda data, run_env, orders_sync_upstream=None: {"kind": "daily"},
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "build_to_be_recovered_context",
+        lambda **kwargs: {"kind": "to_be_recovered", **kwargs},
+    )
+
+    def _fake_render_html(context, template_name=pipeline.TEMPLATE_NAME):
+        return f"html:{template_name}"
+
+    monkeypatch.setattr(pipeline, "_render_html", _fake_render_html)
+
+    async def _fake_fetch_mtd(*args, **kwargs):
+        return [
+            SimpleNamespace(order_number="MTD-1"),
+            SimpleNamespace(order_number="MTD-2"),
+        ]
+
+    monkeypatch.setattr(pipeline, "fetch_mtd_same_day_fulfillment", _fake_fetch_mtd)
+    monkeypatch.setattr(
+        pipeline,
+        "render_mtd_same_day_html",
+        lambda **kwargs: "html:mtd_same_day",
+    )
+
+    async def _fake_render_pdf(html, output_path: Path, pdf_options=None, logger=None):
+        output_path.write_bytes(b"pdf")
+
+    monkeypatch.setattr(
+        pipeline, "render_pdf_with_configured_browser", _fake_render_pdf
+    )
+
+    def _fake_workbook(*, rows, output_path, business_timezone):
+        output_path.write_bytes(b"xlsx")
+        return output_path, len(rows), 0
+
+    monkeypatch.setattr(
+        pipeline, "_build_actual_payments_not_found_workbook", _fake_workbook
+    )
+
+    async def _persist_document_noop(*args, **kwargs):
+        return None
+
+    async def _summary_noop(*args, **kwargs):
+        return None
+
+    async def _fake_notify(*args, **kwargs):
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    monkeypatch.setattr(pipeline, "_persist_document", _persist_document_noop)
+    monkeypatch.setattr(pipeline, "persist_summary_record", _summary_noop)
+    monkeypatch.setattr(pipeline, "update_summary_record", _summary_noop)
+    monkeypatch.setattr(pipeline, "send_notifications_for_run", _fake_notify)
+
+    await pipeline._run(report_date=report_date, env="test", force=True)
+
+    expected_messages = [
+        "daily sales data fetched",
+        "daily sales context built",
+        "daily sales html rendered",
+        "to-be-recovered context built",
+        "to-be-recovered html rendered",
+        "mtd same-day fulfillment data fetched",
+        "mtd same-day fulfillment html rendered",
+        "daily sales pdf rendered",
+        "to-be-recovered pdf rendered",
+        "short payments pdf rendered",
+        "actual payments not found pdf rendered",
+        "actual payments not found workbook generated",
+        "mtd same-day fulfillment pdf rendered",
+        "daily sales documents persisted",
+        "daily sales notification sent",
+    ]
+    diagnostic_logs = [
+        record
+        for record in captured_logs
+        if record.get("message") in set(expected_messages)
+    ]
+
+    assert [record["message"] for record in diagnostic_logs] == expected_messages
+    assert all(
+        record["report_date"] == report_date.isoformat()
+        for record in diagnostic_logs
+    )
+    assert all(record["elapsed_ms"] > 0 for record in diagnostic_logs)
+
+    by_message = {record["message"]: record for record in diagnostic_logs}
+    assert by_message["daily sales data fetched"]["rows"] == 2
+    assert by_message["daily sales data fetched"]["missing_payment_rows"] == 1
+    assert by_message["to-be-recovered context built"]["to_be_recovered_rows"] == 1
+    assert by_message["mtd same-day fulfillment data fetched"]["mtd_row_count"] == 2
+    assert by_message["short payments pdf rendered"]["short_payment_rows"] == 1
+    assert (
+        by_message["actual payments not found pdf rendered"][
+            "actual_payments_not_found_rows"
+        ]
+        == 1
+    )
+    assert (
+        by_message["actual payments not found workbook generated"]["rows_processed"]
+        == 1
+    )
+    assert by_message["daily sales documents persisted"]["documents_persisted"] == 6
+    assert by_message["daily sales notification sent"]["emails_sent"] == 1
