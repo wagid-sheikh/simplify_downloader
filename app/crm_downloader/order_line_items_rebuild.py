@@ -48,7 +48,10 @@ from app.crm_downloader.uc_orders_sync.gst_api_extract import (
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     publish_uc_gst_order_details_to_line_items,
 )
-from app.crm_downloader.uc_orders_sync.main import _load_uc_order_stores
+from app.crm_downloader.uc_orders_sync.main import (
+    _load_uc_order_stores,
+    prepare_uc_api_page_for_store,
+)
 from app.dashboard_downloader.json_logger import (
     JsonLogger,
     get_logger,
@@ -821,13 +824,6 @@ async def default_fetch_snapshot(
     run_id: str,
     logger: JsonLogger,
 ) -> SourceSnapshot:
-    storage_state_path = _storage_state_path(store)
-    storage_state = (
-        str(storage_state_path)
-        if storage_state_path and storage_state_path.exists()
-        else None
-    )
-
     if source == "td":
         td_store = store.raw_store
         if td_store is None:
@@ -858,15 +854,23 @@ async def default_fetch_snapshot(
     async with async_playwright() as playwright:
         browser = await launch_browser(playwright=playwright, logger=logger)
         try:
-            context = await browser.new_context(storage_state=storage_state)
-            page = await context.new_page()
-            home_url = getattr(store.raw_store, "home_url", None) or getattr(
-                store.raw_store, "orders_url", None
+            if store.raw_store is None:
+                raise ValueError(
+                    "UC rebuild stores must include the raw UcStore auth config"
+                )
+            page_preparation = await prepare_uc_api_page_for_store(
+                browser=browser,
+                store=store.raw_store,
+                logger=logger,
+                source="order_line_items_rebuild",
             )
-            if home_url:
-                await page.goto(home_url, wait_until="domcontentloaded")
+            if not page_preparation.ok or page_preparation.page is None:
+                raise RuntimeError(
+                    f"UC API page preparation failed for {store.store_code}: "
+                    f"{page_preparation.message}"
+                )
             extract = await collect_gst_orders_via_api(
-                page=page,
+                page=page_preparation.page,
                 store_code=store.store_code,
                 logger=logger,
                 from_date=window.start,
@@ -974,6 +978,7 @@ def _source_snapshot_from_td_source_result(
         endpoint_health=garments_health,
         endpoint_error_diagnostics=endpoint_diagnostics,
     )
+
 
 def _coerce_date(value: Any) -> date | None:
     if isinstance(value, datetime):

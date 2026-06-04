@@ -19,6 +19,7 @@ import app.__main__ as app_main
 from app.common.db import session_scope
 from app.crm_downloader import order_line_items_rebuild as rebuild
 from app.crm_downloader.td_orders_sync import main as td_orders_main
+from app.crm_downloader.uc_orders_sync import main as uc_orders_main
 from app.dashboard_downloader.json_logger import JsonLogger
 
 
@@ -362,6 +363,7 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     logger = SimpleNamespace(name=f"{source}-logger")
     launch_calls: list[tuple[Any, Any]] = []
     prepare_calls: list[dict[str, Any]] = []
+    uc_prepare_calls: list[dict[str, Any]] = []
     td_client_kwargs: list[dict[str, Any]] = []
 
     monkeypatch.setattr(
@@ -391,7 +393,23 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
             report_iframe_src="https://reports.quickdrycleaning.com/r",
         )
 
+    async def fake_prepare_uc_api_page_for_store(**kwargs: Any) -> Any:
+        uc_prepare_calls.append(kwargs)
+        context = await kwargs["browser"].new_context(storage_state="prepared")
+        page = await context.new_page()
+        return uc_orders_main.UcApiPagePreparationResult(
+            ok=True,
+            message="ready",
+            context=context,
+            page=page,
+            login_used=False,
+            session_probe_result=True,
+            fallback_login_attempted=False,
+            fallback_login_result=None,
+        )
+
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
+        assert kwargs["page"] is uc_prepare_calls[0]["browser"].contexts[0].pages[0]
         return SimpleNamespace(order_detail_rows=[], order_detail_snapshot_rows=[])
 
     monkeypatch.setattr(
@@ -399,6 +417,9 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     )
     monkeypatch.setattr(
         rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
+    )
+    monkeypatch.setattr(
+        rebuild, "prepare_uc_api_page_for_store", fake_prepare_uc_api_page_for_store
     )
 
     snapshot = await rebuild.default_fetch_snapshot(
@@ -427,6 +448,9 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
     else:
         assert launch_calls == [(playwright, logger)]
         assert prepare_calls == []
+        assert len(uc_prepare_calls) == 1
+        assert uc_prepare_calls[0]["source"] == "order_line_items_rebuild"
+        assert uc_prepare_calls[0]["store"].storage_state_path == tmp_path / "uc.json"
         assert browser.closed is True
 
 
@@ -3768,3 +3792,61 @@ async def test_td_orders_sync_api_primary_uses_shared_source_snapshot_helper(
         calls[0]["report_iframe_src"]
         == "https://reports.quickdrycleaning.com/orders?auth=1"
     )
+
+
+@pytest.mark.asyncio
+async def test_default_fetch_snapshot_uc_home_readiness_failure_is_hard_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    playwright = SimpleNamespace(name="uc-playwright")
+    browser = _FakeBrowser()
+    logger = SimpleNamespace(name="uc-logger")
+
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakeAsyncPlaywright(playwright),
+    )
+
+    async def fake_launch_browser(*, playwright: Any, logger: Any) -> _FakeBrowser:
+        return browser
+
+    async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
+        pytest.fail("collect_gst_orders_via_api must not run after UC readiness failure")
+
+    async def fake_prepare_uc_api_page_for_store(**kwargs: Any) -> Any:
+        return uc_orders_main.UcApiPagePreparationResult(
+            ok=False,
+            message="Home page marker not detected",
+            login_used=True,
+            session_probe_result=False,
+            fallback_login_attempted=True,
+            fallback_login_result=False,
+        )
+
+    monkeypatch.setattr(rebuild, "launch_browser", fake_launch_browser)
+    monkeypatch.setattr(
+        rebuild, "prepare_uc_api_page_for_store", fake_prepare_uc_api_page_for_store
+    )
+    monkeypatch.setattr(
+        rebuild, "collect_gst_orders_via_api", fake_collect_gst_orders_via_api
+    )
+
+    with pytest.raises(RuntimeError, match="Home page marker not detected"):
+        await rebuild.default_fetch_snapshot(
+            source="uc",
+            store=rebuild.RebuildStore(
+                source="uc",
+                store_code="UC001",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(
+                    home_url="https://example.test/home",
+                    orders_url="https://example.test/orders",
+                    storage_state_path=tmp_path / "uc.json",
+                ),
+            ),
+            window=rebuild.RebuildWindow(date(2025, 1, 1), date(2025, 1, 2)),
+            run_id="uc-run",
+            logger=logger,
+        )
+
+    assert browser.closed is True
