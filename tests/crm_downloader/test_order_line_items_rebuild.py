@@ -461,7 +461,10 @@ async def test_default_fetch_snapshot_launches_browser_with_keyword_arguments(
         assert launch_calls == []
         assert len(prepare_calls) == 1
         assert prepare_calls[0]["store"].storage_state_path == tmp_path / "td.json"
-        assert prepare_calls[0]["source_config"].context_source == "order_line_items_rebuild"
+        assert (
+            prepare_calls[0]["source_config"].context_source
+            == "order_line_items_rebuild"
+        )
         assert browser.closed is False
     else:
         assert launch_calls == [(playwright, logger)]
@@ -732,7 +735,6 @@ async def test_default_fetch_snapshot_raises_on_td_unauthorized_response(
             run_id="td-unauthorized",
             logger=logger,
         )
-
 
 
 @pytest.mark.asyncio
@@ -3924,6 +3926,165 @@ async def test_all_selected_windows_zero_in_dry_run_logs_prominent_warning(
     ]
 
 
+@pytest.mark.asyncio
+async def test_uc_zero_snapshot_confirmed_empty_does_not_fail_by_default(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("uc-zero-confirmed-empty")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[],
+            zero_snapshot_class="confirmed_source_empty",
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="uc-zero-confirmed-empty",
+        logger=logger,
+        fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
+    )
+
+    assert len(metrics) == 1
+    final_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("message") == "Completed order_line_items historical rebuild"
+    ]
+    assert final_events[-1]["status"] == "ok"
+    assert final_events[-1]["zero_snapshot_count"] == 1
+    assert final_events[-1]["confirmed_empty_snapshot_count"] == 1
+    assert final_events[-1]["ambiguous_zero_snapshot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_uc_zero_snapshot_ambiguous_causes_final_warning(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("uc-zero-ambiguous")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="uc-zero-ambiguous",
+        logger=logger,
+        fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
+    )
+
+    assert len(metrics) == 1
+    final_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("message") == "Completed order_line_items historical rebuild"
+    ]
+    assert final_events[-1]["status"] == "warning"
+    assert final_events[-1]["zero_snapshot_count"] == 1
+    assert final_events[-1]["ambiguous_zero_snapshot_count"] == 1
+    assert final_events[-1]["confirmed_empty_snapshot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_uc_zero_snapshot_ambiguous_with_fail_on_zero_snapshot_fails(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    with pytest.raises(rebuild.OrderLineItemsZeroSnapshotDetected) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="uc",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            fail_on_zero_snapshot=True,
+            run_id="uc-zero-ambiguous-fail",
+            fetch_snapshot=fetcher,
+            skip_auth_preflight=True,
+        )
+
+    assert exc_info.value.suspicious_window_count == 1
+
+
+@pytest.mark.asyncio
+async def test_uc_nonzero_extract_keeps_final_status_ok(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    logger = _InMemoryLogger("uc-nonzero-ok")
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-UC-OK",
+                    "line_hash": "line-1",
+                    "item_name": "Shirt",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-UC-OK",
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="uc-nonzero-ok",
+        logger=logger,
+        fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
+    )
+
+    assert len(metrics) == 1
+    final_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("message") == "Completed order_line_items historical rebuild"
+    ]
+    assert final_events[-1]["status"] == "ok"
+    assert final_events[-1]["zero_snapshot_count"] == 0
+    assert final_events[-1]["ambiguous_zero_snapshot_count"] == 0
+    assert final_events[-1]["confirmed_empty_snapshot_count"] == 0
+
+
 def test_cli_parser_accepts_fail_on_zero_snapshot() -> None:
     args = rebuild._build_parser().parse_args(
         ["--source", "td", "--dry-run", "--fail-on-zero-snapshot"]
@@ -3933,8 +4094,41 @@ def test_cli_parser_accepts_fail_on_zero_snapshot() -> None:
     assert args.fail_on_zero_snapshot is True
 
 
+def test_cli_fail_on_zero_snapshot_exits_nonzero_for_ambiguous_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_rebuild(**kwargs):
+        assert kwargs["fail_on_zero_snapshot"] is True
+        raise rebuild.OrderLineItemsZeroSnapshotDetected(
+            run_id="cli-ambiguous-zero",
+            zero_window_count=1,
+            expected_window_count=1,
+            suspicious_window_count=1,
+            zero_windows=("uc:UC001:2025-01-01..2025-01-01",),
+        )
+
+    monkeypatch.setattr(rebuild, "run_rebuild", fake_run_rebuild)
+
+    with pytest.raises(SystemExit) as exc_info:
+        rebuild.run(
+            [
+                "--source",
+                "uc",
+                "--start-date",
+                "2025-01-01",
+                "--end-date",
+                "2025-01-01",
+                "--fail-on-zero-snapshot",
+            ]
+        )
+
+    assert exc_info.value.code == 1
+
+
 def test_td_orders_and_rebuild_import_same_source_snapshot_helper() -> None:
-    from app.crm_downloader.td_orders_sync.source_snapshot import fetch_td_source_snapshot
+    from app.crm_downloader.td_orders_sync.source_snapshot import (
+        fetch_td_source_snapshot,
+    )
 
     assert rebuild.fetch_td_source_snapshot is fetch_td_source_snapshot
     assert td_orders_main.fetch_td_source_snapshot is fetch_td_source_snapshot
@@ -3986,27 +4180,29 @@ async def test_td_orders_sync_api_primary_uses_shared_source_snapshot_helper(
     store = td_orders_main.TdStore(
         store_code="TD001", store_name="TD001", cost_center="CC01", sync_config={}
     )
-    _, _, returned_result, request_metadata = await td_orders_main._execute_api_primary_ingestion(
-        context=SimpleNamespace(name="context"),
-        store=store,
-        logger=JsonLogger(stream=io.StringIO(), log_file_path=None),
-        source_mode="api_shadow",
-        run_id="shared-helper-run",
-        run_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        run_start_date=date(2026, 1, 1),
-        run_end_date=date(2026, 1, 1),
-        run_orders=True,
-        run_sales=True,
-        download_dir=tmp_path,
-        summary=td_orders_main.TdOrdersDiscoverySummary(
+    _, _, returned_result, request_metadata = (
+        await td_orders_main._execute_api_primary_ingestion(
+            context=SimpleNamespace(name="context"),
+            store=store,
+            logger=JsonLogger(stream=io.StringIO(), log_file_path=None),
+            source_mode="api_shadow",
             run_id="shared-helper-run",
-            run_env="test",
-            report_date=date(2026, 1, 1),
-            report_end_date=date(2026, 1, 1),
-        ),
-        stored_state_path="/tmp/state.json",
-        report_iframe_src="https://reports.quickdrycleaning.com/orders?auth=1",
-        context_source="iframe",
+            run_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            run_start_date=date(2026, 1, 1),
+            run_end_date=date(2026, 1, 1),
+            run_orders=True,
+            run_sales=True,
+            download_dir=tmp_path,
+            summary=td_orders_main.TdOrdersDiscoverySummary(
+                run_id="shared-helper-run",
+                run_env="test",
+                report_date=date(2026, 1, 1),
+                report_end_date=date(2026, 1, 1),
+            ),
+            stored_state_path="/tmp/state.json",
+            report_iframe_src="https://reports.quickdrycleaning.com/orders?auth=1",
+            context_source="iframe",
+        )
     )
 
     assert returned_result is api_result
@@ -4038,7 +4234,9 @@ async def test_default_fetch_snapshot_uc_home_readiness_failure_is_hard_failure(
         return browser
 
     async def fake_collect_gst_orders_via_api(**kwargs: Any) -> Any:
-        pytest.fail("collect_gst_orders_via_api must not run after UC readiness failure")
+        pytest.fail(
+            "collect_gst_orders_via_api must not run after UC readiness failure"
+        )
 
     async def fake_prepare_uc_api_page_for_store(**kwargs: Any) -> Any:
         return uc_orders_main.UcApiPagePreparationResult(

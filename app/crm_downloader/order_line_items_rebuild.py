@@ -381,13 +381,17 @@ def _count_extract_rows(extract: Any, attribute: str) -> int:
 
 def _uc_diagnostics_from_gst_extract(extract: Any) -> UcSourceSnapshotDiagnostics:
     skipped_order_counters = dict(getattr(extract, "skipped_order_counters", {}) or {})
-    skipped_order_codes = tuple(str(code) for code in (getattr(extract, "skipped_order_codes", []) or []))
+    skipped_order_codes = tuple(
+        str(code) for code in (getattr(extract, "skipped_order_codes", []) or [])
+    )
     return UcSourceSnapshotDiagnostics(
         gst_rows_count=_count_extract_rows(extract, "gst_rows"),
         base_rows_count=_count_extract_rows(extract, "base_rows"),
         order_detail_rows_count=_count_extract_rows(extract, "order_detail_rows"),
         payment_detail_rows_count=_count_extract_rows(extract, "payment_detail_rows"),
-        order_detail_snapshot_rows_count=_count_extract_rows(extract, "order_detail_snapshot_rows"),
+        order_detail_snapshot_rows_count=_count_extract_rows(
+            extract, "order_detail_snapshot_rows"
+        ),
         skipped_order_counters=skipped_order_counters,
         skipped_order_codes=skipped_order_codes,
         booking_lookup_hits=int(getattr(extract, "booking_lookup_hits", 0) or 0),
@@ -398,7 +402,9 @@ def _uc_diagnostics_from_gst_extract(extract: Any) -> UcSourceSnapshotDiagnostic
     )
 
 
-def _gst_api_extract_confirms_zero_rows_for_rebuild(diagnostics: UcSourceSnapshotDiagnostics) -> bool:
+def _gst_api_extract_confirms_zero_rows_for_rebuild(
+    diagnostics: UcSourceSnapshotDiagnostics,
+) -> bool:
     return (
         diagnostics.gst_rows_count == 0
         and diagnostics.base_rows_count == 0
@@ -414,11 +420,16 @@ def _uc_skip_reason_is_source_fetch_failure(reason: str) -> bool:
     return (
         normalized in UC_SOURCE_FAILURE_SKIP_REASONS
         or ("auth" in normalized and ("fail" in normalized or "failure" in normalized))
-        or ("transport" in normalized and ("fail" in normalized or "failure" in normalized))
+        or (
+            "transport" in normalized
+            and ("fail" in normalized or "failure" in normalized)
+        )
     )
 
 
-def _classify_uc_zero_snapshot(diagnostics: UcSourceSnapshotDiagnostics) -> ZeroSnapshotClass:
+def _classify_uc_zero_snapshot(
+    diagnostics: UcSourceSnapshotDiagnostics,
+) -> ZeroSnapshotClass:
     if _gst_api_extract_confirms_zero_rows_for_rebuild(diagnostics):
         return "confirmed_source_empty"
     if any(
@@ -427,6 +438,7 @@ def _classify_uc_zero_snapshot(diagnostics: UcSourceSnapshotDiagnostics) -> Zero
     ):
         return "source_fetch_auth_failure"
     return "unknown_ambiguous_empty"
+
 
 def _garments_health_from_result(result: Any) -> Mapping[str, Any]:
     endpoint_health = getattr(result, "endpoint_health", None) or {}
@@ -917,6 +929,47 @@ async def rebuild_window(
     return metrics
 
 
+def _zero_snapshot_counts(metrics: Sequence[WindowMetrics]) -> dict[str, int]:
+    zero_metrics = [
+        metric for metric in metrics if _is_zero_authoritative_snapshot(metric)
+    ]
+    ambiguous_zero_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class == "unknown_ambiguous_empty"
+    ]
+    confirmed_empty_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class == "confirmed_source_empty"
+    ]
+    source_fetch_failure_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class == "source_fetch_auth_failure"
+    ]
+    suspicious_zero_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class != "confirmed_source_empty"
+    ]
+    return {
+        "zero_snapshot_count": len(zero_metrics),
+        "ambiguous_zero_snapshot_count": len(ambiguous_zero_metrics),
+        "confirmed_empty_snapshot_count": len(confirmed_empty_metrics),
+        "source_fetch_failure_zero_snapshot_count": len(source_fetch_failure_metrics),
+        "suspicious_zero_snapshot_count": len(suspicious_zero_metrics),
+    }
+
+
+def _final_rebuild_status(
+    *, missing_window_count: int, suspicious_zero_snapshot_count: int
+) -> str:
+    if missing_window_count or suspicious_zero_snapshot_count:
+        return "warning"
+    return "ok"
+
+
 def _storage_state_path(store: RebuildStore) -> Path | None:
     raw_path = getattr(store.raw_store, "storage_state_path", None)
     return Path(raw_path) if raw_path else None
@@ -986,7 +1039,9 @@ async def default_fetch_snapshot(
             zero_snapshot_class = _classify_uc_zero_snapshot(diagnostics)
             return SourceSnapshot(
                 line_item_rows=list(getattr(extract, "order_detail_rows", []) or []),
-                order_snapshots=list(getattr(extract, "order_detail_snapshot_rows", []) or []),
+                order_snapshots=list(
+                    getattr(extract, "order_detail_snapshot_rows", []) or []
+                ),
                 zero_snapshot_class=zero_snapshot_class,
                 source_fetch_error_class=(
                     zero_snapshot_class
@@ -1751,6 +1806,7 @@ async def run_rebuild(
     logger: JsonLogger | None = None,
     fetch_snapshot: SnapshotFetcher = default_fetch_snapshot,
     skip_auth_preflight: bool = False,
+    allow_ambiguous_empty: bool = False,
 ) -> list[WindowMetrics]:
     if resume_run_id and not resume:
         raise ValueError("resume_run_id requires resume=True")
@@ -1815,6 +1871,7 @@ async def run_rebuild(
         max_source_window_days=30,
         dry_run=dry_run,
         fail_on_zero_snapshot=fail_on_zero_snapshot,
+        allow_ambiguous_empty=allow_ambiguous_empty,
         resume=resume,
         resume_scope="source_store_window" if resume else None,
         resume_run_id_filter=resume_run_id,
@@ -2033,10 +2090,15 @@ async def run_rebuild(
         ],
         dry_run=dry_run,
     )
+    zero_counts = _zero_snapshot_counts(metrics)
+    final_status = _final_rebuild_status(
+        missing_window_count=len(missing_windows),
+        suspicious_zero_snapshot_count=zero_counts["suspicious_zero_snapshot_count"],
+    )
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
-        status="ok" if not missing_windows else "warning",
+        status=final_status,
         message="Completed order_line_items historical rebuild",
         run_id=run_id,
         window_count=len(metrics),
@@ -2044,6 +2106,8 @@ async def run_rebuild(
         missing_window_count=len(missing_windows),
         dry_run=dry_run,
         resume=resume,
+        allow_ambiguous_empty=allow_ambiguous_empty,
+        **zero_counts,
     )
     if missing_windows:
         compact_missing_windows = tuple(
@@ -2066,6 +2130,19 @@ async def run_rebuild(
         for metric in zero_metrics
         if metric.zero_snapshot_class != "confirmed_source_empty"
     ]
+    ambiguous_zero_metrics = [
+        metric
+        for metric in zero_metrics
+        if metric.zero_snapshot_class == "unknown_ambiguous_empty"
+    ]
+    full_live_ambiguous_zero_requires_override = (
+        not dry_run
+        and "uc" in sources
+        and not store_codes
+        and start_date is None
+        and bool(ambiguous_zero_metrics)
+        and not allow_ambiguous_empty
+    )
     all_selected_windows_zero = bool(metrics) and len(zero_metrics) == len(metrics)
     if dry_run and all_selected_windows_zero:
         zero_windows = tuple(
@@ -2077,9 +2154,9 @@ async def run_rebuild(
             )
             for metric in zero_metrics
         )
-        should_fail_zero_snapshot = fail_on_zero_snapshot and bool(
-            suspicious_zero_metrics
-        )
+        should_fail_zero_snapshot = (
+            fail_on_zero_snapshot and bool(suspicious_zero_metrics)
+        ) or full_live_ambiguous_zero_requires_override
         log_event(
             logger=logger,
             phase="order_line_items_rebuild_zero_snapshot_summary",
@@ -2091,6 +2168,12 @@ async def run_rebuild(
             expected_window_count=len(expected_windows),
             zero_window_count=len(zero_metrics),
             suspicious_zero_window_count=len(suspicious_zero_metrics),
+            ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
+            confirmed_empty_snapshot_count=zero_counts[
+                "confirmed_empty_snapshot_count"
+            ],
+            full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
+            allow_ambiguous_empty=allow_ambiguous_empty,
             zero_windows=[
                 {
                     "source": metric.source,
@@ -2111,7 +2194,9 @@ async def run_rebuild(
                 suspicious_window_count=len(suspicious_zero_metrics),
                 zero_windows=zero_windows,
             )
-    elif fail_on_zero_snapshot and suspicious_zero_metrics:
+    elif (
+        fail_on_zero_snapshot and suspicious_zero_metrics
+    ) or full_live_ambiguous_zero_requires_override:
         zero_windows = tuple(
             _compact_window_identifier(
                 metric.source,
@@ -2132,6 +2217,12 @@ async def run_rebuild(
             expected_window_count=len(expected_windows),
             zero_window_count=len(zero_metrics),
             suspicious_zero_window_count=len(suspicious_zero_metrics),
+            ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
+            confirmed_empty_snapshot_count=zero_counts[
+                "confirmed_empty_snapshot_count"
+            ],
+            full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
+            allow_ambiguous_empty=allow_ambiguous_empty,
             zero_windows=[
                 {
                     "source": metric.source,
@@ -2197,6 +2288,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--allow-ambiguous-empty",
+        action="store_true",
+        help=(
+            "Operator override for live UC rebuilds when zero authoritative-order "
+            "windows are classified as unknown_ambiguous_empty; final summaries "
+            "still report the ambiguity."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -2256,6 +2356,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
             window_size_days=args.window_size,
             dry_run=args.dry_run,
             fail_on_zero_snapshot=args.fail_on_zero_snapshot,
+            allow_ambiguous_empty=args.allow_ambiguous_empty,
             resume=args.resume,
             resume_run_id=args.resume_run_id,
             run_id=args.run_id,
