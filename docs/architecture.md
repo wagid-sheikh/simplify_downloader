@@ -113,10 +113,33 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 
 ### 7) Notifications and operational messaging
 - `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
-- SMTP config values are loaded from `app.config`.
-- Supports diagnostics command (`python -m app notifications test ...`).
+- SMTP config values are loaded from `app.config`. The sender currently supports plain SMTP and STARTTLS (`REPORT_EMAIL_USE_TLS=true`); it does not use SMTP SSL-on-connect for port 465.
+- Supports diagnostics commands (`python -m app notifications smtp-check` and `python -m app notifications test ...`).
 - Supports DB-driven dashboard store-scope diagnostics (`python -m app stores diagnose`)
   for ETL-enabled, report-enabled, and report-eligible store counts and codes.
+
+
+### TD leads notification SMTP diagnostics
+
+Use these from the deployment host/container when `td_crm_leads_sync` completes but email delivery is missing or delayed:
+
+1. Inspect sanitized runtime SMTP config and verify raw TCP reachability outside the mail-sending code:
+   ```bash
+   poetry run python -m app notifications smtp-check
+   ```
+   This prints host, port, sender, username, STARTTLS/plain mode, password presence, connect timeout, retry settings, and a raw TCP connect result without exposing the SMTP password.
+2. Validate TD leads notification metadata for an existing persisted run before sending:
+   ```bash
+   poetry run python -m app notifications test --pipeline td_crm_leads_sync --run-id <run_id>
+   ```
+3. Validate actual notification delivery for that same existing run only after confirming recipients/templates are correct:
+   ```bash
+   poetry run python -m app notifications test --pipeline td_crm_leads_sync --run-id <run_id> --send
+   ```
+
+Provider checks are still operator-owned because they depend on the configured SMTP account and network perimeter. Confirm the provider's required port and encryption mode, whether it requires an app password instead of the mailbox password, and whether the deployment host's public egress IP must be allowlisted. If the provider requires SSL-on-connect on port 465, change provider settings to a STARTTLS-capable endpoint such as port 587 or intentionally add SMTP_SSL support in code and tests.
+
+TD leads notification delivery is intentionally best-effort after run-summary persistence: SMTP/auth/network failures are logged as notification warnings and must not convert a successfully completed leads sync into a failed pipeline unless product explicitly changes that contract.
 
 ## Request / run flow (high level)
 

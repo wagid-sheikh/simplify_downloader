@@ -3230,16 +3230,29 @@ async def main(
         reporting_schema_errors=reporting_schema_errors,
     )
     if persisted:
-        notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
-        log_event(
-            logger=logger,
-            phase="notifications",
-            message="TD leads notification summary",
-            run_id=resolved_run_id,
-            emails_planned=notification_result.get("emails_planned"),
-            emails_sent=notification_result.get("emails_sent"),
-            notification_errors=notification_result.get("errors"),
-        )
+        try:
+            notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            log_event(
+                logger=logger,
+                phase="notifications",
+                message="TD leads notification summary",
+                run_id=resolved_run_id,
+                emails_planned=notification_result.get("emails_planned"),
+                emails_sent=notification_result.get("emails_sent"),
+                notification_errors=notification_result.get("errors"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive isolation for operator email outages
+            # Email delivery is an operator side effect, not a TD leads data contract.
+            # Keep a successful sync successful unless product explicitly changes that policy.
+            log_event(
+                logger=logger,
+                phase="notifications",
+                status="warning",
+                message="TD leads notification dispatch failed after run summary persistence; continuing",
+                run_id=resolved_run_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     overall_status = summary.overall_status()
     if overall_status == "failed":
