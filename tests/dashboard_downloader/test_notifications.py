@@ -441,6 +441,216 @@ def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
     assert "pages=4/6 completed" in body_html
     assert "timeouts=1; retries=2" in body_html
 
+
+
+def _diagnostic_smtp_config():
+    from app.dashboard_downloader.notifications import SmtpConfig
+
+    return SmtpConfig(
+        host="smtp.example.test",
+        port=587,
+        sender="sender@example.test",
+        username="smtp-user",
+        password="secret-token",
+        use_tls=True,
+    )
+
+
+def _diagnostic_email_plan():
+    from app.dashboard_downloader.notifications import EmailPlan
+
+    return EmailPlan(
+        profile_code="run_summary",
+        scope="run",
+        store_code=None,
+        subject="Subject",
+        body="Body",
+        to=["ops@example.test"],
+        cc=[],
+        bcc=[],
+        attachments=[],
+    )
+
+
+def _set_retry_config(monkeypatch, *, max_attempts=1, transient_exception_types=()):
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import NotificationSendRetryConfig
+
+    monkeypatch.setattr(
+        notifications,
+        "_load_notification_send_retry_config",
+        lambda: NotificationSendRetryConfig(
+            max_attempts=max_attempts,
+            initial_delay_seconds=0,
+            max_delay_seconds=0,
+            transient_exception_types=transient_exception_types,
+        ),
+    )
+
+
+def _assert_failure_diagnostics(failure, *, stage, exception_type, attempt_count=1):
+    from app.dashboard_downloader import notifications
+
+    assert failure is not None
+    assert failure.final_stage == stage
+    assert failure.exception_type == exception_type
+    assert failure.final_exception_type == exception_type
+    assert failure.attempt_count == attempt_count
+    assert failure.smtp_host == "smtp.example.test"
+    assert failure.smtp_port == 587
+    assert failure.use_tls is True
+    assert failure.connect_timeout_seconds == notifications.SMTP_CONNECT_TIMEOUT_SECONDS
+    assert failure.attempts is not None
+    assert len(failure.attempts) == attempt_count
+    assert failure.attempts[-1]["stage"] == stage
+    assert failure.attempts[-1]["exception_type"] == exception_type
+    assert isinstance(failure.attempts[-1]["elapsed_ms"], int)
+    assert failure.attempts[-1]["elapsed_ms"] >= 0
+    assert "smtp-user" not in failure.exception_summary
+    assert "secret-token" not in failure.exception_summary
+    assert "sender@example.test" not in failure.exception_summary
+    assert "ops@example.test" not in failure.exception_summary
+    for attempt in failure.attempts:
+        assert "smtp-user" not in attempt["exception_summary"]
+        assert "secret-token" not in attempt["exception_summary"]
+        assert "sender@example.test" not in attempt["exception_summary"]
+        assert "ops@example.test" not in attempt["exception_summary"]
+
+
+def test_send_email_diagnostics_connect_timeout_stage(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import _send_email
+
+    class TimeoutSMTP:
+        def __init__(self, *_args, **_kwargs):
+            raise TimeoutError(
+                "timed out for smtp-user secret-token sender@example.test ops@example.test"
+            )
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", TimeoutSMTP)
+    _set_retry_config(
+        monkeypatch,
+        max_attempts=2,
+        transient_exception_types=(TimeoutError,),
+    )
+
+    result = _send_email(_diagnostic_smtp_config(), _diagnostic_email_plan())
+
+    assert result.sent is False
+    _assert_failure_diagnostics(
+        result.failure,
+        stage="connect",
+        exception_type="TimeoutError",
+        attempt_count=2,
+    )
+    assert [attempt["attempt"] for attempt in result.failure.attempts] == [1, 2]
+
+
+def test_send_email_diagnostics_starttls_eof_stage(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import _send_email
+
+    class EofStarttlsSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            raise notifications.ssl.SSLEOFError(
+                "EOF for smtp-user secret-token sender@example.test ops@example.test"
+            )
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", EofStarttlsSMTP)
+    _set_retry_config(monkeypatch)
+
+    result = _send_email(_diagnostic_smtp_config(), _diagnostic_email_plan())
+
+    assert result.sent is False
+    _assert_failure_diagnostics(
+        result.failure,
+        stage="starttls",
+        exception_type="SSLEOFError",
+    )
+
+
+def test_send_email_diagnostics_login_auth_failure_stage(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import _send_email
+
+    class AuthFailingSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            return None
+
+        def login(self, _username, _password):
+            raise notifications.smtplib.SMTPAuthenticationError(
+                535, b"bad credentials for smtp-user secret-token ops@example.test"
+            )
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", AuthFailingSMTP)
+    _set_retry_config(monkeypatch)
+
+    result = _send_email(_diagnostic_smtp_config(), _diagnostic_email_plan())
+
+    assert result.sent is False
+    _assert_failure_diagnostics(
+        result.failure,
+        stage="login",
+        exception_type="SMTPAuthenticationError",
+    )
+
+
+def test_send_email_diagnostics_send_failure_stage(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import _send_email
+
+    class SendFailingSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            return None
+
+        def login(self, _username, _password):
+            return None
+
+        def send_message(self, _message, to_addrs):
+            raise notifications.smtplib.SMTPException(
+                f"failed for {to_addrs[0]} smtp-user secret-token sender@example.test"
+            )
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", SendFailingSMTP)
+    _set_retry_config(monkeypatch)
+
+    result = _send_email(_diagnostic_smtp_config(), _diagnostic_email_plan())
+
+    assert result.sent is False
+    _assert_failure_diagnostics(
+        result.failure,
+        stage="send_message",
+        exception_type="SMTPException",
+    )
+
+
 def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
     from app.dashboard_downloader import notifications
     from app.dashboard_downloader.notifications import EmailPlan, SmtpConfig, _send_email
@@ -657,8 +867,25 @@ async def test_send_notifications_records_smtp_exception(monkeypatch) -> None:
     assert error["recipient_count"] == 1
     assert error["recipients"] == ["o***@example.test"]
     assert error["exception_type"] == "SMTPException"
+    assert error["final_stage"] == "send_message"
+    assert error["smtp_host"] == "smtp.example.test"
+    assert error["smtp_port"] == 587
+    assert error["use_tls"] is False
+    assert error["connect_timeout_seconds"] == notifications.SMTP_CONNECT_TIMEOUT_SECONDS
+    assert error["attempts"] == [
+        {
+            "attempt": 1,
+            "stage": "send_message",
+            "exception_type": "SMTPException",
+            "exception_summary": error["attempts"][0]["exception_summary"],
+            "elapsed_ms": error["attempts"][0]["elapsed_ms"],
+        }
+    ]
+    assert isinstance(error["attempts"][0]["elapsed_ms"], int)
     assert "ops@example.test" not in error["exception_summary"]
     assert "secret-token" not in error["exception_summary"]
+    assert "ops@example.test" not in error["attempts"][0]["exception_summary"]
+    assert "secret-token" not in error["attempts"][0]["exception_summary"]
 
 
 @pytest.mark.asyncio

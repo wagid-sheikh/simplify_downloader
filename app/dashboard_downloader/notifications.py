@@ -309,6 +309,12 @@ class EmailSendFailure:
     exception_summary: str
     attempt_count: int = 1
     final_exception_type: str | None = None
+    final_stage: str | None = None
+    attempts: list[dict[str, Any]] | None = None
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    use_tls: bool | None = None
+    connect_timeout_seconds: int | None = None
 
 
 @dataclass
@@ -1626,6 +1632,8 @@ def _email_send_failure(
     exc: Exception,
     *,
     attempt_count: int,
+    final_stage: str | None = None,
+    attempts: Sequence[Mapping[str, Any]] | None = None,
 ) -> EmailSendFailure:
     exception_type = type(exc).__name__
     return EmailSendFailure(
@@ -1637,6 +1645,12 @@ def _email_send_failure(
         exception_summary=_sanitize_exception_summary(exc, config=config, recipients=recipients),
         attempt_count=attempt_count,
         final_exception_type=exception_type,
+        final_stage=final_stage,
+        attempts=[dict(attempt) for attempt in attempts] if attempts is not None else None,
+        smtp_host=config.host,
+        smtp_port=config.port,
+        use_tls=config.use_tls,
+        connect_timeout_seconds=SMTP_CONNECT_TIMEOUT_SECONDS,
     )
 
 
@@ -1708,6 +1722,7 @@ def probe_smtp_tcp_connectivity(timeout_seconds: float | None = None) -> dict[st
 
 
 def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
+    stage = "build_message"
     message = EmailMessage()
     message["Subject"] = plan.subject
     message["From"] = config.sender
@@ -1740,6 +1755,12 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
             exception_summary="No recipients resolved for notification email",
             attempt_count=1,
             final_exception_type="NoRecipients",
+            final_stage=stage,
+            attempts=[],
+            smtp_host=config.host,
+            smtp_port=config.port,
+            use_tls=config.use_tls,
+            connect_timeout_seconds=SMTP_CONNECT_TIMEOUT_SECONDS,
         )
         return EmailSendResult(sent=False, failure=failure)
     retry_config = _load_notification_send_retry_config()
@@ -1747,22 +1768,35 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
         retry_config.initial_delay_seconds, retry_config.max_delay_seconds
     )
     attempt = 0
+    attempt_diagnostics: list[dict[str, Any]] = []
     while attempt < retry_config.max_attempts:
         attempt += 1
+        attempt_started = time.monotonic()
         try:
-            if config.use_tls:
-                with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
+            stage = "connect"
+            with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
+                if config.use_tls:
+                    stage = "starttls"
                     client.starttls()
-                    if config.username and config.password:
-                        client.login(config.username, config.password)
-                    client.send_message(message, to_addrs=recipients)
-            else:
-                with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
-                    if config.username and config.password:
-                        client.login(config.username, config.password)
-                    client.send_message(message, to_addrs=recipients)
+                if config.username and config.password:
+                    stage = "login"
+                    client.login(config.username, config.password)
+                stage = "send_message"
+                client.send_message(message, to_addrs=recipients)
             return EmailSendResult(sent=True)
         except Exception as exc:
+            elapsed_ms = int((time.monotonic() - attempt_started) * 1000)
+            attempt_diagnostics.append(
+                {
+                    "attempt": attempt,
+                    "stage": stage,
+                    "exception_type": type(exc).__name__,
+                    "exception_summary": _sanitize_exception_summary(
+                        exc, config=config, recipients=recipients
+                    ),
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
             is_transient = bool(retry_config.transient_exception_types) and isinstance(
                 exc, retry_config.transient_exception_types
             )
@@ -1774,13 +1808,20 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
                         "profile": plan.profile_code,
                         "store_code": plan.store_code,
                         "attempt_count": attempt,
+                        "failed_stage": stage,
                         "will_retry": False,
                     },
                 )
                 return EmailSendResult(
                     sent=False,
                     failure=_email_send_failure(
-                        config, plan, recipients, exc, attempt_count=attempt
+                        config,
+                        plan,
+                        recipients,
+                        exc,
+                        attempt_count=attempt,
+                        final_stage=stage,
+                        attempts=attempt_diagnostics,
                     ),
                 )
             logger.warning(
@@ -1790,6 +1831,7 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
                     "store_code": plan.store_code,
                     "attempt": attempt,
                     "max_attempts": retry_config.max_attempts,
+                    "failed_stage": stage,
                     "exception_type": type(exc).__name__,
                 },
             )
@@ -3366,6 +3408,12 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
                         "exception_summary": "Notification email send failed",
                         "attempt_count": 1,
                         "final_exception_type": "SendFailed",
+                        "final_stage": None,
+                        "attempts": [],
+                        "smtp_host": smtp_config.host,
+                        "smtp_port": smtp_config.port,
+                        "use_tls": smtp_config.use_tls,
+                        "connect_timeout_seconds": SMTP_CONNECT_TIMEOUT_SECONDS,
                     }
                 )
             continue
