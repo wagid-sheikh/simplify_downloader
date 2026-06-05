@@ -2245,27 +2245,67 @@ async def test_ensure_scheduler_page_intercepted_click_uses_controlled_direct_ur
 
 
 @pytest.mark.asyncio
-async def test_ensure_scheduler_page_modal_dismissal_and_direct_url_fallback_both_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_open_scheduler_page_once_blocks_store_when_overdue_orders_modal_remains_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     page = _FakePage(selectors_present={"#achrPickUp", td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR})
-    page.modal_dismissal_succeeds = False
-    page.fail_goto = True
     events: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        "app.crm_downloader.td_leads_sync.main.log_event",
-        lambda **kwargs: events.append(kwargs),
-    )
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
 
-    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+    async def _fake_dismiss_overdue_orders_modal(page):
+        return "escape_key", True
 
-    assert ok is False
-    assert page.clicked == []
-    assert page.goto_urls == [td_leads_main._scheduler_url_for_store("A668")] * td_leads_main.SCHEDULER_NAVIGATION_MAX_ATTEMPTS
-    warning = next(event for event in events if event.get("status") == "warning")
-    assert warning["store_code"] == "A668"
-    assert warning["modal_selector"] == td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR
-    assert warning["attempted_dismissal_action"] == "escape_key"
-    assert warning["fallback_action"] == td_leads_main.SCHEDULER_DIRECT_URL_FALLBACK_ACTION
-    assert any(event.get("status") == "error" for event in events)
+    monkeypatch.setattr(td_leads_main, "_dismiss_overdue_orders_modal", _fake_dismiss_overdue_orders_modal)
+
+    with pytest.raises(td_leads_main.TdLeadsStoreBlockedByOverdueOrdersModalError) as exc_info:
+        await td_leads_main._open_scheduler_page_once(
+            page,
+            store=SimpleNamespace(store_code="A668"),
+            logger=SimpleNamespace(),
+            attempt=1,
+        )
+
+    assert exc_info.value.store_code == "A668"
+    assert exc_info.value.modal_selector == td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR
+    assert exc_info.value.attempted_dismissal_action == "escape_key"
+    assert page.goto_urls == []
+    assert page.waited_url_patterns == []
+    assert page.expect_navigation_calls == 0
+    event = next(item for item in events if item.get("message") == "Overdue-orders modal blocks Pickup Scheduler; skipping store")
+    assert event["status"] == "error"
+    assert event["phase"] == "navigation"
+    assert event["store_code"] == "A668"
+    assert event["modal_selector"] == td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR
+    assert event["attempted_dismissal_action"] == "escape_key"
+    assert event["operator_action"] == td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_does_not_retry_overdue_orders_modal_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp", td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR})
+    attempts: list[int] = []
+
+    async def _fake_open_scheduler_page_once(page, *, store, logger, attempt):
+        attempts.append(attempt)
+        raise td_leads_main.TdLeadsStoreBlockedByOverdueOrdersModalError(
+            store_code=store.store_code,
+            attempted_dismissal_action="escape_key",
+        )
+
+    monkeypatch.setattr(td_leads_main, "_open_scheduler_page_once", _fake_open_scheduler_page_once)
+
+    with pytest.raises(td_leads_main.TdLeadsStoreBlockedByOverdueOrdersModalError):
+        await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert attempts == [1]
+    assert page.reload_calls == 0
+    assert td_leads_main._is_transient_scheduler_navigation_failure(
+        td_leads_main.TdLeadsStoreBlockedByOverdueOrdersModalError(
+            store_code="A668", attempted_dismissal_action="escape_key"
+        )
+    ) is False
 
 
 @pytest.mark.asyncio
@@ -4813,6 +4853,115 @@ def _patch_successful_retry_store_steps(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(td_leads_main, "_collect_status_rows", lambda *args, **kwargs: asyncio.sleep(0, result=([], [])))
     monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+
+
+@pytest.mark.asyncio
+async def test_run_store_records_warning_when_overdue_orders_modal_blocks_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    events: list[dict[str, object]] = []
+    lifecycle: list[str] = []
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            lifecycle.append("close")
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            lifecycle.append("create")
+            return _FakeContext()
+
+    async def _blocked_scheduler_page(*args, **kwargs):
+        raise td_leads_main.TdLeadsStoreBlockedByOverdueOrdersModalError(
+            store_code="A200",
+            attempted_dismissal_action="escape_key",
+        )
+
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=None))
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", _blocked_scheduler_page)
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", lambda *args, **kwargs: pytest.fail("scrape should not run"))
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: pytest.fail("artifact should not be written"))
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    result = await td_leads_main._run_store(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(
+            store_code="A200",
+            storage_state_path=tmp_path / "storage" / "A200.json",
+            reports_nav_selector="#nav",
+        ),
+        run_id="run-modal-block",
+        run_env="test",
+        logger=SimpleNamespace(info=lambda **kwargs: None),
+    )
+
+    assert result.status == "warning"
+    assert result.message == "Store blocked by overdue-orders modal (#pnlOrderOverDuePopup); Pickup Scheduler not scraped"
+    assert result.rows == []
+    assert result.status_counts == {}
+    assert result.ingested_rows == 0
+    assert result.warnings
+    assert "#pnlOrderOverDuePopup" in result.warnings[0]
+    assert td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION in result.warnings[0]
+    assert result.task_stub == {
+        "status": "open",
+        "type": td_leads_main.TD_LEADS_OVERDUE_ORDERS_TASK_TYPE,
+        "store_code": "A200",
+        "modal_selector": "#pnlOrderOverDuePopup",
+        "attempted_dismissal_action": "escape_key",
+        "operator_action": td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION,
+        "message": "Store blocked by overdue-orders modal (#pnlOrderOverDuePopup); Pickup Scheduler not scraped",
+    }
+    assert lifecycle == ["create", "close"]
+    assert any(event.get("message") == "TD leads store skipped due to overdue-orders modal" for event in events)
+
+
+def test_td_leads_summary_and_tables_surface_overdue_orders_modal_action_item() -> None:
+    result = StoreLeadResult(
+        store_code="A200",
+        status="warning",
+        message="Store blocked by overdue-orders modal (#pnlOrderOverDuePopup); Pickup Scheduler not scraped",
+        warnings=[
+            "store_blocked_by_overdue_orders_modal:#pnlOrderOverDuePopup:operator_action="
+            + td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION
+        ],
+        task_stub={
+            "status": "open",
+            "type": td_leads_main.TD_LEADS_OVERDUE_ORDERS_TASK_TYPE,
+            "store_code": "A200",
+            "modal_selector": "#pnlOrderOverDuePopup",
+            "attempted_dismissal_action": "escape_key",
+            "operator_action": td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION,
+            "message": "Store blocked by overdue-orders modal (#pnlOrderOverDuePopup); Pickup Scheduler not scraped",
+        },
+    )
+    summary = LeadsRunSummary(
+        run_id="run-modal-block",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={"A200": result},
+    )
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:00:01")
+    tables_html = _build_td_leads_tables_html(summary=summary)
+    record = summary.build_record(finished_at=datetime(2026, 5, 1, 0, 0, 1, tzinfo=timezone.utc))
+
+    for rendered_html in (summary_html, tables_html, record["metrics_json"]["summary_html"], record["metrics_json"]["lead_tables_html"]):
+        assert "A200" in rendered_html
+        assert "#pnlOrderOverDuePopup" in rendered_html
+        assert td_leads_main.TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION in rendered_html
+    assert record["overall_status"] == "success_with_warnings"
+    assert record["metrics_json"]["task_stubs"][0]["modal_selector"] == "#pnlOrderOverDuePopup"
 
 
 @pytest.mark.asyncio

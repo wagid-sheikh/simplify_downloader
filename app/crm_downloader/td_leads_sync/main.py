@@ -181,6 +181,34 @@ class TdLeadsPhaseTimeoutError(TimeoutError):
         super().__init__(f"TD leads phase {phase_name!r} exceeded {timeout_seconds}s timeout")
 
 
+TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION = (
+    "Clear overdue-orders popup for this store in CRM, then rerun TD leads sync"
+)
+TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE = (
+    f"Store blocked by overdue-orders modal ({OVERDUE_ORDERS_MODAL_SELECTOR}); Pickup Scheduler not scraped"
+)
+TD_LEADS_OVERDUE_ORDERS_TASK_TYPE = "td_leads_store_blocked_by_overdue_orders_modal"
+
+
+class TdLeadsStoreBlockedByOverdueOrdersModalError(RuntimeError):
+    """Raised when CRM blocks Pickup Scheduler with the overdue-orders modal for one store."""
+
+    def __init__(
+        self,
+        *,
+        store_code: str,
+        attempted_dismissal_action: str,
+        modal_selector: str = OVERDUE_ORDERS_MODAL_SELECTOR,
+        operator_action: str = TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION,
+    ) -> None:
+        self.store_code = store_code
+        self.modal_selector = modal_selector
+        self.attempted_dismissal_action = attempted_dismissal_action
+        self.operator_action = operator_action
+        self.message = TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE
+        super().__init__(self.message)
+
+
 def _timeout_seconds(config_key: str, default: int) -> int:
     return int(getattr(config, config_key, default))
 
@@ -1227,17 +1255,85 @@ def _td_order_metrics_source_marker(*, store_code: str, pickup_no: str, source: 
     return f"<!-- order_metrics_source store={safe_store_code} pickup_no={safe_pickup_no} source={safe_source} -->"
 
 
+
+def _td_leads_overdue_orders_warning(exc: TdLeadsStoreBlockedByOverdueOrdersModalError) -> str:
+    return (
+        f"store_blocked_by_overdue_orders_modal:{exc.modal_selector}:"
+        f"attempted_dismissal_action={exc.attempted_dismissal_action}:"
+        f"operator_action={exc.operator_action}"
+    )
+
+
+def _td_leads_overdue_orders_task_stub(exc: TdLeadsStoreBlockedByOverdueOrdersModalError) -> dict[str, Any]:
+    return {
+        "status": "open",
+        "type": TD_LEADS_OVERDUE_ORDERS_TASK_TYPE,
+        "store_code": exc.store_code,
+        "modal_selector": exc.modal_selector,
+        "attempted_dismissal_action": exc.attempted_dismissal_action,
+        "operator_action": exc.operator_action,
+        "message": exc.message,
+    }
+
+
+def _td_leads_store_action_items(result: "StoreLeadResult") -> list[dict[str, Any]]:
+    task_stub = result.task_stub if isinstance(result.task_stub, Mapping) else {}
+    if task_stub.get("type") != TD_LEADS_OVERDUE_ORDERS_TASK_TYPE:
+        return []
+    return [
+        {
+            "store_code": result.store_code,
+            "modal_selector": str(task_stub.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
+            "operator_action": str(task_stub.get("operator_action") or TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION),
+            "message": str(task_stub.get("message") or result.message or TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE),
+            "attempted_dismissal_action": str(task_stub.get("attempted_dismissal_action") or "unknown"),
+        }
+    ]
+
+
+def _td_leads_summary_action_items(summary: "LeadsRunSummary") -> list[dict[str, Any]]:
+    action_items: list[dict[str, Any]] = []
+    for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
+        action_items.extend(_td_leads_store_action_items(result))
+    return action_items
+
+
+def _build_td_leads_store_action_items_html(*, action_items: Sequence[Mapping[str, Any]]) -> str:
+    rows = [
+        [
+            str(item.get("store_code") or "None"),
+            str(item.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
+            str(item.get("message") or TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE),
+            str(item.get("operator_action") or TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION),
+        ]
+        for item in action_items
+        if isinstance(item, Mapping)
+    ]
+    if not rows:
+        return ""
+    return _build_td_leads_section_table_html(
+        section_label=f"Store action items ({len(rows)})",
+        headers=("Store Code", "Modal Selector", "Issue", "Operator Action"),
+        rows=rows,
+    )
+
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
         return "<div><p><em>No row-level lead details captured for this run.</em></p></div>"
 
-    if all(not _td_leads_store_has_changes(result) for result in ordered_results):
+    action_items = _td_leads_summary_action_items(summary)
+    if all(not _td_leads_store_has_changes(result) for result in ordered_results) and not action_items:
         return "<div><p><em>No new leads/status changed across all stores.</em></p></div>"
 
     blocks: list[str] = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Lead details by store</h4>"]
+    blocks.append(_build_td_leads_store_action_items_html(action_items=action_items))
     for result in ordered_results:
         blocks.append(f"<h4 style='margin:16px 0 8px 0;'>Store {html.escape(result.store_code)}</h4>")
+
+        store_action_items = _td_leads_store_action_items(result)
+        if store_action_items:
+            blocks.append(_build_td_leads_store_action_items_html(action_items=store_action_items))
 
         if not _td_leads_store_has_changes(result):
             blocks.append("<p><em>No new leads/status changed.</em></p>")
@@ -1649,6 +1745,7 @@ def _build_td_leads_summary_html(
         _build_td_existing_cancelled_current_state_html(rows_payload=existing_cancelled_rows)
         if reporting_mode in {"meeting", "day_end"}
         else "",
+        _build_td_leads_store_action_items_html(action_items=_td_leads_summary_action_items(summary)),
         _build_td_leads_tables_html(summary=summary),
         _build_td_action_required_html(daily_reporting=daily_reporting),
         "</div>",
@@ -2082,21 +2179,22 @@ async def _open_scheduler_page_once(page: Page, *, store: TdStore, logger: JsonL
             else:
                 dismissal_error = None
             if modal_remains_visible:
-                branch_used = "fallback_direct_url"
-                fallback_url_navigation_used = True
+                branch_used = "overdue_orders_modal_blocked"
                 log_event(
                     logger=logger,
                     phase="navigation",
-                    status="warning",
-                    message="Overdue-orders modal remained visible; using controlled URL fallback",
+                    status="error",
+                    message="Overdue-orders modal blocks Pickup Scheduler; skipping store",
                     store_code=store.store_code,
                     modal_selector=OVERDUE_ORDERS_MODAL_SELECTOR,
                     attempted_dismissal_action=dismissal_action,
-                    fallback_action=SCHEDULER_DIRECT_URL_FALLBACK_ACTION,
+                    operator_action=TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION,
                     error=dismissal_error,
                 )
-                await _navigate_directly()
-                click_selector = None
+                raise TdLeadsStoreBlockedByOverdueOrdersModalError(
+                    store_code=store.store_code,
+                    attempted_dismissal_action=dismissal_action,
+                )
         elif entrypoint_available:
             for selector in SCHEDULER_FALLBACK_SELECTORS:
                 if await page.locator(selector).count():
@@ -2157,6 +2255,8 @@ async def _open_scheduler_page_once(page: Page, *, store: TdStore, logger: JsonL
 
 
 def _is_transient_scheduler_navigation_failure(exc: Exception) -> bool:
+    if isinstance(exc, TdLeadsStoreBlockedByOverdueOrdersModalError):
+        return False
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
         return True
     if not isinstance(exc, PlaywrightError):
@@ -2202,6 +2302,8 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 log_event(logger=logger, phase="scheduler_navigation", message="phase_completed", run_id=run_id, store_code=store.store_code, duration_ms=int((time.perf_counter() - started_at) * 1000))
             return True
         except Exception as exc:
+            if isinstance(exc, TdLeadsStoreBlockedByOverdueOrdersModalError):
+                raise
             if isinstance(exc, asyncio.TimeoutError):
                 log_event(logger=logger, phase="scheduler_navigation_attempt", status="error", message="phase_timeout", run_id=run_id, store_code=store.store_code, phase_name="scheduler_navigation_attempt", timeout_seconds=SCHEDULER_NAVIGATION_ATTEMPT_TIMEOUT_SECONDS, duration_ms=int((time.perf_counter() - started_at) * 1000))
             failure_class = exc.__class__.__name__
@@ -2843,6 +2945,24 @@ async def _run_store(
             ingested_rows=result.ingested_rows,
             pickup_created_at_null_count=result.pickup_created_at_null_count,
             pickup_created_at_null_counts_by_bucket=result.pickup_created_at_null_counts_by_bucket,
+        )
+        return result
+    except TdLeadsStoreBlockedByOverdueOrdersModalError as exc:
+        result.status = "warning"
+        result.message = exc.message
+        result.rows = []
+        result.status_counts = {}
+        result.warnings = [_td_leads_overdue_orders_warning(exc)]
+        result.task_stub = _td_leads_overdue_orders_task_stub(exc)
+        log_event(
+            logger=logger,
+            phase="store",
+            status="warning",
+            message="TD leads store skipped due to overdue-orders modal",
+            store_code=store.store_code,
+            modal_selector=exc.modal_selector,
+            attempted_dismissal_action=exc.attempted_dismissal_action,
+            operator_action=exc.operator_action,
         )
         return result
     except Exception as exc:
