@@ -1640,6 +1640,73 @@ def _email_send_failure(
     )
 
 
+def describe_smtp_runtime_config() -> dict[str, Any]:
+    """Return sanitized SMTP runtime settings for operator diagnostics."""
+
+    smtp_config = _load_smtp_config()
+    retry_config = _load_notification_send_retry_config()
+    mode = "STARTTLS" if smtp_config.use_tls else "plain SMTP"
+    warnings: list[str] = []
+    if smtp_config.use_tls and smtp_config.port == 465:
+        warnings.append(
+            "REPORT_EMAIL_USE_TLS enables STARTTLS after connect; port 465 usually expects "
+            "SSL-on-connect, which this sender does not implement."
+        )
+    if not smtp_config.use_tls and smtp_config.port == 587:
+        warnings.append(
+            "Port 587 commonly requires STARTTLS; confirm REPORT_EMAIL_USE_TLS=true for this provider."
+        )
+
+    return {
+        "host": smtp_config.host,
+        "port": smtp_config.port,
+        "sender": smtp_config.sender,
+        "username": smtp_config.username or "",
+        "password_set": bool(smtp_config.password),
+        "smtp_mode": mode,
+        "use_tls": smtp_config.use_tls,
+        "ssl_on_connect_supported": False,
+        "connect_timeout_seconds": SMTP_CONNECT_TIMEOUT_SECONDS,
+        "send_max_attempts": retry_config.max_attempts,
+        "send_initial_delay_seconds": retry_config.initial_delay_seconds,
+        "send_max_delay_seconds": retry_config.max_delay_seconds,
+        "send_transient_exceptions": [
+            f"{exception_type.__module__}.{exception_type.__name__}"
+            for exception_type in retry_config.transient_exception_types
+        ],
+        "warnings": warnings,
+    }
+
+
+def probe_smtp_tcp_connectivity(timeout_seconds: float | None = None) -> dict[str, Any]:
+    """Open a raw TCP connection to the configured SMTP endpoint without logging in."""
+
+    smtp_config = _load_smtp_config()
+    timeout = SMTP_CONNECT_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
+    started = time.monotonic()
+    try:
+        with socket.create_connection((smtp_config.host, smtp_config.port), timeout=timeout):
+            elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+            return {
+                "ok": True,
+                "host": smtp_config.host,
+                "port": smtp_config.port,
+                "timeout_seconds": timeout,
+                "elapsed_ms": elapsed_ms,
+            }
+    except OSError as exc:
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        return {
+            "ok": False,
+            "host": smtp_config.host,
+            "port": smtp_config.port,
+            "timeout_seconds": timeout,
+            "elapsed_ms": elapsed_ms,
+            "exception_type": type(exc).__name__,
+            "exception_summary": str(exc),
+        }
+
+
 def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
     message = EmailMessage()
     message["Subject"] = plan.subject

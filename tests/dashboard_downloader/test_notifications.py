@@ -1098,3 +1098,82 @@ def test_report_notification_context_includes_upstream_orders_status() -> None:
     assert context["orders_sync_upstream_run_id"] == "orders-run-1"
     assert "Orders sync was degraded before this report; data may be stale or incomplete." in summary
     assert "run_id=orders-run-1" in summary
+
+
+def test_describe_smtp_runtime_config_is_sanitized_and_flags_ssl_on_connect_mismatch(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import NotificationSendRetryConfig, SmtpConfig
+
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="smtp.example.test",
+            port=465,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=True,
+        ),
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_notification_send_retry_config",
+        lambda: NotificationSendRetryConfig(
+            max_attempts=3,
+            initial_delay_seconds=1.0,
+            max_delay_seconds=30.0,
+            transient_exception_types=(TimeoutError,),
+        ),
+    )
+
+    details = notifications.describe_smtp_runtime_config()
+
+    assert details["host"] == "smtp.example.test"
+    assert details["port"] == 465
+    assert details["smtp_mode"] == "STARTTLS"
+    assert details["password_set"] is True
+    assert "secret-token" not in str(details)
+    assert details["ssl_on_connect_supported"] is False
+    assert details["warnings"]
+
+
+def test_probe_smtp_tcp_connectivity_uses_configured_endpoint(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import SmtpConfig
+
+    captured: dict[str, object] = {}
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_create_connection(address, timeout=None):
+        captured["address"] = address
+        captured["timeout"] = timeout
+        return FakeSocket()
+
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=True,
+        ),
+    )
+    monkeypatch.setattr(notifications.socket, "create_connection", fake_create_connection)
+
+    result = notifications.probe_smtp_tcp_connectivity(timeout_seconds=2.5)
+
+    assert result["ok"] is True
+    assert result["host"] == "smtp.example.test"
+    assert result["port"] == 587
+    assert result["timeout_seconds"] == 2.5
+    assert captured == {"address": ("smtp.example.test", 587), "timeout": 2.5}

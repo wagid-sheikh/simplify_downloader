@@ -232,6 +232,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     notif_test_parser = notifications_sub.add_parser("test", help="Validate SMTP/profiles/docs for a run")
     notif_test_parser.add_argument("--pipeline", required=True, help="Pipeline code (e.g. dashboard_daily)")
     notif_test_parser.add_argument("--run-id", required=True, help="Existing run_id to inspect")
+    notif_test_parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Actually dispatch the notification email(s) for the existing run after prerequisite checks pass",
+    )
+    smtp_check_parser = notifications_sub.add_parser(
+        "smtp-check", help="Show sanitized SMTP config and verify raw TCP reachability"
+    )
+    smtp_check_parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="TCP connect timeout override; defaults to the application SMTP timeout",
+    )
 
     args = parser.parse_args(argv)
 
@@ -298,7 +312,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "notifications" and args.notifications_command == "test":
-        from app.dashboard_downloader.notifications import diagnose_notification_run
+        from app.dashboard_downloader.notifications import (
+            diagnose_notification_run,
+            send_notifications_for_run,
+        )
 
         findings = asyncio.run(diagnose_notification_run(args.pipeline, args.run_id))
         if findings:
@@ -306,6 +323,46 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"[notifications] {issue}")
             return 1
         print("[notifications] all prerequisites satisfied")
+        if args.send:
+            result = asyncio.run(send_notifications_for_run(args.pipeline, args.run_id))
+            print(
+                "[notifications] send_result "
+                f"emails_planned={result.get('emails_planned')} "
+                f"emails_sent={result.get('emails_sent')} "
+                f"errors={result.get('errors') or []}"
+            )
+            return 0 if result.get("emails_planned") == result.get("emails_sent") else 1
+        return 0
+
+    if args.command == "notifications" and args.notifications_command == "smtp-check":
+        from app.dashboard_downloader.notifications import (
+            describe_smtp_runtime_config,
+            probe_smtp_tcp_connectivity,
+        )
+
+        smtp_details = describe_smtp_runtime_config()
+        for key, value in smtp_details.items():
+            if key == "warnings":
+                continue
+            print(f"[smtp-config] {key}={value}")
+        for warning in smtp_details.get("warnings", []):
+            print(f"[smtp-config] WARNING: {warning}")
+        probe = probe_smtp_tcp_connectivity(timeout_seconds=args.timeout_seconds)
+        print(
+            "[smtp-connectivity] "
+            f"ok={probe.get('ok')} "
+            f"host={probe.get('host')} "
+            f"port={probe.get('port')} "
+            f"timeout_seconds={probe.get('timeout_seconds')} "
+            f"elapsed_ms={probe.get('elapsed_ms')}"
+        )
+        if not probe.get("ok"):
+            print(
+                "[smtp-connectivity] "
+                f"exception_type={probe.get('exception_type')} "
+                f"exception_summary={probe.get('exception_summary')}"
+            )
+            return 1
         return 0
 
     parser.error("Unknown command")
