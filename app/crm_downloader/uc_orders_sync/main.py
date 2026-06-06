@@ -119,6 +119,11 @@ HOME_READY_SELECTORS = (
     "header",
 )
 UC_DASHBOARD_CARD_SELECTOR = 'h5.card-title:has-text("Daily Operations Tracker")'
+UC_API_READINESS_ENDPOINTS = (
+    "https://store.ucleanlaundry.com/api/v1/stores/bookings/latestOrderId?franchise=UCLEAN",
+    "https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?page=1&limit=1&sortBy=delivered_at&sortOrder=desc&franchise=UCLEAN",
+)
+UC_API_UNAUTHORIZED_STATUSES = {401, 403}
 UC_DASHBOARD_SHELL_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -451,6 +456,13 @@ class UcHomeReadinessProbe:
     target_card_visible: bool = False
     target_card_selector: str = UC_DASHBOARD_CARD_SELECTOR
     home_url_matched: bool = False
+    api_probe_attempted: bool = False
+    api_probe_ready: bool = False
+    api_probe_unauthorized: bool = False
+    api_probe_status: int | None = None
+    api_probe_url: str | None = None
+    api_probe_json_shape_valid: bool = False
+    api_probe_error: str | None = None
     artifact_paths: dict[str, str] = field(default_factory=dict)
 
     def as_log_fields(self) -> dict[str, Any]:
@@ -466,6 +478,13 @@ class UcHomeReadinessProbe:
             "target_card_visible": self.target_card_visible,
             "target_card_selector": self.target_card_selector,
             "home_url_matched": self.home_url_matched,
+            "api_probe_attempted": self.api_probe_attempted,
+            "api_probe_ready": self.api_probe_ready,
+            "api_probe_unauthorized": self.api_probe_unauthorized,
+            "api_probe_status": self.api_probe_status,
+            "api_probe_url": self.api_probe_url,
+            "api_probe_json_shape_valid": self.api_probe_json_shape_valid,
+            "api_probe_error": self.api_probe_error,
             **self.artifact_paths,
         }
 
@@ -3749,6 +3768,7 @@ async def prepare_uc_api_page_for_store(
                 setattr(page, "_uc_home_response_url", response.url)
         if _url_is_login(page.url, store):
             session_probe_result = False
+            setattr(page, "_uc_login_required", True)
             log_event(
                 logger=logger,
                 phase="navigation",
@@ -3763,12 +3783,26 @@ async def prepare_uc_api_page_for_store(
                 page=page, store=store, logger=logger, source="session"
             )
         if not session_probe_result:
+            login_required = bool(getattr(page, "_uc_login_required", False))
+            if not login_required:
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    status="error",
+                    message="Session probe failed without a login-required signal; not attempting fallback login",
+                    store_code=store.store_code,
+                    current_url=page.url,
+                    source=source,
+                )
+                with contextlib.suppress(Exception):
+                    await context.close()
+                return failure("Session probe failed without login-required signal")
             fallback_login_attempted = True
             log_event(
                 logger=logger,
                 phase="login",
                 status="warning",
-                message="Session probe failed; attempting full login",
+                message="Session probe failed with login-required signal; attempting full login",
                 store_code=store.store_code,
                 current_url=page.url,
                 source=source,
@@ -5416,6 +5450,7 @@ async def _assert_home_ready(
 ) -> bool:
     session_invalid = await _session_invalid(page=page, store=store)
     if session_invalid:
+        setattr(page, "_uc_login_required", True)
         log_event(
             logger=logger,
             phase="navigation",
@@ -5532,15 +5567,101 @@ async def _capture_uc_navigation_failure_artifacts(
     return artifact_paths
 
 
+def _uc_api_readiness_json_shape_valid(payload: Any, endpoint_url: str) -> bool:
+    """Return whether a UC readiness endpoint returned the expected JSON envelope."""
+
+    if not isinstance(payload, Mapping):
+        return False
+    if "latestOrderId" in endpoint_url:
+        normalized_keys = {str(key).lower().replace("_", "") for key in payload}
+        return any(
+            key in normalized_keys
+            for key in ("latestorderid", "orderid", "id", "data", "result")
+        )
+    if "getDeliveredOrders" in endpoint_url:
+        for key in ("data", "orders", "bookings", "results", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return True
+        return isinstance(payload.get("data"), Mapping) and any(
+            isinstance(payload["data"].get(key), list)
+            for key in ("data", "orders", "bookings", "results", "items")
+        )
+    return bool(payload)
+
+
+async def _probe_uc_api_readiness(page: Page) -> dict[str, Any]:
+    """Probe an authenticated UC API endpoint using the browser request context."""
+
+    request_context = getattr(page, "request", None)
+    if request_context is None:
+        context = getattr(page, "context", None)
+        request_context = (
+            getattr(context, "request", None) if context is not None else None
+        )
+    if request_context is None:
+        return {
+            "attempted": False,
+            "ready": False,
+            "unauthorized": False,
+            "error": "browser request context unavailable",
+        }
+
+    last_result: dict[str, Any] = {
+        "attempted": True,
+        "ready": False,
+        "unauthorized": False,
+    }
+    for endpoint_url in UC_API_READINESS_ENDPOINTS:
+        try:
+            response = await request_context.get(endpoint_url, timeout=15_000)
+            status = int(getattr(response, "status", 0) or 0)
+            result: dict[str, Any] = {
+                "attempted": True,
+                "ready": False,
+                "unauthorized": status in UC_API_UNAUTHORIZED_STATUSES,
+                "status": status,
+                "url": endpoint_url,
+                "json_shape_valid": False,
+            }
+            if result["unauthorized"]:
+                return result
+            if status == 200:
+                payload = await response.json()
+                result["json_shape_valid"] = _uc_api_readiness_json_shape_valid(
+                    payload, endpoint_url
+                )
+                result["ready"] = result["json_shape_valid"]
+                if result["ready"]:
+                    return result
+            last_result = result
+        except Exception as exc:
+            last_result = {
+                "attempted": True,
+                "ready": False,
+                "unauthorized": False,
+                "url": endpoint_url,
+                "error": str(exc),
+            }
+    return last_result
+
+
 async def _probe_uc_home_readiness(
     *, page: Page, store: UcStore, home_url: str
 ) -> UcHomeReadinessProbe:
     final_url = page.url or ""
     response_status = _home_response_status(page)
     response_url = _home_response_url(page)
-    login_visible = _url_is_login(final_url, store) or await _session_invalid(page=page, store=store)
+    login_visible = _url_is_login(final_url, store) or await _session_invalid(
+        page=page, store=store
+    )
     shell_selector = await _first_visible_selector(page, UC_DASHBOARD_SHELL_SELECTORS)
     target_card_visible = await _locator_visible(page, UC_DASHBOARD_CARD_SELECTOR)
+    api_probe = await _probe_uc_api_readiness(page)
+    api_probe_unauthorized = bool(api_probe.get("unauthorized"))
+    if login_visible or api_probe_unauthorized:
+        setattr(page, "_uc_login_required", True)
+    setattr(page, "_uc_api_readiness_unauthorized", api_probe_unauthorized)
     return UcHomeReadinessProbe(
         response_received=response_status is not None or response_url is not None,
         response_status=response_status,
@@ -5552,6 +5673,19 @@ async def _probe_uc_home_readiness(
         dashboard_shell_selector=shell_selector,
         target_card_visible=target_card_visible,
         home_url_matched=_url_matches_target(final_url, home_url),
+        api_probe_attempted=bool(api_probe.get("attempted")),
+        api_probe_ready=bool(api_probe.get("ready")),
+        api_probe_unauthorized=api_probe_unauthorized,
+        api_probe_status=(
+            api_probe.get("status") if isinstance(api_probe.get("status"), int) else None
+        ),
+        api_probe_url=(
+            api_probe.get("url") if isinstance(api_probe.get("url"), str) else None
+        ),
+        api_probe_json_shape_valid=bool(api_probe.get("json_shape_valid")),
+        api_probe_error=(
+            api_probe.get("error") if isinstance(api_probe.get("error"), str) else None
+        ),
     )
 
 
@@ -5581,7 +5715,11 @@ async def _wait_for_home_ready(
     log_event(
         logger=logger,
         phase="navigation",
-        status="info" if probe.target_card_visible else "warning",
+        status=(
+            "info"
+            if (probe.target_card_visible or probe.api_probe_ready)
+            else "warning"
+        ),
         message="UC home staged readiness probe",
         store_code=store.store_code,
         home_url=home_url,
@@ -5626,33 +5764,66 @@ async def _wait_for_home_ready(
         )
         return False
 
-    if probe.dashboard_shell_visible and not probe.target_card_visible:
-        dom_snippet = await _maybe_get_dom_snippet(page)
-        probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
-            page=page, store=store, source=source
-        )
+    if probe.api_probe_unauthorized:
+        setattr(page, "_uc_login_required", True)
         log_event(
             logger=logger,
             phase="navigation",
             status="warning",
-            message="UC dashboard shell loaded but Daily Operations Tracker card selector is missing",
+            message="UC API readiness probe returned unauthorized; login required",
             store_code=store.store_code,
             home_url=home_url,
             current_url=probe.final_url,
             source=source,
             **probe.as_log_fields(),
-            **_dom_snippet_fields(dom_snippet),
         )
         return False
 
-    if probe.target_card_visible:
+    if probe.dashboard_shell_visible and not probe.target_card_visible:
+        if probe.api_probe_ready:
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="info",
+                message=(
+                    "UC dashboard shell loaded but Daily Operations Tracker "
+                    "card selector is missing; API readiness succeeded"
+                ),
+                store_code=store.store_code,
+                home_url=home_url,
+                current_url=probe.final_url,
+                source=source,
+                **probe.as_log_fields(),
+            )
+        else:
+            dom_snippet = await _maybe_get_dom_snippet(page)
+            probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
+                page=page, store=store, source=source
+            )
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warning",
+                message="UC dashboard shell loaded but Daily Operations Tracker card selector is missing",
+                store_code=store.store_code,
+                home_url=home_url,
+                current_url=probe.final_url,
+                source=source,
+                **probe.as_log_fields(),
+                **_dom_snippet_fields(dom_snippet),
+            )
+            return False
+
+    if probe.api_probe_ready or probe.target_card_visible:
         log_event(
             logger=logger,
             phase="navigation",
             message="Home page ready",
             store_code=store.store_code,
             home_url=home_url,
-            selector=UC_DASHBOARD_CARD_SELECTOR,
+            selector=UC_DASHBOARD_CARD_SELECTOR if probe.target_card_visible else None,
+            api_probe_ready=probe.api_probe_ready,
+            api_probe_url=probe.api_probe_url,
             current_url=probe.final_url,
             final_url=probe.final_url,
             page_title=probe.page_title,
