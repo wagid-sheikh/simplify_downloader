@@ -118,6 +118,20 @@ HOME_READY_SELECTORS = (
     ".navbar",
     "header",
 )
+UC_DASHBOARD_CARD_SELECTOR = 'h5.card-title:has-text("Daily Operations Tracker")'
+UC_DASHBOARD_SHELL_SELECTORS = (
+    "nav",
+    "[role='navigation']",
+    "aside",
+    ".sidebar",
+    ".menu",
+    ".navbar",
+    "header",
+    "main",
+    ".content",
+    ".dashboard",
+)
+UC_NAV_FAILURE_ARTIFACT_HTML_MAX_CHARS = 250_000
 NAV_CONTAINER_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -420,6 +434,40 @@ class UcApiPagePreparationResult:
     fallback_login_result: bool | None = None
     reason_codes: list[str] = field(default_factory=list)
     login_error_code: str | None = None
+
+
+@dataclass
+class UcHomeReadinessProbe:
+    """Phase-specific UC home/dashboard navigation diagnostics."""
+
+    response_received: bool = False
+    response_status: int | None = None
+    response_url: str | None = None
+    final_url: str | None = None
+    page_title: str | None = None
+    login_page_visible: bool = False
+    dashboard_shell_visible: bool = False
+    dashboard_shell_selector: str | None = None
+    target_card_visible: bool = False
+    target_card_selector: str = UC_DASHBOARD_CARD_SELECTOR
+    home_url_matched: bool = False
+    artifact_paths: dict[str, str] = field(default_factory=dict)
+
+    def as_log_fields(self) -> dict[str, Any]:
+        return {
+            "response_received": self.response_received,
+            "response_status": self.response_status,
+            "response_url": self.response_url,
+            "final_url": self.final_url,
+            "page_title": self.page_title,
+            "login_page_visible": self.login_page_visible,
+            "dashboard_shell_visible": self.dashboard_shell_visible,
+            "dashboard_shell_selector": self.dashboard_shell_selector,
+            "target_card_visible": self.target_card_visible,
+            "target_card_selector": self.target_card_selector,
+            "home_url_matched": self.home_url_matched,
+            **self.artifact_paths,
+        }
 
 
 @dataclass
@@ -3693,7 +3741,12 @@ async def prepare_uc_api_page_for_store(
             ignore_https_errors=getattr(config, "uc_ignore_https_errors", False),
         )
         page = await context.new_page()
-        await page.goto(store.home_url, wait_until="domcontentloaded")
+        response = await page.goto(store.home_url, wait_until="domcontentloaded")
+        if response is not None:
+            with contextlib.suppress(Exception):
+                setattr(page, "_uc_home_response_status", response.status)
+            with contextlib.suppress(Exception):
+                setattr(page, "_uc_home_response_url", response.url)
         if _url_is_login(page.url, store):
             session_probe_result = False
             log_event(
@@ -5378,6 +5431,130 @@ async def _assert_home_ready(
     )
 
 
+async def _safe_page_title(page: Page) -> str | None:
+    with contextlib.suppress(Exception):
+        return await page.title()
+    return None
+
+
+def _home_response_status(page: Page) -> int | None:
+    value = getattr(page, "_uc_home_response_status", None)
+    return value if isinstance(value, int) else None
+
+
+def _home_response_url(page: Page) -> str | None:
+    value = getattr(page, "_uc_home_response_url", None)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+async def _locator_visible(page: Page, selector: str, *, timeout_ms: int = 1_500) -> bool:
+    locator = page.locator(selector).first
+    with contextlib.suppress(Exception):
+        await locator.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    with contextlib.suppress(Exception):
+        return bool(await locator.is_visible())
+    return False
+
+
+async def _first_visible_selector(
+    page: Page, selectors: Sequence[str], *, timeout_ms: int = 1_500
+) -> str | None:
+    for selector in selectors:
+        if await _locator_visible(page, selector, timeout_ms=timeout_ms):
+            return selector
+    return None
+
+
+def _sanitize_uc_navigation_html(html: str) -> str:
+    sanitized = html[:UC_NAV_FAILURE_ARTIFACT_HTML_MAX_CHARS]
+    sanitized = re.sub(
+        r'(?is)(<(?:input|textarea)\b[^>]*(?:password|email|token|secret|otp)[^>]*\bvalue=["\'])(.*?)(["\'])',
+        r"\1[REDACTED]\3",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r'(?is)(\b(?:password|passwd|pwd|token|secret|authorization|cookie|session|otp)\b\s*[:=]\s*["\']?)([^"\'\s<>&]+)',
+        r"\1[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        "[REDACTED_EMAIL]",
+        sanitized,
+    )
+    return sanitized
+
+
+async def _redact_uc_navigation_page_for_artifacts(page: Page) -> None:
+    # Mutate the debug-only page snapshot before HTML/screenshot capture so visible
+    # credentials/session values do not leak into artifacts. Navigation is already
+    # terminal at this point, so this does not affect a live extraction path.
+    with contextlib.suppress(Exception):
+        await page.evaluate(
+            """
+            () => {
+              const sensitive = /password|passwd|pwd|token|secret|otp|email|session|cookie/i;
+              for (const el of document.querySelectorAll('input, textarea')) {
+                const attrs = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`;
+                if (sensitive.test(attrs)) el.value = '[REDACTED]';
+              }
+              for (const el of document.querySelectorAll('[value], [data-token], [data-secret]')) {
+                for (const attr of Array.from(el.attributes)) {
+                  if (sensitive.test(attr.name) || sensitive.test(attr.value)) {
+                    el.setAttribute(attr.name, '[REDACTED]');
+                  }
+                }
+              }
+            }
+            """
+        )
+
+
+async def _capture_uc_navigation_failure_artifacts(
+    *, page: Page, store: UcStore, source: str
+) -> dict[str, str]:
+    await _redact_uc_navigation_page_for_artifacts(page)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    debug_dir = default_download_dir() / "uc_navigation_failures"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    base_name = f"{_normalize_artifact_token(store.store_code)}_{_normalize_artifact_token(source)}_{timestamp}"
+    artifact_paths: dict[str, str] = {}
+    with contextlib.suppress(Exception):
+        html = _sanitize_uc_navigation_html(await page.content())
+        html_path = debug_dir / f"{base_name}.html"
+        html_path.write_text(html, encoding="utf-8")
+        artifact_paths["navigation_html_path"] = str(html_path)
+    with contextlib.suppress(Exception):
+        screenshot_path = debug_dir / f"{base_name}.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        artifact_paths["navigation_screenshot_path"] = str(screenshot_path)
+    return artifact_paths
+
+
+async def _probe_uc_home_readiness(
+    *, page: Page, store: UcStore, home_url: str
+) -> UcHomeReadinessProbe:
+    final_url = page.url or ""
+    response_status = _home_response_status(page)
+    response_url = _home_response_url(page)
+    login_visible = _url_is_login(final_url, store) or await _session_invalid(page=page, store=store)
+    shell_selector = await _first_visible_selector(page, UC_DASHBOARD_SHELL_SELECTORS)
+    target_card_visible = await _locator_visible(page, UC_DASHBOARD_CARD_SELECTOR)
+    return UcHomeReadinessProbe(
+        response_received=response_status is not None or response_url is not None,
+        response_status=response_status,
+        response_url=response_url,
+        final_url=final_url,
+        page_title=await _safe_page_title(page),
+        login_page_visible=login_visible,
+        dashboard_shell_visible=shell_selector is not None,
+        dashboard_shell_selector=shell_selector,
+        target_card_visible=target_card_visible,
+        home_url_matched=_url_matches_target(final_url, home_url),
+    )
+
+
 async def _wait_for_home_ready(
     *, page: Page, store: UcStore, logger: JsonLogger, source: str
 ) -> bool:
@@ -5399,6 +5576,20 @@ async def _wait_for_home_ready(
         )
     except TimeoutError:
         setattr(page, "_uc_home_url_timeout", True)
+
+    probe = await _probe_uc_home_readiness(page=page, store=store, home_url=home_url)
+    log_event(
+        logger=logger,
+        phase="navigation",
+        status="info" if probe.target_card_visible else "warning",
+        message="UC home staged readiness probe",
+        store_code=store.store_code,
+        home_url=home_url,
+        source=source,
+        **probe.as_log_fields(),
+    )
+
+    if not probe.home_url_matched:
         log_event(
             logger=logger,
             phase="navigation",
@@ -5406,61 +5597,86 @@ async def _wait_for_home_ready(
             message="Timed out waiting for home URL",
             store_code=store.store_code,
             home_url=home_url,
-            current_url=page.url,
+            current_url=probe.final_url,
+            final_url=probe.final_url,
+            page_title=probe.page_title,
+            response_status=probe.response_status,
+            login_page_visible=probe.login_page_visible,
+            dashboard_shell_visible=probe.dashboard_shell_visible,
+            target_card_visible=probe.target_card_visible,
             source=source,
         )
 
-    current_url = page.url or ""
-    if _url_is_login(current_url, store):
+    if probe.login_page_visible:
         dom_snippet = await _maybe_get_dom_snippet(page)
+        probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
+            page=page, store=store, source=source
+        )
         log_event(
             logger=logger,
             phase="navigation",
             status="error",
-            message="Home page not reached; still on login",
+            message="Home page not reached; login/session page is visible",
             store_code=store.store_code,
             home_url=home_url,
-            current_url=current_url,
+            current_url=probe.final_url,
             source=source,
+            **probe.as_log_fields(),
             **_dom_snippet_fields(dom_snippet),
         )
         return False
 
-    home_selectors = store.home_selectors or list(HOME_READY_SELECTORS)
-    per_selector_timeout = max(2_000, NAV_TIMEOUT_MS // max(len(home_selectors), 1))
-    for selector in home_selectors:
-        try:
-            await page.locator(selector).first.wait_for(
-                state="visible", timeout=per_selector_timeout
-            )
-        except TimeoutError:
-            continue
-        except Exception:
-            continue
+    if probe.dashboard_shell_visible and not probe.target_card_visible:
+        dom_snippet = await _maybe_get_dom_snippet(page)
+        probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
+            page=page, store=store, source=source
+        )
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warning",
+            message="UC dashboard shell loaded but Daily Operations Tracker card selector is missing",
+            store_code=store.store_code,
+            home_url=home_url,
+            current_url=probe.final_url,
+            source=source,
+            **probe.as_log_fields(),
+            **_dom_snippet_fields(dom_snippet),
+        )
+        return False
+
+    if probe.target_card_visible:
         log_event(
             logger=logger,
             phase="navigation",
             message="Home page ready",
             store_code=store.store_code,
             home_url=home_url,
-            selector=selector,
-            current_url=current_url,
+            selector=UC_DASHBOARD_CARD_SELECTOR,
+            current_url=probe.final_url,
+            final_url=probe.final_url,
+            page_title=probe.page_title,
+            response_status=probe.response_status,
             source=source,
         )
         return True
 
     dom_snippet = await _maybe_get_dom_snippet(page)
+    probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
+        page=page, store=store, source=source
+    )
     log_event(
         logger=logger,
         phase="navigation",
         status="warning",
-        message="Home page marker not detected",
+        message="UC dashboard readiness failed before shell/card visibility",
         store_code=store.store_code,
         home_url=home_url,
-        current_url=current_url,
-        selectors=home_selectors,
-        **_dom_snippet_fields(dom_snippet),
+        current_url=probe.final_url,
         source=source,
+        selectors=list(UC_DASHBOARD_SHELL_SELECTORS),
+        **probe.as_log_fields(),
+        **_dom_snippet_fields(dom_snippet),
     )
     return False
 
