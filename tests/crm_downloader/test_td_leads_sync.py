@@ -412,6 +412,110 @@ def test_run_summary_record_includes_duration_for_failed_store_runs() -> None:
     assert record["metrics_json"]["duration_human"] == "00:02:30"
 
 
+def _td_timeout_result(store_code: str, phase_name: str, timeout_seconds: float = 12.0) -> StoreLeadResult:
+    exc = td_leads_main.TdLeadsPhaseTimeoutError(
+        phase_name=phase_name,
+        timeout_seconds=timeout_seconds,
+        duration_ms=int(timeout_seconds * 1000),
+    )
+    return StoreLeadResult(
+        store_code=store_code,
+        status="error",
+        message=td_leads_main._td_leads_phase_timeout_message(
+            store_code=store_code,
+            phase_name=phase_name,
+            timeout_seconds=timeout_seconds,
+        ),
+        warnings=[
+            td_leads_main._td_leads_phase_timeout_warning(
+                store_code=store_code,
+                phase_name=phase_name,
+                timeout_seconds=timeout_seconds,
+            )
+        ],
+        task_stub=td_leads_main._td_leads_phase_timeout_task_stub(store_code=store_code, exc=exc),
+        failure_phase=phase_name,
+    )
+
+
+def test_td_leads_isolated_home_wait_timeout_becomes_success_with_warnings() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-timeout-home-wait",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A100": _td_timeout_result("A100", "home_wait", 12.0),
+            "A200": StoreLeadResult(store_code="A200", status="ok", message="Completed"),
+        },
+    )
+
+    td_leads_main._downgrade_isolated_store_timeouts(summary)
+    record = summary.build_record(finished_at=datetime(2026, 5, 1, 0, 0, 1, tzinfo=timezone.utc))
+
+    assert summary.store_results["A100"].status == "warning"
+    assert record["overall_status"] == "success_with_warnings"
+    assert record["metrics_json"]["task_stubs"][0]["store_code"] == "A100"
+    assert record["metrics_json"]["task_stubs"][0]["phase_name"] == "home_wait"
+    assert record["metrics_json"]["task_stubs"][0]["timeout_seconds"] == 12.0
+    assert record["metrics_json"]["task_stubs"][0]["operator_action"] == td_leads_main.TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION
+
+
+def test_td_leads_isolated_cancelled_scrape_timeout_becomes_success_with_warnings() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-timeout-cancelled",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A100": StoreLeadResult(store_code="A100", status="ok", message="Completed"),
+            "A200": _td_timeout_result("A200", "scrape_status_cancelled", 12.0),
+        },
+    )
+
+    td_leads_main._downgrade_isolated_store_timeouts(summary)
+
+    assert summary.store_results["A200"].status == "warning"
+    assert summary.overall_status() == "success_with_warnings"
+
+
+def test_td_leads_all_store_login_timeouts_remain_failed() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-timeout-login-all",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A100": _td_timeout_result("A100", "login", 12.0),
+            "A200": _td_timeout_result("A200", "login", 12.0),
+        },
+    )
+
+    td_leads_main._downgrade_isolated_store_timeouts(summary)
+
+    assert {result.status for result in summary.store_results.values()} == {"error"}
+    assert summary.overall_status() == "failed"
+
+
+def test_td_leads_timeout_notification_html_surfaces_store_and_phase() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-timeout-notification",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A100": _td_timeout_result("A100", "scrape_status_cancelled", 12.0),
+            "A200": StoreLeadResult(store_code="A200", status="ok", message="Completed"),
+        },
+    )
+    td_leads_main._downgrade_isolated_store_timeouts(summary)
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:00:01")
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    for rendered_html in (summary_html, tables_html):
+        assert "A100" in rendered_html
+        assert "scrape_status_cancelled" in rendered_html
+        assert "timeout_seconds=12.0" in rendered_html
+        assert td_leads_main.TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION in rendered_html
+
+
 def test_td_leads_summary_html_renders_business_sections_and_footer_refs() -> None:
     summary = LeadsRunSummary(
         run_id="run-1",
