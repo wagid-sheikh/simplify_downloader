@@ -1692,19 +1692,26 @@ def describe_smtp_runtime_config() -> dict[str, Any]:
     }
 
 
-def probe_smtp_tcp_connectivity(timeout_seconds: float | None = None) -> dict[str, Any]:
-    """Open a raw TCP connection to the configured SMTP endpoint without logging in."""
+def probe_smtp_tcp_connectivity(
+    timeout_seconds: float | None = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+) -> dict[str, Any]:
+    """Open a raw TCP connection to an SMTP endpoint without logging in."""
 
     smtp_config = _load_smtp_config()
+    probe_host = host or smtp_config.host
+    probe_port = int(port or smtp_config.port)
     timeout = SMTP_CONNECT_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
     started = time.monotonic()
     try:
-        with socket.create_connection((smtp_config.host, smtp_config.port), timeout=timeout):
+        with socket.create_connection((probe_host, probe_port), timeout=timeout):
             elapsed_ms = round((time.monotonic() - started) * 1000, 2)
             return {
                 "ok": True,
-                "host": smtp_config.host,
-                "port": smtp_config.port,
+                "host": probe_host,
+                "port": probe_port,
                 "timeout_seconds": timeout,
                 "elapsed_ms": elapsed_ms,
             }
@@ -1712,8 +1719,8 @@ def probe_smtp_tcp_connectivity(timeout_seconds: float | None = None) -> dict[st
         elapsed_ms = round((time.monotonic() - started) * 1000, 2)
         return {
             "ok": False,
-            "host": smtp_config.host,
-            "port": smtp_config.port,
+            "host": probe_host,
+            "port": probe_port,
             "timeout_seconds": timeout,
             "elapsed_ms": elapsed_ms,
             "exception_type": type(exc).__name__,
