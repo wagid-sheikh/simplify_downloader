@@ -1404,3 +1404,46 @@ def test_probe_smtp_tcp_connectivity_uses_configured_endpoint(monkeypatch) -> No
     assert result["port"] == 587
     assert result["timeout_seconds"] == 2.5
     assert captured == {"address": ("smtp.example.test", 587), "timeout": 2.5}
+
+
+
+def test_probe_smtp_tcp_connectivity_allows_endpoint_override(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import SmtpConfig
+
+    captured = {}
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_create_connection(address, timeout=None):
+        captured["address"] = address
+        captured["timeout"] = timeout
+        return FakeSocket()
+
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="configured.example.test",
+            port=2525,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=True,
+        ),
+    )
+    monkeypatch.setattr(notifications.socket, "create_connection", fake_create_connection)
+
+    result = notifications.probe_smtp_tcp_connectivity(
+        timeout_seconds=4.0, host="smtp.gmail.com", port=587
+    )
+
+    assert result["ok"] is True
+    assert result["host"] == "smtp.gmail.com"
+    assert result["port"] == 587
+    assert captured == {"address": ("smtp.gmail.com", 587), "timeout": 4.0}

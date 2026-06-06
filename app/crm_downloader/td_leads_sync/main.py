@@ -1865,6 +1865,8 @@ class LeadsRunSummary:
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_results: dict[str, StoreLeadResult] = field(default_factory=dict)
     run_had_worker_exception: bool = False
+    notification_delivery_degraded: bool = False
+    notification_delivery_degraded_reason: str | None = None
 
     def overall_status(self) -> str:
         if self.run_had_worker_exception:
@@ -1937,6 +1939,15 @@ class LeadsRunSummary:
             f"Duration: {duration_human}",
             "Per-store totals:",
         ]
+        if self.notification_delivery_degraded:
+            degraded_reason = (
+                f" ({self.notification_delivery_degraded_reason})"
+                if self.notification_delivery_degraded_reason
+                else ""
+            )
+            summary_lines.append(
+                f"Notification Delivery: degraded before SMTP retry dispatch{degraded_reason}"
+            )
         if reporting_mode in {"meeting", "day_end"}:
             summary_lines.append(f"Reporting Mode: {reporting_mode}")
             summary_lines.append("Frozen day-report datasets attached in metrics_json.frozen_day_report_datasets")
@@ -2007,6 +2018,8 @@ class LeadsRunSummary:
                     },
                     "task_stubs": [dict(result.task_stub or {}) for result in self.store_results.values()],
                     "run_had_worker_exception": self.run_had_worker_exception,
+                    "notification_delivery_degraded": self.notification_delivery_degraded,
+                    "notification_delivery_degraded_reason": self.notification_delivery_degraded_reason,
                 }
             ),
             "created_at": self.started_at,
@@ -3204,6 +3217,18 @@ async def main(
     )
     reporting_payload: Mapping[str, Any] | None = None
     reporting_schema_errors: list[str] = []
+    notification_preflight_degraded = (
+        str(os.getenv("TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED") or "").strip() == "1"
+    )
+    if notification_preflight_degraded:
+        summary.notification_delivery_degraded = True
+        summary.notification_delivery_degraded_reason = (
+            str(
+                os.getenv("TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED_REASON")
+                or "smtp_dns_tcp_preflight_failed"
+            ).strip()
+            or "smtp_dns_tcp_preflight_failed"
+        )
 
     await _start_run_summary(logger=logger, summary=summary)
     log_event(
@@ -3346,6 +3371,15 @@ async def main(
     )
     if persisted:
         try:
+            if summary.notification_delivery_degraded:
+                log_event(
+                    logger=logger,
+                    phase="notifications",
+                    status="warning",
+                    message="TD leads notification delivery marked degraded by SMTP DNS/TCP preflight before retry dispatch; attempting notifications",
+                    run_id=resolved_run_id,
+                    degraded_reason=summary.notification_delivery_degraded_reason,
+                )
             notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
             log_event(
                 logger=logger,
