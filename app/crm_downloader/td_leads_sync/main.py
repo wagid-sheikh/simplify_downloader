@@ -188,6 +188,10 @@ TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE = (
     f"Store blocked by overdue-orders modal ({OVERDUE_ORDERS_MODAL_SELECTOR}); Pickup Scheduler not scraped"
 )
 TD_LEADS_OVERDUE_ORDERS_TASK_TYPE = "td_leads_store_blocked_by_overdue_orders_modal"
+TD_LEADS_PHASE_TIMEOUT_TASK_TYPE = "td_leads_store_phase_timeout"
+TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION = (
+    "Check CRM/browser availability for the affected store and phase, then rerun TD leads sync for that store"
+)
 
 
 class TdLeadsStoreBlockedByOverdueOrdersModalError(RuntimeError):
@@ -1276,19 +1280,98 @@ def _td_leads_overdue_orders_task_stub(exc: TdLeadsStoreBlockedByOverdueOrdersMo
     }
 
 
+def _td_leads_phase_timeout_message(*, store_code: str, phase_name: str, timeout_seconds: float) -> str:
+    return f"Store {store_code} TD leads phase {phase_name} timed out after {timeout_seconds}s"
+
+
+def _td_leads_phase_timeout_warning(*, store_code: str, phase_name: str, timeout_seconds: float) -> str:
+    return (
+        f"store_phase_timeout:store_code={store_code}:phase_name={phase_name}:"
+        f"timeout_seconds={timeout_seconds}:operator_action={TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION}"
+    )
+
+
+def _td_leads_phase_timeout_task_stub(*, store_code: str, exc: TdLeadsPhaseTimeoutError) -> dict[str, Any]:
+    return {
+        "status": "open",
+        "type": TD_LEADS_PHASE_TIMEOUT_TASK_TYPE,
+        "store_code": store_code,
+        "phase_name": exc.phase_name,
+        "timeout_seconds": exc.timeout_seconds,
+        "operator_action": TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION,
+        "message": _td_leads_phase_timeout_message(
+            store_code=store_code,
+            phase_name=exc.phase_name,
+            timeout_seconds=exc.timeout_seconds,
+        ),
+    }
+
+
+def _td_leads_result_has_phase_timeout_task(result: "StoreLeadResult") -> bool:
+    task_stub = result.task_stub if isinstance(result.task_stub, Mapping) else {}
+    return task_stub.get("type") == TD_LEADS_PHASE_TIMEOUT_TASK_TYPE
+
+
+def _downgrade_isolated_store_timeouts(summary: "LeadsRunSummary") -> None:
+    """Convert isolated store timeouts to warnings while preserving all-store timeout failures."""
+    if summary.run_had_worker_exception:
+        return
+    results = list(summary.store_results.values())
+    has_success = any(
+        str(result.status or "").strip().lower() in {"ok", "success", "warning", "success_with_warnings"}
+        for result in results
+    )
+    if not has_success:
+        return
+    for result in results:
+        if str(result.status or "").strip().lower() not in {"error", "failed"}:
+            continue
+        if not _td_leads_result_has_phase_timeout_task(result):
+            continue
+        task_stub = result.task_stub or {}
+        result.status = "warning"
+        result.message = str(task_stub.get("message") or result.message)
+        warning = _td_leads_phase_timeout_warning(
+            store_code=result.store_code,
+            phase_name=str(task_stub.get("phase_name") or result.failure_phase or "unknown"),
+            timeout_seconds=float(task_stub.get("timeout_seconds") or 0),
+        )
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+
+
 def _td_leads_store_action_items(result: "StoreLeadResult") -> list[dict[str, Any]]:
     task_stub = result.task_stub if isinstance(result.task_stub, Mapping) else {}
-    if task_stub.get("type") != TD_LEADS_OVERDUE_ORDERS_TASK_TYPE:
-        return []
-    return [
-        {
-            "store_code": result.store_code,
-            "modal_selector": str(task_stub.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
-            "operator_action": str(task_stub.get("operator_action") or TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION),
-            "message": str(task_stub.get("message") or result.message or TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE),
-            "attempted_dismissal_action": str(task_stub.get("attempted_dismissal_action") or "unknown"),
-        }
-    ]
+    task_type = task_stub.get("type")
+    if task_type == TD_LEADS_OVERDUE_ORDERS_TASK_TYPE:
+        return [
+            {
+                "store_code": result.store_code,
+                "issue_detail": str(task_stub.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
+                "operator_action": str(task_stub.get("operator_action") or TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION),
+                "message": str(task_stub.get("message") or result.message or TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE),
+            }
+        ]
+    if task_type == TD_LEADS_PHASE_TIMEOUT_TASK_TYPE:
+        phase_name = str(task_stub.get("phase_name") or result.failure_phase or "unknown")
+        timeout_seconds = task_stub.get("timeout_seconds")
+        return [
+            {
+                "store_code": result.store_code,
+                "issue_detail": f"phase={phase_name}; timeout_seconds={timeout_seconds}",
+                "operator_action": str(task_stub.get("operator_action") or TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION),
+                "message": str(
+                    task_stub.get("message")
+                    or result.message
+                    or _td_leads_phase_timeout_message(
+                        store_code=result.store_code,
+                        phase_name=phase_name,
+                        timeout_seconds=float(timeout_seconds or 0),
+                    )
+                ),
+            }
+        ]
+    return []
 
 
 def _td_leads_summary_action_items(summary: "LeadsRunSummary") -> list[dict[str, Any]]:
@@ -1302,7 +1385,7 @@ def _build_td_leads_store_action_items_html(*, action_items: Sequence[Mapping[st
     rows = [
         [
             str(item.get("store_code") or "None"),
-            str(item.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
+            str(item.get("issue_detail") or item.get("modal_selector") or OVERDUE_ORDERS_MODAL_SELECTOR),
             str(item.get("message") or TD_LEADS_OVERDUE_ORDERS_RESULT_MESSAGE),
             str(item.get("operator_action") or TD_LEADS_OVERDUE_ORDERS_OPERATOR_ACTION),
         ]
@@ -1313,7 +1396,7 @@ def _build_td_leads_store_action_items_html(*, action_items: Sequence[Mapping[st
         return ""
     return _build_td_leads_section_table_html(
         section_label=f"Store action items ({len(rows)})",
-        headers=("Store Code", "Modal Selector", "Issue", "Operator Action"),
+        headers=("Store Code", "Issue Detail", "Issue", "Operator Action"),
         rows=rows,
     )
 
@@ -1782,6 +1865,8 @@ class LeadsRunSummary:
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_results: dict[str, StoreLeadResult] = field(default_factory=dict)
     run_had_worker_exception: bool = False
+    notification_delivery_degraded: bool = False
+    notification_delivery_degraded_reason: str | None = None
 
     def overall_status(self) -> str:
         if self.run_had_worker_exception:
@@ -1854,6 +1939,15 @@ class LeadsRunSummary:
             f"Duration: {duration_human}",
             "Per-store totals:",
         ]
+        if self.notification_delivery_degraded:
+            degraded_reason = (
+                f" ({self.notification_delivery_degraded_reason})"
+                if self.notification_delivery_degraded_reason
+                else ""
+            )
+            summary_lines.append(
+                f"Notification Delivery: degraded before SMTP retry dispatch{degraded_reason}"
+            )
         if reporting_mode in {"meeting", "day_end"}:
             summary_lines.append(f"Reporting Mode: {reporting_mode}")
             summary_lines.append("Frozen day-report datasets attached in metrics_json.frozen_day_report_datasets")
@@ -1924,6 +2018,8 @@ class LeadsRunSummary:
                     },
                     "task_stubs": [dict(result.task_stub or {}) for result in self.store_results.values()],
                     "run_had_worker_exception": self.run_had_worker_exception,
+                    "notification_delivery_degraded": self.notification_delivery_degraded,
+                    "notification_delivery_degraded_reason": self.notification_delivery_degraded_reason,
                 }
             ),
             "created_at": self.started_at,
@@ -2947,6 +3043,36 @@ async def _run_store(
             pickup_created_at_null_counts_by_bucket=result.pickup_created_at_null_counts_by_bucket,
         )
         return result
+    except TdLeadsPhaseTimeoutError as exc:
+        result.status = "error"
+        result.message = _td_leads_phase_timeout_message(
+            store_code=store.store_code,
+            phase_name=exc.phase_name,
+            timeout_seconds=exc.timeout_seconds,
+        )
+        result.warnings = [
+            _td_leads_phase_timeout_warning(
+                store_code=store.store_code,
+                phase_name=exc.phase_name,
+                timeout_seconds=exc.timeout_seconds,
+            )
+        ]
+        result.task_stub = _td_leads_phase_timeout_task_stub(store_code=store.store_code, exc=exc)
+        result.failure_phase = exc.phase_name
+        transient_failure = _classify_transient_store_failure(exc)
+        if transient_failure:
+            result.failure_phase, result.transient_classification = transient_failure
+        log_event(
+            logger=logger,
+            phase="store",
+            status="error",
+            message="TD leads store phase timed out",
+            store_code=store.store_code,
+            phase_name=exc.phase_name,
+            timeout_seconds=exc.timeout_seconds,
+            operator_action=TD_LEADS_PHASE_TIMEOUT_OPERATOR_ACTION,
+        )
+        return result
     except TdLeadsStoreBlockedByOverdueOrdersModalError as exc:
         result.status = "warning"
         result.message = exc.message
@@ -3091,6 +3217,18 @@ async def main(
     )
     reporting_payload: Mapping[str, Any] | None = None
     reporting_schema_errors: list[str] = []
+    notification_preflight_degraded = (
+        str(os.getenv("TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED") or "").strip() == "1"
+    )
+    if notification_preflight_degraded:
+        summary.notification_delivery_degraded = True
+        summary.notification_delivery_degraded_reason = (
+            str(
+                os.getenv("TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED_REASON")
+                or "smtp_dns_tcp_preflight_failed"
+            ).strip()
+            or "smtp_dns_tcp_preflight_failed"
+        )
 
     await _start_run_summary(logger=logger, summary=summary)
     log_event(
@@ -3221,6 +3359,8 @@ async def main(
                 schema_errors=reporting_schema_errors,
             )
 
+    _downgrade_isolated_store_timeouts(summary)
+
     persisted = await _persist_run_summary(
         logger=logger,
         summary=summary,
@@ -3231,6 +3371,15 @@ async def main(
     )
     if persisted:
         try:
+            if summary.notification_delivery_degraded:
+                log_event(
+                    logger=logger,
+                    phase="notifications",
+                    status="warning",
+                    message="TD leads notification delivery marked degraded by SMTP DNS/TCP preflight before retry dispatch; attempting notifications",
+                    run_id=resolved_run_id,
+                    degraded_reason=summary.notification_delivery_degraded_reason,
+                )
             notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
             log_event(
                 logger=logger,

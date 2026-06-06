@@ -64,6 +64,9 @@ PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON = "profiler_store_lock_timeout"
 PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE = (
     "All stores failed before window planning due to profiler store locks"
 )
+PROFILER_BROWSER_RUNTIME_INCIDENT_MESSAGE = (
+    "Orders sync profiler infrastructure/browser-runtime incident: all attempted stores failed navigation"
+)
 CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
 CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
 PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
@@ -1392,6 +1395,49 @@ TIMEOUT_NAVIGATION_RETRY_TOKENS = (
 
 def _has_timeout_navigation_failure(*messages: str | None) -> bool:
     return has_timeout_navigation_failure(*messages)
+
+
+def _window_audit_has_navigation_failure(window_audit: Iterable[Mapping[str, Any]] | None) -> bool:
+    for window in window_audit or []:
+        messages = [
+            str(window.get("error_message") or ""),
+            str(window.get("status_note") or ""),
+            str(window.get("skip_reason") or ""),
+        ]
+        for attempt in window.get("attempts") or []:
+            if isinstance(attempt, Mapping):
+                messages.extend(
+                    [
+                        str(attempt.get("error_message") or ""),
+                        str(attempt.get("status_note") or ""),
+                    ]
+                )
+        if _has_timeout_navigation_failure(*messages):
+            return True
+    return False
+
+
+def _all_store_navigation_infrastructure_incident(
+    all_results: Sequence[StoreRunResult],
+) -> dict[str, Any] | None:
+    attempted_results = [result for result in all_results if result.window_count > 0]
+    if not attempted_results:
+        return None
+    failed_navigation_results = [
+        result
+        for result in attempted_results
+        if result.status_counts.get("failed", 0) >= result.window_count
+        and _window_audit_has_navigation_failure(result.window_audit)
+    ]
+    if len(failed_navigation_results) != len(attempted_results):
+        return None
+    return {
+        "failure_scope": "all_attempted_stores",
+        "failure_reason": "navigation_timeout_or_browser_runtime",
+        "failed_store_codes": [result.store_code for result in failed_navigation_results],
+        "store_count": len(failed_navigation_results),
+        "pipeline_groups": sorted({result.pipeline_group for result in failed_navigation_results}),
+    }
 
 
 def _should_retry_window_status(
@@ -2735,6 +2781,7 @@ async def main(
     )
     all_results = [result for group in group_results for result in group]
     orchestration_failure = _all_store_lock_timeout_orchestration_failure(all_results)
+    browser_runtime_incident = _all_store_navigation_infrastructure_incident(all_results)
     if orchestration_failure:
         log_event(
             logger=logger,
@@ -2747,6 +2794,16 @@ async def main(
             failure_reason=orchestration_failure["failure_reason"],
             failed_store_codes=orchestration_failure["failed_store_codes"],
             lock_paths=orchestration_failure["lock_paths"],
+        )
+    if browser_runtime_incident:
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="error",
+            message=PROFILER_BROWSER_RUNTIME_INCIDENT_MESSAGE,
+            run_id=resolved_run_id,
+            run_env=resolved_env,
+            **browser_runtime_incident,
         )
     total_status_counts = _init_status_counts()
     pipeline_totals: dict[str, dict[str, Any]] = {}
@@ -2866,6 +2923,15 @@ async def main(
             f"lock_paths={', '.join(orchestration_failure['lock_paths']) or 'unknown'}"
         )
         warning_messages.insert(0, orchestration_warning)
+    if browser_runtime_incident:
+        overall_status = "failed"
+        warning_messages.insert(
+            0,
+            "INFRASTRUCTURE_BROWSER_RUNTIME_INCIDENT: "
+            f"all {browser_runtime_incident['store_count']} attempted store(s) failed navigation; "
+            f"failed_stores={', '.join(browser_runtime_incident['failed_store_codes'])}; "
+            "treat this as shared browser/runtime or upstream navigation infrastructure until disproven",
+        )
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
         entry.startswith("WINDOW_WARNINGS:") for entry in warning_messages
@@ -2932,9 +2998,9 @@ async def main(
         "summary_text": summary_text,
         "phases_json": {
             "orchestrator": {
-                "ok": 0 if orchestration_failure else 1,
+                "ok": 0 if (orchestration_failure or browser_runtime_incident) else 1,
                 "warning": 0,
-                "error": 1 if orchestration_failure else 0,
+                "error": 1 if (orchestration_failure or browser_runtime_incident) else 0,
             },
             "window": {
                 "ok": total_status_counts.get("success", 0)
@@ -2957,6 +3023,7 @@ async def main(
             "row_facts": row_facts,
             "uc_warning_count": uc_warning_count_total,
             "orchestration_failure": orchestration_failure,
+            "browser_runtime_incident": browser_runtime_incident,
             "notification_payload": _build_profiler_notification_payload(
                 run_id=resolved_run_id,
                 run_env=resolved_env,

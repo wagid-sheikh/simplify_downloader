@@ -1363,3 +1363,79 @@ def test_profiler_rolls_amount_metrics_into_notification_context() -> None:
     assert unified["parsed_source_gross_amount_sum"] == 125.5
     assert unified["parsed_source_net_amount_sum"] == 100.0
     assert "missing_amount_fields=2" in profiler._format_unified_metrics(unified)
+
+
+def test_all_store_navigation_failures_classified_as_browser_runtime_incident() -> None:
+    def result(store_code: str) -> StoreRunResult:
+        status_counts = profiler._init_status_counts()
+        status_counts["failed"] = 1
+        return StoreRunResult(
+            store_code=store_code,
+            pipeline_group="UC",
+            pipeline_name="uc_orders_sync",
+            cost_center=None,
+            overall_status="failed",
+            window_count=1,
+            windows=[(date(2024, 1, 1), date(2024, 1, 1))],
+            status_counts=status_counts,
+            window_audit=[
+                {
+                    "status": "failed",
+                    "status_note": "Archive Orders navigation failed after timeout/navigation failure promoted to failed",
+                    "attempts": [
+                        {"status": "skipped", "error_message": "Timed out waiting for home URL"},
+                        {"status": "failed", "error_message": "UC dashboard shell loaded but card selector is missing"},
+                    ],
+                }
+            ],
+            ingestion_totals=profiler._init_ingestion_totals(),
+            row_facts=_init_row_facts(),
+        )
+
+    incident = profiler._all_store_navigation_infrastructure_incident(
+        [result("UC567"), result("UC610")]
+    )
+
+    assert incident == {
+        "failure_scope": "all_attempted_stores",
+        "failure_reason": "navigation_timeout_or_browser_runtime",
+        "failed_store_codes": ["UC567", "UC610"],
+        "store_count": 2,
+        "pipeline_groups": ["UC"],
+    }
+
+
+def test_mixed_navigation_and_success_is_not_browser_runtime_incident() -> None:
+    failed_counts = profiler._init_status_counts()
+    failed_counts["failed"] = 1
+    success_counts = profiler._init_status_counts()
+    success_counts["success"] = 1
+
+    failed = StoreRunResult(
+        store_code="UC567",
+        pipeline_group="UC",
+        pipeline_name="uc_orders_sync",
+        cost_center=None,
+        overall_status="failed",
+        window_count=1,
+        windows=[(date(2024, 1, 1), date(2024, 1, 1))],
+        status_counts=failed_counts,
+        window_audit=[{"status": "failed", "error_message": "navigation failed timeout"}],
+        ingestion_totals=profiler._init_ingestion_totals(),
+        row_facts=_init_row_facts(),
+    )
+    succeeded = StoreRunResult(
+        store_code="UC610",
+        pipeline_group="UC",
+        pipeline_name="uc_orders_sync",
+        cost_center=None,
+        overall_status="success",
+        window_count=1,
+        windows=[(date(2024, 1, 1), date(2024, 1, 1))],
+        status_counts=success_counts,
+        window_audit=[{"status": "success"}],
+        ingestion_totals=profiler._init_ingestion_totals(),
+        row_facts=_init_row_facts(),
+    )
+
+    assert profiler._all_store_navigation_infrastructure_incident([failed, succeeded]) is None

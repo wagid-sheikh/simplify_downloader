@@ -64,6 +64,7 @@ if [[ -n "${MAX_RUNTIME_SECONDS+x}" ]]; then
 fi
 TD_LEADS_STALE_OWNER_SECONDS="${TD_LEADS_STALE_OWNER_SECONDS:-300}"
 TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS="${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS:-30}"
+TD_LEADS_NETWORK_PREFLIGHT_TIMEOUT_SECONDS="${TD_LEADS_NETWORK_PREFLIGHT_TIMEOUT_SECONDS:-5}"
 STALE_OWNER_TERM_WAIT_SECONDS="${STALE_OWNER_TERM_WAIT_SECONDS:-5}"
 STALE_OWNER_KILL_WAIT_SECONDS="${STALE_OWNER_KILL_WAIT_SECONDS:-5}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
@@ -503,6 +504,7 @@ log "PATH=${PATH}"
 log "LANG=${LANG}"
 log "TD_LEADS_STALE_OWNER_SECONDS=${TD_LEADS_STALE_OWNER_SECONDS}"
 log "TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS=${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS}"
+log "TD_LEADS_NETWORK_PREFLIGHT_TIMEOUT_SECONDS=${TD_LEADS_NETWORK_PREFLIGHT_TIMEOUT_SECONDS}"
 log "STALE_OWNER_TERM_WAIT_SECONDS=${STALE_OWNER_TERM_WAIT_SECONDS}"
 log "STALE_OWNER_KILL_WAIT_SECONDS=${STALE_OWNER_KILL_WAIT_SECONDS}"
 log "TD_LEADS_MAX_RUNTIME_SECONDS=${TD_LEADS_MAX_RUNTIME_SECONDS}"
@@ -586,7 +588,42 @@ if [[ ${td_leads_args_count} -gt 0 ]]; then
   td_leads_args_values="$(printf '%q ' "${TD_LEADS_ARGS[@]}")"
 fi
 
+
+run_td_leads_network_preflight() {
+  local preflight_status=0
+
+  section "Running TD leads network preflight"
+  set +e
+  poetry run python -m app.crm_downloader.td_leads_sync.network_preflight \
+    --timeout-seconds "${TD_LEADS_NETWORK_PREFLIGHT_TIMEOUT_SECONDS}" >> "${LOG_FILE}" 2>&1
+  preflight_status=$?
+  set -e
+
+  case "${preflight_status}" in
+    0)
+      log "TD leads network preflight passed; browser launch allowed and notifications healthy"
+      return 0
+      ;;
+    20)
+      log "WARNING: TD leads CRM DNS/TCP preflight failed; browser launch skipped after operational summary persistence"
+      section "CRON RUN SKIPPED BY TD LEADS NETWORK PREFLIGHT"
+      exit 0
+      ;;
+    30)
+      log "WARNING: TD leads SMTP DNS/TCP preflight failed; continuing data sync with notification delivery degraded"
+      export TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED=1
+      export TD_LEADS_NOTIFICATION_PREFLIGHT_DEGRADED_REASON="smtp_dns_tcp_preflight_failed"
+      return 0
+      ;;
+    *)
+      log "ERROR: TD leads network preflight failed with unexpected status=${preflight_status}"
+      return "${preflight_status}"
+      ;;
+  esac
+}
+
 log "Parsed td_leads args count=${td_leads_args_count} values=${td_leads_args_values}"
+run_td_leads_network_preflight
 if [[ ${td_leads_args_count} -gt 0 ]]; then
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
 else
