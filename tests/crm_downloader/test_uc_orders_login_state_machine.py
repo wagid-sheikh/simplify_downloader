@@ -554,3 +554,141 @@ async def test_run_store_discovery_uses_uc_api_page_preparation_helper(
     prepare.assert_awaited_once()
     assert prepare.await_args.kwargs["source"] == "uc_orders_sync"
     assert uc_main.collect_gst_orders_via_api.await_count == 1
+
+
+class _MappedLocator:
+    def __init__(self, *, visible: bool = False, html: str = "") -> None:
+        self.visible = visible
+        self.html = html
+
+    @property
+    def first(self) -> "_MappedLocator":
+        return self
+
+    async def wait_for(self, *, state: str, timeout: int) -> None:
+        assert state == "visible"
+        assert timeout > 0
+        if not self.visible:
+            raise uc_main.TimeoutError("selector not visible")
+
+    async def is_visible(self) -> bool:
+        return self.visible
+
+    async def count(self) -> int:
+        return 1 if self.visible else 0
+
+
+class _DashboardProbePage:
+    def __init__(self, *, url: str, visible_selectors: set[str], html: str) -> None:
+        self.url = url
+        self.visible_selectors = visible_selectors
+        self._html = html
+        self.screenshot_path: str | None = None
+
+    async def wait_for_url(self, predicate, *, timeout: int) -> None:
+        assert timeout == uc_main.NAV_TIMEOUT_MS
+        if not predicate(self.url):
+            raise uc_main.TimeoutError("home URL did not match")
+
+    def locator(self, selector: str) -> _MappedLocator:
+        return _MappedLocator(visible=selector in self.visible_selectors)
+
+    async def title(self) -> str:
+        return "UC Dashboard"
+
+    async def content(self) -> str:
+        return self._html
+
+    async def screenshot(self, *, path: str, full_page: bool) -> None:
+        assert full_page is True
+        self.screenshot_path = path
+        Path(path).write_bytes(b"fake-png")
+
+    async def evaluate(self, _script: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC567",
+        store_name="UC Store",
+        cost_center="SC3567",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav"},
+        html='<html><input type="password" value="secret"><body>operator@example.com</body></html>',
+    )
+    setattr(page, "_uc_home_response_status", 200)
+    setattr(page, "_uc_home_response_url", "https://storepanel.ucleanlaundry.com/dashboard")
+    monkeypatch.setattr(uc_main, "default_download_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        uc_main,
+        "config",
+        SimpleNamespace(pipeline_skip_dom_logging=True, uc_ignore_https_errors=False),
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="final-attempt"
+    )
+
+    assert ready is False
+    output = stream.getvalue()
+    assert "UC dashboard shell loaded but Daily Operations Tracker card selector is missing" in output
+    assert '"final_url": "https://storepanel.ucleanlaundry.com/dashboard"' in output
+    assert '"page_title": "UC Dashboard"' in output
+    assert '"response_status": 200' in output
+    assert '"login_page_visible": false' in output
+    assert '"dashboard_shell_visible": true' in output
+    assert '"target_card_visible": false' in output
+    artifact_dir = tmp_path / "uc_navigation_failures"
+    html_artifacts = list(artifact_dir.glob("*.html"))
+    png_artifacts = list(artifact_dir.glob("*.png"))
+    assert len(html_artifacts) == 1
+    assert len(png_artifacts) == 1
+    sanitized_html = html_artifacts[0].read_text(encoding="utf-8")
+    assert "secret" not in sanitized_html
+    assert "operator@example.com" not in sanitized_html
+    assert "[REDACTED" in sanitized_html
+
+
+@pytest.mark.asyncio
+async def test_uc_dashboard_tracker_card_visible_passes_staged_readiness() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC610",
+        store_name="UC Store 610",
+        cost_center="SC3610",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav", uc_main.UC_DASHBOARD_CARD_SELECTOR},
+        html="<html></html>",
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert ready is True
+    output = stream.getvalue()
+    assert "UC home staged readiness probe" in output
+    assert '"target_card_visible": true' in output
