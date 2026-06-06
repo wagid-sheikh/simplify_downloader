@@ -239,6 +239,7 @@ async def test_invalid_session_always_triggers_fallback_login_for_concurrent_sto
 
     async def _probe(*, page, store, logger, source):
         if source == "session" and page.session_state == "invalid":
+            setattr(page, "_uc_login_required", True)
             return False
         return True
 
@@ -448,7 +449,10 @@ async def test_prepare_uc_api_page_for_store_refreshes_expired_storage_state(
     monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
 
     async def _probe(*, page, store, logger, source):
-        return source == "post-login"
+        if source != "post-login":
+            setattr(page, "_uc_login_required", True)
+            return False
+        return True
 
     async def _login(*, page, store, logger):
         page.session_state = "valid"
@@ -578,11 +582,41 @@ class _MappedLocator:
         return 1 if self.visible else 0
 
 
+class _FakeApiResponse:
+    def __init__(self, *, status: int, payload: object) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def json(self) -> object:
+        return self._payload
+
+
+class _FakeRequestContext:
+    def __init__(self, responses: list[_FakeApiResponse]) -> None:
+        self._responses = responses
+        self.urls: list[str] = []
+
+    async def get(self, url: str, *, timeout: int) -> _FakeApiResponse:
+        assert timeout == 15_000
+        self.urls.append(url)
+        if not self._responses:
+            raise AssertionError("unexpected API readiness request")
+        return self._responses.pop(0)
+
+
 class _DashboardProbePage:
-    def __init__(self, *, url: str, visible_selectors: set[str], html: str) -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        visible_selectors: set[str],
+        html: str,
+        api_responses: list[_FakeApiResponse] | None = None,
+    ) -> None:
         self.url = url
         self.visible_selectors = visible_selectors
         self._html = html
+        self.request = _FakeRequestContext(api_responses or [])
         self.screenshot_path: str | None = None
 
     async def wait_for_url(self, predicate, *, timeout: int) -> None:
@@ -661,6 +695,110 @@ async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payloa
     assert "secret" not in sanitized_html
     assert "operator@example.com" not in sanitized_html
     assert "[REDACTED" in sanitized_html
+
+
+@pytest.mark.asyncio
+async def test_uc_dashboard_shell_without_tracker_card_is_ready_when_api_probe_succeeds() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC611",
+        store_name="UC Store 611",
+        cost_center="SC3611",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav"},
+        html="<html></html>",
+        api_responses=[_FakeApiResponse(status=200, payload={"latestOrderId": 12345})],
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert ready is True
+    output = stream.getvalue()
+    assert "Daily Operations Tracker card selector is missing; API readiness succeeded" in output
+    assert '"target_card_visible": false' in output
+    assert '"api_probe_ready": true' in output
+    assert '"status": "info"' in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_uc_dashboard_shell_api_unauthorized_requires_login(status: int) -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC612",
+        store_name="UC Store 612",
+        cost_center="SC3612",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav"},
+        html="<html></html>",
+        api_responses=[
+            _FakeApiResponse(status=status, payload={"message": "unauthorized"})
+        ],
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert ready is False
+    assert getattr(page, "_uc_login_required") is True
+    output = stream.getvalue()
+    assert "UC API readiness probe returned unauthorized; login required" in output
+    assert f'"api_probe_status": {status}' in output
+    assert '"api_probe_unauthorized": true' in output
+
+
+@pytest.mark.asyncio
+async def test_uc_login_page_visible_is_not_home_ready() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC613",
+        store_name="UC Store 613",
+        cost_center="SC3613",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://store.ucleanlaundry.com/login",
+        visible_selectors={"#email", "#password"},
+        html='<html><input id="email"><input id="password" type="password"></html>',
+        api_responses=[_FakeApiResponse(status=200, payload={"latestOrderId": 12345})],
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert ready is False
+    assert getattr(page, "_uc_login_required") is True
+    output = stream.getvalue()
+    assert "Home page not reached; login/session page is visible" in output
+    assert '"login_page_visible": true' in output
 
 
 @pytest.mark.asyncio
