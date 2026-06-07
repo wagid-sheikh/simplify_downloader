@@ -118,6 +118,8 @@ HOME_READY_SELECTORS = (
     ".navbar",
     "header",
 )
+# Legacy dashboard card: useful for observability only. Dashboard readiness is
+# authenticated by URL, shell visibility, login absence, and API probe success.
 UC_DASHBOARD_CARD_SELECTOR = 'h5.card-title:has-text("Daily Operations Tracker")'
 UC_DASHBOARD_READY_URL = "https://storepanel.ucleanlaundry.com/dashboard"
 UC_API_READINESS_ENDPOINTS = (
@@ -129,7 +131,6 @@ UC_FAILURE_INVALID_STORED_SESSION = "uc_invalid_stored_session"
 UC_FAILURE_LOGIN_FORM_OR_CREDENTIAL = "uc_login_form_or_credential_failure"
 UC_FAILURE_POST_LOGIN_DASHBOARD_NOT_REACHED = "uc_post_login_dashboard_not_reached"
 UC_FAILURE_AUTH_TOKEN_NOT_APPLIED = "uc_auth_token_not_applied"
-UC_FAILURE_DASHBOARD_SELECTOR_MISSING = "uc_dashboard_selector_card_missing"
 UC_DASHBOARD_SHELL_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -6070,10 +6071,7 @@ async def _wait_for_home_ready(
         )
         return True
 
-    if probe.dashboard_shell_visible and not probe.target_card_visible:
-        readiness_failure_reason = "UC dashboard selector/card missing"
-        failure_class = UC_FAILURE_DASHBOARD_SELECTOR_MISSING
-    elif (
+    if (
         dashboard_url_matched
         and probe.dashboard_shell_visible
         and not probe.api_probe_ready
