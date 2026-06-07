@@ -1,0 +1,39 @@
+{
+  "description": "Sanitized UC Store Panel 2.0 getDeliveredOrders HAR sample.",
+  "request": {
+    "path": "/api/v1/bookings/getDeliveredOrders",
+    "query": {
+      "page": "1",
+      "limit": "30",
+      "sortBy": "delivered_at",
+      "sortOrder": "desc",
+      "startDate": "2026-06-01",
+      "endDate": "2026-06-02",
+      "dateType": "pickup",
+      "franchise": "UCLEAN"
+    }
+  },
+  "response": {
+    "data": [
+      {
+        "id": 101,
+        "booking_code": "UC610-0001",
+        "status": 7,
+        "pickupDate": "2026-06-01",
+        "dropDate": "2026-06-02",
+        "name": "Sanitized Customer",
+        "mobile": "9999990000",
+        "address": "Sanitized Address",
+        "final_amount": "738.09",
+        "suggestion": "Handle carefully",
+        "delivered_at": "2026-06-02 18:36:46",
+        "updated_at": "2026-06-02 18:36:46",
+        "payment_details": "[{\"payment_mode\":1,\"payment_amount\":500,\"created_at\":\"2026-06-02 18:36:46\",\"transaction_id\":\"TXN-HAR-1\"}]"
+      }
+    ],
+    "pagination": {
+      "total": 1,
+      "totalPages": 1
+    }
+  }
+}
