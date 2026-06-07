@@ -2838,7 +2838,7 @@ async def main(
         )
         pipeline_entry["window_count"] += result.window_count
         _merge_status_counts(pipeline_entry["status_counts"], result.status_counts)
-        _accumulate_ingestion_totals(pipeline_entry["ingestion_totals"], {"total": result.ingestion_totals})
+        _accumulate_ingestion_totals(pipeline_entry["ingestion_totals"], result.ingestion_totals)
         status_conflicts = [
             window
             for window in result.window_audit
@@ -2906,7 +2906,7 @@ async def main(
         )
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
-        _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
+        _accumulate_ingestion_totals(grand_ingestion_totals, result.ingestion_totals)
         _merge_row_facts(row_facts, result.row_facts)
         if result.pipeline_name == "uc_orders_sync":
             uc_warning_count_total += sum(
