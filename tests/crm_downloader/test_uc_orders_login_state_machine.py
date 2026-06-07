@@ -467,6 +467,66 @@ async def test_prepare_uc_api_page_for_store_refreshes_expired_storage_state(
 
 
 @pytest.mark.asyncio
+async def test_prepare_uc_api_page_reports_post_login_api_401_as_token_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="A100",
+        store_name="Store A",
+        cost_center=None,
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+    (tmp_path / f"{store.store_code}_storage_state.json").write_text("{}")
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+
+    async def _probe(*, page, store, logger, source):
+        if source == "session":
+            setattr(page, "_uc_login_required", True)
+            return False
+        assert source == "post-login"
+        uc_main._set_uc_readiness_failure(
+            page,
+            message="UC post-login API probe unauthorized",
+            failure_class=uc_main.UC_FAILURE_AUTH_TOKEN_NOT_APPLIED,
+        )
+        setattr(page, "_uc_api_readiness_unauthorized", True)
+        return False
+
+    async def _login(*, page, store, logger):
+        page.session_state = "valid"
+        page.url = store.home_url or page.url
+        return True
+
+    monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(side_effect=_probe))
+    monkeypatch.setattr(uc_main, "_perform_login", AsyncMock(side_effect=_login))
+
+    result = await uc_main.prepare_uc_api_page_for_store(
+        browser=_FakeBrowser(), store=store, logger=logger, source="test"
+    )
+
+    assert result.ok is False
+    assert result.message == "UC post-login API probe unauthorized"
+    assert result.login_error_code is None
+    assert result.reason_codes == []
+    assert result.fallback_login_result is False
+    output = stream.getvalue()
+    assert "UC post-login API probe unauthorized" in output
+    assert '"failure_class": "uc_auth_token_not_applied"' in output
+    assert "Login failed after session probe" not in output
+    assert "Login DOM mismatch after session probe" not in output
+
+
+@pytest.mark.asyncio
 async def test_run_store_discovery_uses_uc_api_page_preparation_helper(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -679,7 +739,8 @@ async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payloa
         "UC dashboard shell loaded but legacy Daily Operations Tracker "
         "card selector is missing; API readiness did not succeed"
     ) in output
-    assert "UC API readiness failed after dashboard shell loaded" in output
+    assert "UC dashboard selector/card missing" in output
+    assert '"failure_class": "uc_dashboard_selector_card_missing"' in output
     assert '"final_url": "https://storepanel.ucleanlaundry.com/dashboard"' in output
     assert '"page_title": "UC Dashboard"' in output
     assert '"response_status": 200' in output
@@ -840,6 +901,7 @@ async def test_uc_dashboard_tracker_card_visible_still_requires_api_readiness() 
     output = stream.getvalue()
     assert "UC home staged readiness probe" in output
     assert "UC API readiness failed after dashboard shell loaded" in output
+    assert '"failure_class": "uc_auth_token_not_applied"' in output
     assert '"target_card_visible": true' in output
     assert '"api_probe_ready": false' in output
 
