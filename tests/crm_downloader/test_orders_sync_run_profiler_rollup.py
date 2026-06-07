@@ -409,6 +409,108 @@ def test_accumulate_ingestion_totals_supports_flat_totals_payload() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_profiler_summary_rolls_store_ingestion_totals_into_uc_pipeline_and_grand_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted_summaries: list[dict] = []
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+    monkeypatch.setattr(
+        profiler,
+        "get_logger",
+        lambda **kwargs: profiler.JsonLogger(run_id=kwargs.get("run_id"), log_file_path=None),
+    )
+
+    async def fake_fetch_pipeline_id(**_kwargs: object) -> int:
+        return 202
+
+    async def fake_load_store_profiles(**_kwargs: object) -> list[StoreProfile]:
+        return [
+            StoreProfile(
+                store_code="UC01",
+                store_name="UC Store 01",
+                cost_center="CC-UC01",
+                sync_config={},
+                start_date=None,
+            )
+        ]
+
+    async def fake_process_store(**_kwargs: object) -> StoreRunResult:
+        status_counts = profiler._init_status_counts()
+        status_counts["success"] = 1
+        ingestion_totals = profiler._init_ingestion_totals()
+        ingestion_totals.update(
+            {
+                "rows_downloaded": 41,
+                "rows_ingested": 39,
+                "staging_rows": 39,
+                "final_rows": 37,
+                "staging_inserted": 31,
+                "staging_updated": 8,
+                "final_inserted": 29,
+                "final_updated": 8,
+            }
+        )
+        return StoreRunResult(
+            store_code="UC01",
+            pipeline_group="UC",
+            pipeline_name="uc_orders_sync",
+            cost_center="CC-UC01",
+            overall_status="success",
+            window_count=1,
+            windows=[(date(2024, 3, 1), date(2024, 3, 2))],
+            status_counts=status_counts,
+            window_audit=[
+                {
+                    "store_code": "UC01",
+                    "from_date": "2024-03-01",
+                    "to_date": "2024-03-02",
+                    "status": "success",
+                    "ingestion_counts": {},
+                }
+            ],
+            ingestion_totals=ingestion_totals,
+            row_facts=_init_row_facts(),
+        )
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        persisted_summaries.append(summary_record)
+
+    async def fake_persist_missing_windows_log_rows(**_kwargs: object) -> None:
+        return None
+
+    async def fake_send_notifications_for_run(_pipeline_name: str, _run_id: str) -> dict:
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    monkeypatch.setattr(profiler, "_fetch_pipeline_id", fake_fetch_pipeline_id)
+    monkeypatch.setattr(profiler, "_load_store_profiles", fake_load_store_profiles)
+    monkeypatch.setattr(profiler, "_process_store", fake_process_store)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(profiler, "_persist_missing_windows_log_rows", fake_persist_missing_windows_log_rows)
+    monkeypatch.setattr(profiler, "send_notifications_for_run", fake_send_notifications_for_run)
+
+    await profiler.main(sync_group="UC", max_workers=1, run_env="test", run_id="profiler-uc-rollup")
+
+    metrics = persisted_summaries[0]["metrics_json"]
+    expected_totals = {
+        "rows_downloaded": 41,
+        "rows_ingested": 39,
+        "staging_rows": 39,
+        "final_rows": 37,
+        "staging_inserted": 31,
+        "staging_updated": 8,
+        "final_inserted": 29,
+        "final_updated": 8,
+    }
+
+    assert metrics["pipeline_totals"]["UC"]["ingestion_totals"] == expected_totals
+    assert metrics["ingestion_grand_totals"] == expected_totals
+
+
 def test_profiler_top_level_status_failed_when_any_window_fails() -> None:
     status_counts = {
         "success": 3,
