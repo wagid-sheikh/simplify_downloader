@@ -1061,6 +1061,25 @@ class OrdersNavigationResult:
         return self.ready
 
 
+class TdOrdersOverduePopupBlocked(RuntimeError):
+    """Raised when TD Orders navigation is blocked by the overdue-orders popup.
+
+    The popup is a temporary store/window condition, not proof that the shared
+    TD session is globally unauthorized. Callers that can resume later should
+    record a retryable skip instead of collapsing this into auth failure.
+    """
+
+    reason = ORDERS_OVERDUE_POPUP_BLOCKED_REASON
+    modal_selector = OVERDUE_ORDERS_POPUP_SELECTOR
+
+    def __init__(self, *, store_code: str, message: str | None = None) -> None:
+        self.store_code = store_code
+        super().__init__(
+            message
+            or f"{ORDERS_OVERDUE_POPUP_BLOCKED_REASON} for {store_code}"
+        )
+
+
 def _coerce_orders_navigation_result(value: OrdersNavigationResult | bool) -> OrdersNavigationResult:
     if isinstance(value, OrdersNavigationResult):
         return value
@@ -5497,6 +5516,8 @@ async def prepare_td_api_context_for_store(
             if owns_context:
                 with contextlib.suppress(Exception):
                     await context.close()
+            if navigation_result.reason == ORDERS_OVERDUE_POPUP_BLOCKED_REASON:
+                raise TdOrdersOverduePopupBlocked(store_code=store.store_code)
             raise RuntimeError(
                 "Orders container did not load from Reports navigation"
                 + (f": {navigation_result.reason}" if navigation_result.reason else "")
