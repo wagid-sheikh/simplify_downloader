@@ -119,6 +119,7 @@ HOME_READY_SELECTORS = (
     "header",
 )
 UC_DASHBOARD_CARD_SELECTOR = 'h5.card-title:has-text("Daily Operations Tracker")'
+UC_DASHBOARD_READY_URL = "https://storepanel.ucleanlaundry.com/dashboard"
 UC_API_READINESS_ENDPOINTS = (
     "https://store.ucleanlaundry.com/api/v1/stores/bookings/latestOrderId?franchise=UCLEAN",
     "https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?page=1&limit=1&sortBy=delivered_at&sortOrder=desc&franchise=UCLEAN",
@@ -3828,7 +3829,15 @@ async def prepare_uc_api_page_for_store(
                 ):
                     fallback_login_result = False
             if not fallback_login_result:
-                error_message = "Login failed after session probe"
+                readiness_failure_reason = getattr(
+                    page, "_uc_home_readiness_failure_reason", None
+                )
+                error_message = (
+                    readiness_failure_reason
+                    if isinstance(readiness_failure_reason, str)
+                    and readiness_failure_reason.strip()
+                    else "Login failed after session probe"
+                )
                 reason_codes: list[str] = []
                 if isinstance(login_error_code, str) and login_error_code.strip():
                     reason_codes.append(login_error_code)
@@ -5712,14 +5721,19 @@ async def _wait_for_home_ready(
         setattr(page, "_uc_home_url_timeout", True)
 
     probe = await _probe_uc_home_readiness(page=page, store=store, home_url=home_url)
+    dashboard_url_matched = _url_matches_target(
+        probe.final_url or "", UC_DASHBOARD_READY_URL
+    )
+    readiness_confirmed = (
+        dashboard_url_matched
+        and not probe.login_page_visible
+        and probe.dashboard_shell_visible
+        and probe.api_probe_ready
+    )
     log_event(
         logger=logger,
         phase="navigation",
-        status=(
-            "info"
-            if (probe.target_card_visible or probe.api_probe_ready)
-            else "warning"
-        ),
+        status="info" if readiness_confirmed else "warning",
         message="UC home staged readiness probe",
         store_code=store.store_code,
         home_url=home_url,
@@ -5780,41 +5794,23 @@ async def _wait_for_home_ready(
         return False
 
     if probe.dashboard_shell_visible and not probe.target_card_visible:
-        if probe.api_probe_ready:
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="info",
-                message=(
-                    "UC dashboard shell loaded but Daily Operations Tracker "
-                    "card selector is missing; API readiness succeeded"
-                ),
-                store_code=store.store_code,
-                home_url=home_url,
-                current_url=probe.final_url,
-                source=source,
-                **probe.as_log_fields(),
-            )
-        else:
-            dom_snippet = await _maybe_get_dom_snippet(page)
-            probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
-                page=page, store=store, source=source
-            )
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="warning",
-                message="UC dashboard shell loaded but Daily Operations Tracker card selector is missing",
-                store_code=store.store_code,
-                home_url=home_url,
-                current_url=probe.final_url,
-                source=source,
-                **probe.as_log_fields(),
-                **_dom_snippet_fields(dom_snippet),
-            )
-            return False
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="info" if probe.api_probe_ready else "warning",
+            message=(
+                "UC dashboard shell loaded but legacy Daily Operations Tracker "
+                "card selector is missing; API readiness "
+                f"{'succeeded' if probe.api_probe_ready else 'did not succeed'}"
+            ),
+            store_code=store.store_code,
+            home_url=home_url,
+            current_url=probe.final_url,
+            source=source,
+            **probe.as_log_fields(),
+        )
 
-    if probe.api_probe_ready or probe.target_card_visible:
+    if readiness_confirmed:
         log_event(
             logger=logger,
             phase="navigation",
@@ -5832,6 +5828,16 @@ async def _wait_for_home_ready(
         )
         return True
 
+    readiness_failure_reason = (
+        "UC API readiness failed after dashboard shell loaded"
+        if (
+            dashboard_url_matched
+            and probe.dashboard_shell_visible
+            and not probe.api_probe_ready
+        )
+        else "UC dashboard readiness failed before required URL/shell/API signals"
+    )
+    setattr(page, "_uc_home_readiness_failure_reason", readiness_failure_reason)
     dom_snippet = await _maybe_get_dom_snippet(page)
     probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
         page=page, store=store, source=source
@@ -5840,7 +5846,7 @@ async def _wait_for_home_ready(
         logger=logger,
         phase="navigation",
         status="warning",
-        message="UC dashboard readiness failed before shell/card visibility",
+        message=readiness_failure_reason,
         store_code=store.store_code,
         home_url=home_url,
         current_url=probe.final_url,
