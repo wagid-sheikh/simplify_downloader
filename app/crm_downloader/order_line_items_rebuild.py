@@ -967,9 +967,12 @@ def _zero_snapshot_counts(metrics: Sequence[WindowMetrics]) -> dict[str, int]:
 
 
 def _final_rebuild_status(
-    *, missing_window_count: int, suspicious_zero_snapshot_count: int
+    *,
+    missing_window_count: int,
+    suspicious_zero_snapshot_count: int,
+    skipped_window_count: int = 0,
 ) -> str:
-    if missing_window_count or suspicious_zero_snapshot_count:
+    if missing_window_count or suspicious_zero_snapshot_count or skipped_window_count:
         return "warning"
     return "ok"
 
@@ -1877,7 +1880,7 @@ async def run_rebuild(
     metrics: list[WindowMetrics] = []
     expected_windows: set[tuple[Source, str, date, date]] = set()
     successful_windows: set[tuple[Source, str, date, date]] = set()
-    resumable_skipped_windows: set[tuple[Source, str, date, date]] = set()
+    skipped_window_details: dict[tuple[Source, str, date, date], dict[str, Any]] = {}
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
@@ -1995,7 +1998,16 @@ async def run_rebuild(
                         fetch_snapshot=fetch_snapshot,
                     )
                 except TdOrdersOverduePopupBlocked as exc:
-                    resumable_skipped_windows.add(key)
+                    skipped_window_details[key] = {
+                        "source": store.source,
+                        "store_code": store.store_code.upper(),
+                        "cost_center": store.cost_center,
+                        "window_start": window.start.isoformat(),
+                        "window_end": window.end.isoformat(),
+                        "reason": ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                        "skip_status": "resumable",
+                        "retryable": True,
+                    }
                     log_event(
                         logger=logger,
                         phase="order_line_items_rebuild_window",
@@ -2108,22 +2120,36 @@ async def run_rebuild(
                             dry_run=False,
                         )
                     break
+    skipped_windows = [
+        skipped_window_details[key]
+        for key in sorted(
+            skipped_window_details, key=lambda item: (item[0], item[1], item[2], item[3])
+        )
+    ]
     missing_windows = sorted(
-        expected_windows - successful_windows,
+        expected_windows - successful_windows - set(skipped_window_details),
         key=lambda item: (item[0], item[1], item[2], item[3]),
     )
+    has_resumable_skips = bool(skipped_windows)
     log_event(
         logger=logger,
         phase="order_line_items_rebuild_missing_windows",
-        status="warning" if missing_windows else "ok",
+        status="warning" if missing_windows or has_resumable_skips else "ok",
         message=(
             "Detected missing order_line_items rebuild windows"
             if missing_windows
-            else "No missing order_line_items rebuild windows detected"
+            else (
+                "No fatal missing order_line_items rebuild windows detected; "
+                "resumable skipped windows remain"
+                if has_resumable_skips
+                else "No missing order_line_items rebuild windows detected"
+            )
         ),
         run_id=run_id,
         missing_window_count=len(missing_windows),
-        resumable_skipped_window_count=len(resumable_skipped_windows),
+        skipped_window_count=len(skipped_windows),
+        skipped_windows=skipped_windows,
+        resumable_skipped_window_count=len(skipped_windows),
         missing_windows=[
             {
                 "source": source,
@@ -2139,17 +2165,25 @@ async def run_rebuild(
     final_status = _final_rebuild_status(
         missing_window_count=len(missing_windows),
         suspicious_zero_snapshot_count=zero_counts["suspicious_zero_snapshot_count"],
+        skipped_window_count=len(skipped_windows),
+    )
+    final_message = (
+        "Completed order_line_items historical rebuild with resumable skipped windows"
+        if has_resumable_skips and not missing_windows
+        else "Completed order_line_items historical rebuild"
     )
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
         status=final_status,
-        message="Completed order_line_items historical rebuild",
+        message=final_message,
         run_id=run_id,
         window_count=len(metrics),
         expected_window_count=len(expected_windows),
         missing_window_count=len(missing_windows),
-        resumable_skipped_window_count=len(resumable_skipped_windows),
+        skipped_window_count=len(skipped_windows),
+        skipped_windows=skipped_windows,
+        resumable_skipped_window_count=len(skipped_windows),
         dry_run=dry_run,
         resume=resume,
         allow_ambiguous_empty=allow_ambiguous_empty,

@@ -161,7 +161,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Requested window size in days; CRM fetches are capped at 30 days",
     )
     oli_rebuild.add_argument("--dry-run", action="store_true")
-    oli_rebuild.add_argument("--resume", action="store_true")
+    oli_rebuild.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip previously successful live source/store/windows and retry remaining "
+            "windows, including TD Over Due Popup resumable skips after store staff "
+            "clear overdue orders"
+        ),
+    )
     oli_rebuild.add_argument("--run-id", default=None)
 
     recovery_parser = subparsers.add_parser(

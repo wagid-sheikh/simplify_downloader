@@ -4376,20 +4376,21 @@ async def test_td_overdue_popup_actual_run_skips_td_window_and_uc_continues(
     monkeypatch.setattr(rebuild, "_check_browser_launch_contract", no_browser_check)
     monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
 
-    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
-        await rebuild.run_rebuild(
-            source_selection="both",
-            store_codes=None,
-            start_date=date(2025, 1, 1),
-            end_date=date(2025, 1, 1),
-            window_size_days=1,
-            dry_run=True,
-            run_id="td-popup-continues",
-            logger=logger,  # type: ignore[arg-type]
-            fetch_snapshot=fetch_snapshot,  # type: ignore[arg-type]
-        )
+    metrics = await rebuild.run_rebuild(
+        source_selection="both",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="td-popup-continues",
+        logger=logger,  # type: ignore[arg-type]
+        fetch_snapshot=fetch_snapshot,  # type: ignore[arg-type]
+    )
 
-    assert "td:TD001:2025-01-01..2025-01-01" in exc_info.value.missing_windows
+    assert [(metric.source, metric.store_code) for metric in metrics] == [
+        ("uc", "UC001")
+    ]
     assert any(
         event.get("phase") == "order_line_items_rebuild_window"
         and event.get("source") == "td"
@@ -4403,6 +4404,37 @@ async def test_td_overdue_popup_actual_run_skips_td_window_and_uc_continues(
         and event.get("source") == "uc"
         for event in logger.events
     )
+    missing_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild_missing_windows"
+    ][-1]
+    assert missing_event["missing_window_count"] == 0
+    assert missing_event["skipped_window_count"] == 1
+    assert missing_event["resumable_skipped_window_count"] == 1
+    assert missing_event["skipped_windows"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "cost_center": "CC01",
+            "window_start": "2025-01-01",
+            "window_end": "2025-01-01",
+            "reason": td_orders_main.ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            "skip_status": "resumable",
+            "retryable": True,
+        }
+    ]
+    final_event = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("message")
+        == "Completed order_line_items historical rebuild with resumable skipped windows"
+    ][-1]
+    assert final_event["status"] == "warning"
+    assert final_event["missing_window_count"] == 0
+    assert final_event["skipped_window_count"] == 1
+    assert final_event["resumable_skipped_window_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -4452,18 +4484,19 @@ async def test_td_overdue_popup_does_not_mutate_rows_or_write_success_progress_a
     monkeypatch.setattr(rebuild, "_check_browser_launch_contract", no_browser_check)
     monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
 
-    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
-        await rebuild.run_rebuild(
-            source_selection="td",
-            store_codes=None,
-            start_date=date(2025, 1, 1),
-            end_date=date(2025, 1, 1),
-            window_size_days=1,
-            dry_run=False,
-            run_id="td-popup-first",
-            logger=logger,  # type: ignore[arg-type]
-            fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
-        )
+    first_metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        run_id="td-popup-first",
+        logger=logger,  # type: ignore[arg-type]
+        fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
+    )
+
+    assert first_metrics == []
 
     rows = await _rows(
         db_url,
@@ -4478,18 +4511,30 @@ async def test_td_overdue_popup_does_not_mutate_rows_or_write_success_progress_a
     )
     assert progress_rows == []
 
-    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
-        await rebuild.run_rebuild(
-            source_selection="td",
-            store_codes=None,
-            start_date=date(2025, 1, 1),
-            end_date=date(2025, 1, 1),
-            window_size_days=1,
-            dry_run=True,
-            resume=True,
-            run_id="td-popup-resume",
-            logger=logger,  # type: ignore[arg-type]
-            fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
-        )
+    resume_metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        resume=True,
+        run_id="td-popup-resume",
+        logger=logger,  # type: ignore[arg-type]
+        fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
+    )
 
+    assert resume_metrics == []
     assert fetch_calls == ["TD001", "TD001"]
+    final_events = [
+        event
+        for event in logger.events
+        if event.get("phase") == "order_line_items_rebuild"
+        and event.get("message")
+        == "Completed order_line_items historical rebuild with resumable skipped windows"
+    ]
+    assert final_events[-1]["status"] == "warning"
+    assert final_events[-1]["resume"] is True
+    assert final_events[-1]["skipped_windows"][0]["reason"] == (
+        td_orders_main.ORDERS_OVERDUE_POPUP_BLOCKED_REASON
+    )

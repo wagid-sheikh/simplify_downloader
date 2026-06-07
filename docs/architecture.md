@@ -402,7 +402,8 @@ poetry run python -m app crm rebuild-order-line-items --source both --from-date 
 # Full live rebuild: first live historical run; writes replacements and live resume progress.
 poetry run python -m app crm rebuild-order-line-items --source both
 
-# Interrupted live recovery: continue a previously interrupted live rebuild.
+# Interrupted/live recovery: continue incomplete windows, including TD Over Due Popup skips
+# after store staff clear overdue orders.
 poetry run python -m app crm rebuild-order-line-items --source both --resume
 
 # Stricter interrupted recovery: only reuse progress from a specific prior run ID.
@@ -414,6 +415,8 @@ poetry run python -m app crm rebuild-order-line-items --source both --fresh
 # Optional local wrapper for the same CLI; pass the same flags after the script name.
 bash scripts/run_local_order_line_items_rebuild.sh --source both --from-date YYYY-MM-DD --to-date YYYY-MM-DD --window-days 7 --dry-run
 ```
+
+TD Over Due Popup is treated as a resumable store/window skip, not as a clean success and not as a fatal missing window when the rest of the selected windows complete. Final telemetry reports `status=warning`, `skipped_window_count`, `skipped_windows`, `resumable_skipped_window_count`, and the skip reason `orders_overdue_popup_blocked` with the affected source, store, cost center, and window dates. After store staff clear the overdue orders in TD, rerun with `--resume` to retry those skipped windows while preserving prior successful live progress.
 
 Operational behavior and limitations:
 
