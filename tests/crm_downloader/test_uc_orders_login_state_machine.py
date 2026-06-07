@@ -1012,3 +1012,91 @@ async def test_uc_login_token_authenticates_readiness_when_dashboard_card_missin
     assert '"target_card_visible": false' in output
     assert '"api_probe_ready": true' in output
     assert '"api_probe_unauthorized": false' in output
+
+
+class _LoginSelectorProbeLocator:
+    def __init__(self, *, page: "_LoginSelectorProbePage", selector: str) -> None:
+        self._page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> "_LoginSelectorProbeLocator":
+        return self
+
+    async def wait_for(self, *, state: str, timeout: int) -> None:
+        self._page.wait_calls.append(
+            {"selector": self.selector, "state": state, "timeout": timeout}
+        )
+        if self.selector not in self._page.visible_selectors:
+            raise uc_main.TimeoutError(f"{self.selector} not visible")
+
+
+class _LoginSelectorProbePage:
+    def __init__(self, *, visible_selectors: set[str]) -> None:
+        self.visible_selectors = visible_selectors
+        self.wait_calls: list[dict[str, object]] = []
+        self.locator_calls: list[str] = []
+
+    def locator(self, selector: str) -> _LoginSelectorProbeLocator:
+        self.locator_calls.append(selector)
+        return _LoginSelectorProbeLocator(page=self, selector=selector)
+
+
+@pytest.mark.asyncio
+async def test_uc_login_direct_selector_short_circuits_slow_fallbacks() -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC615",
+        store_name="UC Store 615",
+        cost_center="SC3615",
+        sync_config={"urls": {"login": "https://store.ucleanlaundry.com/login"}},
+    )
+    page = _LoginSelectorProbePage(visible_selectors={"#email"})
+
+    locator, selector = await uc_main._resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="username",
+        selectors=(
+            uc_main.UC_LOGIN_SELECTORS["username"],
+            "input[type='email'], input[name*='email' i]",
+        ),
+        timeout_ms=8_000,
+        fallback_timeout_ms=1_000,
+    )
+
+    assert selector == "#email"
+    assert locator.selector == "#email"
+    assert page.wait_calls == [
+        {"selector": "#email", "state": "visible", "timeout": 8_000}
+    ]
+    assert page.locator_calls == ["#email"]
+
+
+@pytest.mark.asyncio
+async def test_uc_login_fallback_probe_uses_short_timeout_after_direct_selector() -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC616",
+        store_name="UC Store 616",
+        cost_center="SC3616",
+        sync_config={"urls": {"login": "https://store.ucleanlaundry.com/login"}},
+    )
+    page = _LoginSelectorProbePage(visible_selectors={"input[id='email']"})
+
+    _locator, selector = await uc_main._resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="username",
+        selectors=("#email", "input[id='email']"),
+        timeout_ms=8_000,
+        fallback_timeout_ms=1_000,
+    )
+
+    assert selector == "input[id='email']"
+    assert page.wait_calls == [
+        {"selector": "#email", "state": "visible", "timeout": 8_000},
+        {"selector": "input[id='email']", "state": "visible", "timeout": 1_000},
+    ]

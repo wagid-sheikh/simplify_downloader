@@ -86,10 +86,11 @@ SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
 LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT = 8_000
 LOGIN_SELECTOR_TIMEOUT_MS_MIN = 1_000
+LOGIN_SELECTOR_FALLBACK_TIMEOUT_MS_DEFAULT = 1_000
 UC_LOGIN_SELECTORS = {
     "username": "#email",
     "password": "#password",
-    "submit": "button.btn-primary[type='submit']",
+    "submit": "button[type='submit']",
 }
 UC_LOGIN_EMAIL_SELECTOR_CASCADE = (
     "#email",
@@ -102,11 +103,11 @@ UC_LOGIN_PASSWORD_SELECTOR_CASCADE = (
     "input[type='password'], input[name*='password' i]",
 )
 UC_LOGIN_SUBMIT_SELECTOR_CASCADE = (
+    "button[type='submit']",
     "button.btn-primary[type='submit']",
     "button.btn-primary",
     "button#login",
     "button#submit",
-    "button[type='submit']",
     "input[type='submit']",
 )
 HOME_READY_SELECTORS = (
@@ -1620,6 +1621,16 @@ def _resolve_login_selector_timeout_ms() -> int:
     return max(
         LOGIN_SELECTOR_TIMEOUT_MS_MIN,
         _env_int("UC_LOGIN_SELECTOR_TIMEOUT_MS", LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT),
+    )
+
+
+def _resolve_login_fallback_selector_timeout_ms() -> int:
+    return max(
+        LOGIN_SELECTOR_TIMEOUT_MS_MIN,
+        _env_int(
+            "UC_LOGIN_FALLBACK_SELECTOR_TIMEOUT_MS",
+            LOGIN_SELECTOR_FALLBACK_TIMEOUT_MS_DEFAULT,
+        ),
     )
 
 
@@ -4998,6 +5009,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
 
     selectors = {**UC_LOGIN_SELECTORS, **store.login_selectors}
     login_selector_timeout_ms = _resolve_login_selector_timeout_ms()
+    login_fallback_selector_timeout_ms = _resolve_login_fallback_selector_timeout_ms()
 
     await page.goto(store.login_url or "", wait_until="domcontentloaded")
     login_page_version_signature = await _get_login_page_version_signature(page=page)
@@ -5054,10 +5066,12 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store=store,
         field_name="username",
         selectors=(
+            UC_LOGIN_SELECTORS["username"],
             selectors.get("username", ""),
             *UC_LOGIN_EMAIL_SELECTOR_CASCADE,
         ),
         timeout_ms=login_selector_timeout_ms,
+        fallback_timeout_ms=login_fallback_selector_timeout_ms,
     )
     if username_resolution is None:
         setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
@@ -5069,10 +5083,12 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store=store,
         field_name="password",
         selectors=(
+            UC_LOGIN_SELECTORS["password"],
             selectors.get("password", ""),
             *UC_LOGIN_PASSWORD_SELECTOR_CASCADE,
         ),
         timeout_ms=login_selector_timeout_ms,
+        fallback_timeout_ms=login_fallback_selector_timeout_ms,
     )
     if password_resolution is None:
         setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
@@ -5084,10 +5100,12 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store=store,
         field_name="submit",
         selectors=(
+            UC_LOGIN_SELECTORS["submit"],
             selectors.get("submit", ""),
             *UC_LOGIN_SUBMIT_SELECTOR_CASCADE,
         ),
         timeout_ms=login_selector_timeout_ms,
+        fallback_timeout_ms=login_fallback_selector_timeout_ms,
     )
     if submit_resolution is None:
         setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
@@ -5311,12 +5329,21 @@ async def _resolve_login_field_locator(
     field_name: str,
     selectors: Sequence[str],
     timeout_ms: int,
+    fallback_timeout_ms: int | None = None,
 ) -> tuple[Locator, str] | None:
-    deduped_selectors = [selector for selector in dict.fromkeys(selectors) if selector]
-    for selector in deduped_selectors:
+    deduped_selectors = [
+        selector for selector in dict.fromkeys(selectors) if selector
+    ]
+    effective_fallback_timeout_ms = (
+        fallback_timeout_ms if fallback_timeout_ms is not None else timeout_ms
+    )
+    for selector_index, selector in enumerate(deduped_selectors):
+        selector_timeout_ms = (
+            timeout_ms if selector_index == 0 else effective_fallback_timeout_ms
+        )
         locator = page.locator(selector).first
         try:
-            await locator.wait_for(state="visible", timeout=timeout_ms)
+            await locator.wait_for(state="visible", timeout=selector_timeout_ms)
             log_event(
                 logger=logger,
                 phase="login",
@@ -5325,7 +5352,7 @@ async def _resolve_login_field_locator(
                 store_code=store.store_code,
                 field=field_name,
                 selector=selector,
-                timeout_ms=timeout_ms,
+                timeout_ms=selector_timeout_ms,
             )
             return locator, selector
         except TimeoutError:
@@ -5365,6 +5392,7 @@ async def _resolve_login_field_locator(
         field=field_name,
         attempted_selectors=deduped_selectors,
         timeout_ms=timeout_ms,
+        fallback_timeout_ms=effective_fallback_timeout_ms,
         dom_summary=dom_summary,
         login_page_version_signature=login_page_version_signature,
         **artifact_paths,
@@ -8371,6 +8399,7 @@ async def _get_login_page_version_signature(*, page: Page) -> str:
     probes = {
         "email_id": "#email",
         "password_id": "#password",
+        "submit_type": "button[type='submit']",
         "submit_btn_primary": "button.btn-primary[type='submit']",
         "submit_id_login": "button#login",
         "submit_id_submit": "button#submit",
