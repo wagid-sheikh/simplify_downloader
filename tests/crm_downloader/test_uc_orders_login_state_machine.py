@@ -583,10 +583,14 @@ class _FakeRequestContext:
     def __init__(self, responses: list[_FakeApiResponse]) -> None:
         self._responses = responses
         self.urls: list[str] = []
+        self.headers: list[dict[str, str] | None] = []
 
-    async def get(self, url: str, *, timeout: int) -> _FakeApiResponse:
+    async def get(
+        self, url: str, *, timeout: int, headers: dict[str, str] | None = None
+    ) -> _FakeApiResponse:
         assert timeout == 15_000
         self.urls.append(url)
+        self.headers.append(headers)
         if not self._responses:
             raise AssertionError("unexpected API readiness request")
         return self._responses.pop(0)
@@ -838,3 +842,73 @@ async def test_uc_dashboard_tracker_card_visible_still_requires_api_readiness() 
     assert "UC API readiness failed after dashboard shell loaded" in output
     assert '"target_card_visible": true' in output
     assert '"api_probe_ready": false' in output
+
+
+class _AuthenticatedReadinessPage(_DashboardProbePage):
+    def __init__(self, *, login_payload: dict[str, object]) -> None:
+        super().__init__(
+            url="https://storepanel.ucleanlaundry.com/dashboard",
+            visible_selectors={"nav"},
+            html="<html><nav></nav></html>",
+            api_responses=[
+                _FakeApiResponse(status=401, payload={"message": "unauthorized"})
+            ],
+        )
+        self.local_storage: dict[str, str] = {}
+        self.fetch_calls: list[dict[str, object]] = []
+        self.login_payload = login_payload
+
+    async def evaluate(self, script: str, arg: object | None = None) -> object:
+        if arg == "uc.jwt.token":
+            self.local_storage["token"] = "Bearer uc.jwt.token"
+            self.local_storage["authToken"] = "Bearer uc.jwt.token"
+            return None
+        if "window.localStorage" in script and arg is None:
+            return self.local_storage.get("token")
+        if isinstance(arg, dict) and "requestHeaders" in arg:
+            headers = arg["requestHeaders"]
+            assert isinstance(headers, dict)
+            self.fetch_calls.append(headers)
+            if headers.get("Authorization") == "Bearer uc.jwt.token":
+                return {"status": 200, "payload": {"latestOrderId": 12345}}
+            return {"status": 401, "payload": {"message": "unauthorized"}}
+        return None
+
+
+@pytest.mark.asyncio
+async def test_uc_login_token_authenticates_readiness_when_dashboard_card_missing() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC614",
+        store_name="UC Store 614",
+        cost_center="SC3614",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _AuthenticatedReadinessPage(
+        login_payload={"data": {"token": "uc.jwt.token"}}
+    )
+    login_token = uc_main._extract_uc_login_bearer_token(page.login_payload)
+
+    assert login_token == "uc.jwt.token"
+    assert await uc_main._persist_uc_login_bearer_token(page=page, token=login_token)
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="login"
+    )
+
+    assert ready is True
+    assert page.request.headers[0]["Authorization"] == "Bearer uc.jwt.token"
+    assert page.request.headers[0]["Origin"] == "https://storepanel.ucleanlaundry.com"
+    assert page.request.headers[0]["Referer"] == "https://storepanel.ucleanlaundry.com/"
+    assert page.fetch_calls[0]["Authorization"] == "Bearer uc.jwt.token"
+    output = stream.getvalue()
+    assert "Login failed after session probe" not in output
+    assert '"target_card_visible": false' in output
+    assert '"api_probe_ready": true' in output
+    assert '"api_probe_unauthorized": false' in output
