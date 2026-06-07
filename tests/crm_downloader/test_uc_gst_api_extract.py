@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import date
 from io import StringIO
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app.crm_downloader.uc_orders_sync import gst_api_extract
@@ -24,28 +25,15 @@ def _logged_events(stream: StringIO) -> list[dict[str, object]]:
     return [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
 
 
+def _fixture_payload(name: str) -> dict[str, object]:
+    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / name
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 def test_collect_gst_orders_via_api_uses_tax_report_get_query_and_har_fields(monkeypatch) -> None:
-    # Sanitized from docs/storepanel.ucleanlaundry.com_updated.har tax-report response.
-    tax_report_row = {
-        "order_number": "UC567-1810",
-        "invoice_number": "UC567-2026-27-218",
-        "invoice_date": "2026-06-06 18:36:46",
-        "name": "Sanitized Customer",
-        "customer_phone": "9999990000",
-        "customer_gst": None,
-        "service_names": "Laundry - Wash & Iron",
-        "cloth_item_names": "",
-        "cloth_quantity": 20,
-        "address": None,
-        "store_address": "Sanitized Store Address",
-        "city_name": "Gurugram",
-        "taxable_value": 625.5,
-        "cgst": 56.29,
-        "sgst": 56.29,
-        "total_tax": 112.59,
-        "final_amount": 738.09,
-        "payment_status": "Pending",
-    }
+    tax_report_fixture = _fixture_payload("uc_storepanel_tax_report_sample.json")
+    tax_report_response = tax_report_fixture["response"]
+    tax_report_expected_query = tax_report_fixture["request"]["query"]
     tax_report_urls: list[str] = []
 
     async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
@@ -56,7 +44,7 @@ def test_collect_gst_orders_via_api_uses_tax_report_get_query_and_har_fields(mon
             tax_report_urls.append(url)
             assert method == "GET"
             assert data is None
-            return {"data": [tax_report_row]}
+            return tax_report_response
         return {"data": []}
 
     async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
@@ -78,16 +66,7 @@ def test_collect_gst_orders_via_api_uses_tax_report_get_query_and_har_fields(mon
 
     assert len(tax_report_urls) == 1
     query = parse_qs(urlparse(tax_report_urls[0]).query)
-    assert query == {
-        "from": ["2026-05-06"],
-        "to": ["2026-06-06"],
-        "page": ["1"],
-        "limit": ["20"],
-        "sortBy": ["invoice_date"],
-        "sortOrder": ["DESC"],
-        "export": ["false"],
-        "franchise": ["UCLEAN"],
-    }
+    assert query == {key: [value] for key, value in tax_report_expected_query.items()}
     assert extract.source_fetch_status == "success"
     assert extract.extractor_status == "success"
     assert extract.confirmed_empty is False

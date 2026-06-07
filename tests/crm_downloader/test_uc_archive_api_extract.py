@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 from datetime import date
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app.crm_downloader.uc_orders_sync import archive_api_extract
@@ -27,6 +28,11 @@ class _FakePage:
 
     async def evaluate(self, _script: str):
         return self._evaluate_result
+
+
+def _fixture_payload(name: str) -> dict[str, object]:
+    fixture_path = Path(__file__).resolve().parents[1] / "fixtures" / name
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
 def _read_events(raw: str) -> list[dict[str, object]]:
@@ -257,44 +263,16 @@ def test_fetch_invoice_success_suppresses_per_order_success_log_by_default() -> 
 
 
 def test_collect_archive_orders_uses_har_delivered_orders_query_and_payment_details(monkeypatch) -> None:
+    delivered_orders_fixture = _fixture_payload("uc_storepanel_delivered_orders_sample.json")
+    delivered_orders_response = delivered_orders_fixture["response"]
+    delivered_orders_expected_query = delivered_orders_fixture["request"]["query"]
     stream = io.StringIO()
     logger = JsonLogger(run_id="test", stream=stream, log_file_path=None)
     urls: list[str] = []
 
     async def _fake_api_get_json_with_retries(*, url: str, **_kwargs):
         urls.append(url)
-        return (
-            {
-                "data": [
-                    {
-                        "id": 101,
-                        "booking_code": "UC610-0001",
-                        "status": 7,
-                        "pickupDate": "2026-06-01",
-                        "dropDate": "2026-06-02",
-                        "name": "Sanitized Customer",
-                        "mobile": "9999990000",
-                        "address": "Sanitized Address",
-                        "final_amount": "738.09",
-                        "suggestion": "Handle carefully",
-                        "delivered_at": "2026-06-02 18:36:46",
-                        "updated_at": "2026-06-02 18:36:46",
-                        "payment_details": json.dumps(
-                            [
-                                {
-                                    "payment_mode": 1,
-                                    "payment_amount": 500,
-                                    "created_at": "2026-06-02 18:36:46",
-                                    "transaction_id": "TXN-HAR-1",
-                                }
-                            ]
-                        ),
-                    }
-                ],
-                "pagination": {"total": 1, "totalPages": 1},
-            },
-            None,
-        )
+        return delivered_orders_response, None
 
     async def _fake_fetch_invoice_html_with_retries(**_kwargs):
         return None, 0
@@ -314,14 +292,7 @@ def test_collect_archive_orders_uses_har_delivered_orders_query_and_payment_deta
 
     assert len(urls) == 1
     assert parse_qs(urlparse(urls[0]).query) == {
-        "page": ["1"],
-        "limit": ["30"],
-        "sortBy": ["delivered_at"],
-        "sortOrder": ["desc"],
-        "startDate": ["2026-06-01"],
-        "endDate": ["2026-06-02"],
-        "dateType": ["pickup"],
-        "franchise": ["UCLEAN"],
+        key: [value] for key, value in delivered_orders_expected_query.items()
     }
     assert extract.base_rows[0]["order_code"] == "UC610-0001"
     assert extract.payment_detail_rows == [
