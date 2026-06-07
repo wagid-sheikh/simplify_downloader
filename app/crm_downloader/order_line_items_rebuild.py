@@ -28,6 +28,8 @@ from app.crm_downloader.td_orders_sync.garment_ingest import (
     order_line_items_table,
 )
 from app.crm_downloader.td_orders_sync.main import (
+    ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+    TdOrdersOverduePopupBlocked,
     _load_td_order_stores,
     prepare_td_api_context_for_store,
 )
@@ -101,6 +103,8 @@ SYSTEMIC_SETUP_ERROR_TOKENS = (
     "relation does not exist",
     "column does not exist",
 )
+
+TD_OVERDUE_POPUP_READINESS_STATUS = "overdue_popup_blocked"
 
 STORE_SPECIFIC_ERROR_TOKENS = (
     "401",
@@ -1481,6 +1485,21 @@ async def _td_api_auth_readiness_status(
             if auth_preparation.ready:
                 return "session_valid"
             return "unauthorized"
+    except TdOrdersOverduePopupBlocked as exc:
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild_preflight",
+            status="warning",
+            message="TD auth readiness skipped by overdue orders popup",
+            run_id=run_id,
+            source="td",
+            store_code=store.store_code,
+            cost_center=store.cost_center,
+            auth_readiness=TD_OVERDUE_POPUP_READINESS_STATUS,
+            reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            modal_selector=exc.modal_selector,
+        )
+        return TD_OVERDUE_POPUP_READINESS_STATUS
     except Exception as exc:
         log_event(
             logger=logger,
@@ -1490,6 +1509,7 @@ async def _td_api_auth_readiness_status(
             run_id=run_id,
             source="td",
             store_code=store.store_code,
+            cost_center=store.cost_center,
             auth_readiness="unauthorized",
             error=str(exc),
         )
@@ -1857,6 +1877,7 @@ async def run_rebuild(
     metrics: list[WindowMetrics] = []
     expected_windows: set[tuple[Source, str, date, date]] = set()
     successful_windows: set[tuple[Source, str, date, date]] = set()
+    resumable_skipped_windows: set[tuple[Source, str, date, date]] = set()
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
@@ -1973,6 +1994,29 @@ async def run_rebuild(
                         logger=logger,
                         fetch_snapshot=fetch_snapshot,
                     )
+                except TdOrdersOverduePopupBlocked as exc:
+                    resumable_skipped_windows.add(key)
+                    log_event(
+                        logger=logger,
+                        phase="order_line_items_rebuild_window",
+                        status="warning",
+                        message="Skipping TD order_line_items rebuild window due to overdue orders popup",
+                        run_id=run_id,
+                        source=store.source,
+                        store_code=store.store_code,
+                        cost_center=store.cost_center,
+                        window_start=window.start.isoformat(),
+                        window_end=window.end.isoformat(),
+                        uc_child_run_id=uc_child_run_id,
+                        attempt_no=attempt_no,
+                        skip_status="resumable",
+                        retryable=True,
+                        reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                        auth_readiness=TD_OVERDUE_POPUP_READINESS_STATUS,
+                        modal_selector=exc.modal_selector,
+                        dry_run=dry_run,
+                    )
+                    break
                 except Exception as exc:
                     failure_class = classify_rebuild_failure(exc)
                     source_fetch_fields = _td_garments_incomplete_log_fields(exc)
@@ -2079,6 +2123,7 @@ async def run_rebuild(
         ),
         run_id=run_id,
         missing_window_count=len(missing_windows),
+        resumable_skipped_window_count=len(resumable_skipped_windows),
         missing_windows=[
             {
                 "source": source,
@@ -2104,6 +2149,7 @@ async def run_rebuild(
         window_count=len(metrics),
         expected_window_count=len(expected_windows),
         missing_window_count=len(missing_windows),
+        resumable_skipped_window_count=len(resumable_skipped_windows),
         dry_run=dry_run,
         resume=resume,
         allow_ambiguous_empty=allow_ambiguous_empty,

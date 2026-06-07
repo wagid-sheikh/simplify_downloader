@@ -4275,3 +4275,221 @@ async def test_default_fetch_snapshot_uc_home_readiness_failure_is_hard_failure(
         )
 
     assert browser.closed is True
+
+
+@pytest.mark.asyncio
+async def test_td_overdue_popup_preflight_is_resumable_not_auth_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-popup-preflight.sqlite'}"
+    logger = _InMemoryLogger("td-popup-preflight")
+    storage_state = _write_td_storage_state(tmp_path / "TD001.json")
+    store = rebuild.RebuildStore(
+        source="td",
+        store_code="TD001",
+        cost_center="CC01",
+        raw_store=SimpleNamespace(storage_state_path=storage_state),
+        start_date=date(2025, 1, 1),
+    )
+
+    async def td_popup_status(*_args: Any, **_kwargs: Any) -> str:
+        return rebuild.TD_OVERDUE_POPUP_READINESS_STATUS
+
+    async def no_browser_check(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_popup_status)
+    monkeypatch.setattr(rebuild, "_check_browser_launch_contract", no_browser_check)
+
+    preflight = await rebuild.preflight_rebuild(
+        database_url=db_url,
+        sources=["td"],
+        stores=[store],
+        start_date=date(2025, 1, 1),
+        requested_window_size_days=1,
+        run_id="td-popup-preflight",
+        logger=logger,  # type: ignore[arg-type]
+    )
+
+    assert preflight.auth_readiness == {"td:TD001": "overdue_popup_blocked"}
+    assert any(
+        event.get("phase") == "order_line_items_rebuild_preflight"
+        and event.get("status") == "ok"
+        and event.get("auth_failures") == []
+        for event in logger.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_td_overdue_popup_actual_run_skips_td_window_and_uc_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-popup-continues.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    logger = _InMemoryLogger("td-popup-continues")
+
+    async def load_stores(*, sources: Any, store_codes: Any, logger: Any) -> list[Any]:
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="TD001",
+                cost_center="CC01",
+                raw_store=SimpleNamespace(
+                    storage_state_path=_write_td_storage_state(tmp_path / "TD001.json")
+                ),
+                start_date=date(2025, 1, 1),
+            ),
+            rebuild.RebuildStore(
+                source="uc",
+                store_code="UC001",
+                cost_center="CC02",
+                raw_store=SimpleNamespace(
+                    storage_state_path=_write_uc_storage_state(tmp_path / "UC001.json")
+                ),
+                start_date=date(2025, 1, 1),
+            ),
+        ]
+
+    async def no_browser_check(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def td_auth_ready(*_args: Any, **_kwargs: Any) -> str:
+        return "session_valid"
+
+    async def fetch_snapshot(
+        *, source: str, store: Any, window: Any, **_kwargs: Any
+    ) -> rebuild.SourceSnapshot:
+        if source == "td":
+            raise td_orders_main.TdOrdersOverduePopupBlocked(
+                store_code=store.store_code
+            )
+        return rebuild.SourceSnapshot(
+            line_item_rows=[],
+            order_snapshots=[
+                {"order_number": "UC-1", "snapshot_outcome": "complete_empty"}
+            ],
+            zero_snapshot_class="confirmed_source_empty",
+        )
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_check_browser_launch_contract", no_browser_check)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete) as exc_info:
+        await rebuild.run_rebuild(
+            source_selection="both",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="td-popup-continues",
+            logger=logger,  # type: ignore[arg-type]
+            fetch_snapshot=fetch_snapshot,  # type: ignore[arg-type]
+        )
+
+    assert "td:TD001:2025-01-01..2025-01-01" in exc_info.value.missing_windows
+    assert any(
+        event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("source") == "td"
+        and event.get("skip_status") == "resumable"
+        and event.get("reason") == td_orders_main.ORDERS_OVERDUE_POPUP_BLOCKED_REASON
+        for event in logger.events
+    )
+    assert any(
+        event.get("phase") == "order_line_items_rebuild_window"
+        and event.get("status") == "ok"
+        and event.get("source") == "uc"
+        for event in logger.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_td_overdue_popup_does_not_mutate_rows_or_write_success_progress_and_resume_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'td-popup-resume.sqlite'}"
+    await _create_common_tables(db_url)
+    monkeypatch.setattr(rebuild, "config", SimpleNamespace(database_url=db_url))
+    logger = _InMemoryLogger("td-popup-resume")
+    td_store = rebuild.RebuildStore(
+        source="td",
+        store_code="TD001",
+        cost_center="CC01",
+        raw_store=SimpleNamespace(
+            storage_state_path=_write_td_storage_state(tmp_path / "TD001.json")
+        ),
+        start_date=date(2025, 1, 1),
+    )
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items "
+                "(run_id, run_date, cost_center, store_code, order_number, line_sequence, line_item_key, line_item_uid, ingest_row_seq) "
+                "VALUES ('seed', '2025-01-01', 'CC01', 'TD001', 'TD-OLD', 1, 'old-key', 'old-uid', 1)"
+            )
+        )
+        await session.commit()
+
+    async def load_stores(*_args: Any, **_kwargs: Any) -> list[Any]:
+        return [td_store]
+
+    async def no_browser_check(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def td_auth_ready(*_args: Any, **_kwargs: Any) -> str:
+        return "session_valid"
+
+    fetch_calls: list[str] = []
+
+    async def popup_fetch(*, store: Any, **_kwargs: Any) -> rebuild.SourceSnapshot:
+        fetch_calls.append(store.store_code)
+        raise td_orders_main.TdOrdersOverduePopupBlocked(store_code=store.store_code)
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    monkeypatch.setattr(rebuild, "_check_browser_launch_contract", no_browser_check)
+    monkeypatch.setattr(rebuild, "_td_api_auth_readiness_status", td_auth_ready)
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=False,
+            run_id="td-popup-first",
+            logger=logger,  # type: ignore[arg-type]
+            fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
+        )
+
+    rows = await _rows(
+        db_url,
+        "SELECT run_id, order_number, line_item_uid FROM order_line_items ORDER BY id",
+    )
+    assert [(row.run_id, row.order_number, row.line_item_uid) for row in rows] == [
+        ("seed", "TD-OLD", "old-uid")
+    ]
+    progress_rows = await _rows(
+        db_url,
+        "SELECT status FROM order_line_items_rebuild_progress",
+    )
+    assert progress_rows == []
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            resume=True,
+            run_id="td-popup-resume",
+            logger=logger,  # type: ignore[arg-type]
+            fetch_snapshot=popup_fetch,  # type: ignore[arg-type]
+        )
+
+    assert fetch_calls == ["TD001", "TD001"]
