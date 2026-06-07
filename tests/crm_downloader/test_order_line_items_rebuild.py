@@ -4538,3 +4538,113 @@ async def test_td_overdue_popup_does_not_mutate_rows_or_write_success_progress_a
     assert final_events[-1]["skipped_windows"][0]["reason"] == (
         td_orders_main.ORDERS_OVERDUE_POPUP_BLOCKED_REASON
     )
+
+
+@pytest.mark.asyncio
+async def test_run_rebuild_persists_summary_and_sends_notifications(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    summary_records: list[dict[str, Any]] = []
+    notification_calls: list[tuple[str, str]] = []
+
+    async def fake_insert_run_summary(
+        database_url: str, record: dict[str, Any]
+    ) -> None:
+        assert database_url == db_url
+        summary_records.append(record)
+
+    async def fake_send_notifications_for_run(
+        pipeline_name: str, run_id: str
+    ) -> dict[str, Any]:
+        notification_calls.append((pipeline_name, run_id))
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    async def fetcher(**_kwargs):
+        return rebuild.SourceSnapshot(
+            line_item_rows=[{"order_number": "TD-1", "line_item_key": "k"}],
+            order_snapshots=[
+                {"order_number": "TD-1", "snapshot_outcome": "complete_with_rows"}
+            ],
+        )
+
+    monkeypatch.setattr(rebuild, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(
+        rebuild, "send_notifications_for_run", fake_send_notifications_for_run
+    )
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="summary-success",
+        fetch_snapshot=fetcher,
+        skip_auth_preflight=True,
+    )
+
+    assert notification_calls == [(rebuild.PIPELINE_NAME, "summary-success")]
+    assert len(summary_records) == 1
+    record = summary_records[0]
+    assert record["pipeline_name"] == rebuild.PIPELINE_NAME
+    assert record["run_id"] == "summary-success"
+    assert record["overall_status"] == "success"
+    assert (
+        record["metrics_json"]["notification_payload"]["run_id"] == "summary-success"
+    )
+    assert record["metrics_json"]["expected_window_count"] == 1
+    assert record["metrics_json"]["completed_window_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_rebuild_failure_persists_failed_summary_before_reraising(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    summary_records: list[dict[str, Any]] = []
+    notification_calls: list[tuple[str, str]] = []
+
+    async def fake_insert_run_summary(
+        _database_url: str, record: dict[str, Any]
+    ) -> None:
+        summary_records.append(record)
+
+    async def fake_send_notifications_for_run(
+        pipeline_name: str, run_id: str
+    ) -> dict[str, Any]:
+        notification_calls.append((pipeline_name, run_id))
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    async def fetcher(**_kwargs):
+        raise TypeError("systemic setup exploded")
+
+    monkeypatch.setattr(rebuild, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(
+        rebuild, "send_notifications_for_run", fake_send_notifications_for_run
+    )
+
+    with pytest.raises(TypeError, match="systemic setup exploded"):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="summary-failed",
+            fetch_snapshot=fetcher,
+            skip_auth_preflight=True,
+        )
+
+    assert notification_calls == [(rebuild.PIPELINE_NAME, "summary-failed")]
+    assert len(summary_records) == 1
+    record = summary_records[0]
+    assert record["overall_status"] == "failed"
+    assert (
+        record["metrics_json"]["notification_payload"]["overall_status"] == "failed"
+    )
+    assert "TypeError" in record["summary_text"]

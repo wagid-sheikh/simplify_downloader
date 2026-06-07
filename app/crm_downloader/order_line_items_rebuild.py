@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, Mapping, Protocol, Sequence
@@ -53,6 +53,8 @@ from app.crm_downloader.uc_orders_sync.main import (
     _load_uc_order_stores,
     prepare_uc_api_page_for_store,
 )
+from app.dashboard_downloader.notifications import send_notifications_for_run
+from app.dashboard_downloader.run_summary import insert_run_summary
 from app.dashboard_downloader.json_logger import (
     JsonLogger,
     get_logger,
@@ -105,6 +107,9 @@ SYSTEMIC_SETUP_ERROR_TOKENS = (
 )
 
 TD_OVERDUE_POPUP_READINESS_STATUS = "overdue_popup_blocked"
+
+PIPELINE_NAME = "order_line_items_rebuild"
+
 
 STORE_SPECIFIC_ERROR_TOKENS = (
     "401",
@@ -977,6 +982,298 @@ def _final_rebuild_status(
     return "ok"
 
 
+def _summary_overall_status(status: str) -> str:
+    if status in {"ok", "success"}:
+        return "success"
+    if status == "warning":
+        return "warning"
+    return "failed"
+
+
+def _format_duration_hhmmss(started_at: datetime, finished_at: datetime) -> str:
+    total_seconds = max(0, int((finished_at - started_at).total_seconds()))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _serialize_window_key(key: tuple[Source, str, date, date]) -> dict[str, str]:
+    source, store_code, window_start, window_end = key
+    return {
+        "source": source,
+        "store_code": store_code,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+    }
+
+
+def _build_rebuild_summary_text(
+    *,
+    run_id: str,
+    run_env: str,
+    source_selection: str,
+    selected_stores: Sequence[str],
+    dry_run: bool,
+    resume: bool,
+    expected_window_count: int,
+    completed_window_count: int,
+    missing_window_count: int,
+    skipped_window_count: int,
+    zero_counts: Mapping[str, int],
+    final_status: str,
+    warnings: Sequence[str],
+) -> str:
+    store_text = (
+        ", ".join(selected_stores) if selected_stores else "all selected stores"
+    )
+    parts = [
+        f"order_line_items rebuild {final_status} for run {run_id} ({run_env})",
+        f"sources={source_selection}",
+        f"stores={store_text}",
+        f"dry_run={dry_run}",
+        f"resume={resume}",
+        (
+            "windows "
+            f"expected={expected_window_count}, completed={completed_window_count}, "
+            f"missing={missing_window_count}, skipped_resumable={skipped_window_count}"
+        ),
+        (
+            "zero_snapshots "
+            f"total={int(zero_counts.get('zero_snapshot_count', 0))}, "
+            f"suspicious={int(zero_counts.get('suspicious_zero_snapshot_count', 0))}, "
+            f"confirmed_empty={int(zero_counts.get('confirmed_empty_snapshot_count', 0))}"
+        ),
+    ]
+    if warnings:
+        parts.append("warnings=" + "; ".join(warnings[:8]))
+    return " | ".join(parts)
+
+
+def _build_rebuild_notification_payload(
+    *,
+    run_id: str,
+    run_env: str,
+    source_selection: str,
+    sources: Sequence[Source],
+    selected_stores: Sequence[str],
+    dry_run: bool,
+    resume: bool,
+    resume_run_id: str | None,
+    started_at: datetime,
+    finished_at: datetime,
+    total_time_taken: str,
+    report_date: date | None,
+    expected_windows: Sequence[Mapping[str, Any]],
+    completed_windows: Sequence[Mapping[str, Any]],
+    missing_windows: Sequence[Mapping[str, Any]],
+    skipped_windows: Sequence[Mapping[str, Any]],
+    zero_counts: Mapping[str, int],
+    final_status: str,
+    warnings: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "run_env": run_env,
+        "pipeline_name": PIPELINE_NAME,
+        "source_selection": source_selection,
+        "sources": list(sources),
+        "selected_stores": list(selected_stores),
+        "dry_run": dry_run,
+        "resume": resume,
+        "resume_run_id": resume_run_id,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "total_time_taken": total_time_taken,
+        "report_date": report_date.isoformat() if report_date else None,
+        "expected_window_count": len(expected_windows),
+        "completed_window_count": len(completed_windows),
+        "missing_window_count": len(missing_windows),
+        "skipped_window_count": len(skipped_windows),
+        "expected_windows": list(expected_windows),
+        "completed_windows": list(completed_windows),
+        "missing_windows": list(missing_windows),
+        "skipped_windows": list(skipped_windows),
+        "zero_snapshot_counts": dict(zero_counts),
+        "overall_status": final_status,
+        "warnings": list(warnings),
+    }
+
+
+async def _persist_rebuild_summary_and_notify(
+    *,
+    database_url: str | None,
+    logger: JsonLogger,
+    run_id: str,
+    run_env: str,
+    source_selection: str,
+    sources: Sequence[Source],
+    selected_stores: Sequence[str],
+    dry_run: bool,
+    resume: bool,
+    resume_run_id: str | None,
+    started_at: datetime,
+    report_date: date | None,
+    expected_windows: set[tuple[Source, str, date, date]],
+    successful_windows: set[tuple[Source, str, date, date]],
+    missing_windows: Sequence[tuple[Source, str, date, date]],
+    skipped_windows: Sequence[Mapping[str, Any]],
+    metrics: Sequence[WindowMetrics],
+    final_status: str,
+    warnings: Sequence[str],
+) -> None:
+    if not database_url:
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message="Skipping order_line_items rebuild summary because database_url is missing",
+            run_id=run_id,
+            run_env=run_env,
+        )
+        return
+
+    finished_at = datetime.now(timezone.utc)
+    total_time_taken = _format_duration_hhmmss(started_at, finished_at)
+    expected_payload = [_serialize_window_key(key) for key in sorted(expected_windows)]
+    completed_payload = [
+        _serialize_window_key(key) for key in sorted(successful_windows)
+    ]
+    missing_payload = [_serialize_window_key(key) for key in missing_windows]
+    zero_counts = _zero_snapshot_counts(metrics)
+    overall_status = _summary_overall_status(final_status)
+    summary_text = _build_rebuild_summary_text(
+        run_id=run_id,
+        run_env=run_env,
+        source_selection=source_selection,
+        selected_stores=selected_stores,
+        dry_run=dry_run,
+        resume=resume,
+        expected_window_count=len(expected_payload),
+        completed_window_count=len(completed_payload),
+        missing_window_count=len(missing_payload),
+        skipped_window_count=len(skipped_windows),
+        zero_counts=zero_counts,
+        final_status=overall_status,
+        warnings=warnings,
+    )
+    notification_payload = _build_rebuild_notification_payload(
+        run_id=run_id,
+        run_env=run_env,
+        source_selection=source_selection,
+        sources=sources,
+        selected_stores=selected_stores,
+        dry_run=dry_run,
+        resume=resume,
+        resume_run_id=resume_run_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        total_time_taken=total_time_taken,
+        report_date=report_date,
+        expected_windows=expected_payload,
+        completed_windows=completed_payload,
+        missing_windows=missing_payload,
+        skipped_windows=skipped_windows,
+        zero_counts=zero_counts,
+        final_status=overall_status,
+        warnings=warnings,
+    )
+    phases_json = {
+        "preflight": {"ok": 1, "warning": 0, "error": 0},
+        "windows": {
+            "ok": len(completed_payload),
+            "warning": len(skipped_windows)
+            + zero_counts.get("suspicious_zero_snapshot_count", 0),
+            "error": len(missing_payload) if overall_status == "failed" else 0,
+        },
+        "summary": {
+            "ok": 1 if overall_status == "success" else 0,
+            "warning": 1 if overall_status == "warning" else 0,
+            "error": 1 if overall_status == "failed" else 0,
+        },
+    }
+    metrics_json = {
+        "source_selection": source_selection,
+        "sources": list(sources),
+        "selected_stores": list(selected_stores),
+        "dry_run": dry_run,
+        "resume": resume,
+        "resume_run_id": resume_run_id,
+        "expected_window_count": len(expected_payload),
+        "completed_window_count": len(completed_payload),
+        "missing_window_count": len(missing_payload),
+        "skipped_window_count": len(skipped_windows),
+        "zero_snapshot_counts": zero_counts,
+        "warnings": list(warnings),
+        "notification_payload": notification_payload,
+    }
+    try:
+        await insert_run_summary(
+            database_url,
+            {
+                "pipeline_name": PIPELINE_NAME,
+                "run_id": run_id,
+                "run_env": run_env,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "total_time_taken": total_time_taken,
+                "report_date": report_date,
+                "overall_status": overall_status,
+                "summary_text": summary_text,
+                "phases_json": phases_json,
+                "metrics_json": metrics_json,
+            },
+        )
+    except Exception as exc:
+        # Do not hide the actual rebuild outcome behind a telemetry persistence
+        # failure. In production this table is migration-managed; unit tests and
+        # partially migrated environments can still exercise terminal paths.
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message="order_line_items rebuild summary persistence failed",
+            run_id=run_id,
+            run_env=run_env,
+            overall_status=overall_status,
+            error_message=str(exc),
+        )
+        return
+    log_event(
+        logger=logger,
+        phase="summary",
+        status="ok",
+        message="order_line_items rebuild summary persisted",
+        run_id=run_id,
+        run_env=run_env,
+        overall_status=overall_status,
+    )
+    try:
+        notification_result = await send_notifications_for_run(PIPELINE_NAME, run_id)
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="notifications",
+            status="warning",
+            message="order_line_items rebuild notification attempt failed",
+            run_id=run_id,
+            run_env=run_env,
+            error_message=str(exc),
+        )
+        return
+    log_event(
+        logger=logger,
+        phase="notifications",
+        status="warning" if notification_result.get("errors") else "ok",
+        message="order_line_items rebuild notification summary",
+        run_id=run_id,
+        run_env=run_env,
+        emails_planned=notification_result.get("emails_planned", 0),
+        emails_sent=notification_result.get("emails_sent", 0),
+        notification_errors=notification_result.get("errors", []),
+    )
+
+
 def _storage_state_path(store: RebuildStore) -> Path | None:
     raw_path = getattr(store.raw_store, "storage_state_path", None)
     return Path(raw_path) if raw_path else None
@@ -1831,188 +2128,136 @@ async def run_rebuild(
     skip_auth_preflight: bool = False,
     allow_ambiguous_empty: bool = False,
 ) -> list[WindowMetrics]:
+    started_at = datetime.now(timezone.utc)
     if resume_run_id and not resume:
         raise ValueError("resume_run_id requires resume=True")
     run_id = run_id or new_run_id()
     logger = logger or get_logger(run_id)
     database_url = getattr(config, "database_url", None)
+    run_env = str(getattr(config, "run_env", "dev") or "dev")
     end_date = end_date or aware_now(get_timezone()).date()
     run_date = aware_now(get_timezone())
     sources: list[Source] = (
         ["td", "uc"] if source_selection == "both" else [source_selection]
     )
-    if not database_url:
-        log_event(
-            logger=logger,
-            phase="order_line_items_rebuild_preflight",
-            status="error",
-            message="order_line_items rebuild preflight failed",
-            run_id=run_id,
-            sources=sources,
-            stores=[],
-            missing_start_dates=[],
-            missing_storage_states=[],
-            browser_backend=_browser_backend(),
-            errors=["database_url is required"],
-        )
-        raise RuntimeError(
-            "database_url is required for order_line_items historical rebuild"
-        )
-    stores = await load_rebuild_stores(
-        sources=sources, store_codes=store_codes, logger=logger
-    )
-    preflight = await preflight_rebuild(
-        database_url=database_url,
-        sources=sources,
-        stores=stores,
-        start_date=start_date,
-        requested_window_size_days=window_size_days,
-        run_id=run_id,
-        logger=logger,
-        skip_auth_preflight=skip_auth_preflight,
-    )
-    stores = preflight.stores
-    progress_rows = (
-        await _fetch_progress_rows(database_url, resume_run_id=resume_run_id)
-        if resume
-        else {}
-    )
+    selected_store_codes = [
+        store.upper() for store in normalize_store_codes(store_codes or [])
+    ]
+    selected_store_codes_for_summary = selected_store_codes.copy()
     metrics: list[WindowMetrics] = []
     expected_windows: set[tuple[Source, str, date, date]] = set()
     successful_windows: set[tuple[Source, str, date, date]] = set()
-    skipped_window_details: dict[tuple[Source, str, date, date], dict[str, Any]] = {}
-    log_event(
-        logger=logger,
-        phase="order_line_items_rebuild",
-        status="info",
-        message="Starting order_line_items historical rebuild",
-        run_id=run_id,
-        sources=sources,
-        stores=[s.store_code for s in stores],
-        start_date=start_date.isoformat() if start_date else None,
-        end_date=end_date.isoformat(),
-        requested_window_size_days=window_size_days,
-        max_source_window_days=30,
-        dry_run=dry_run,
-        fail_on_zero_snapshot=fail_on_zero_snapshot,
-        allow_ambiguous_empty=allow_ambiguous_empty,
-        resume=resume,
-        resume_scope="source_store_window" if resume else None,
-        resume_run_id_filter=resume_run_id,
-        resume_ignores_current_run_id=bool(resume and resume_run_id is None),
-    )
-    if resume:
+    missing_windows: list[tuple[Source, str, date, date]] = []
+    skipped_windows: list[Mapping[str, Any]] = []
+
+    try:
+        if not database_url:
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_preflight",
+                status="error",
+                message="order_line_items rebuild preflight failed",
+                run_id=run_id,
+                sources=sources,
+                stores=[],
+                missing_start_dates=[],
+                missing_storage_states=[],
+                browser_backend=_browser_backend(),
+                errors=["database_url is required"],
+            )
+            raise RuntimeError(
+                "database_url is required for order_line_items historical rebuild"
+            )
+        stores = await load_rebuild_stores(
+            sources=sources, store_codes=store_codes, logger=logger
+        )
+        preflight = await preflight_rebuild(
+            database_url=database_url,
+            sources=sources,
+            stores=stores,
+            start_date=start_date,
+            requested_window_size_days=window_size_days,
+            run_id=run_id,
+            logger=logger,
+            skip_auth_preflight=skip_auth_preflight,
+        )
+        stores = preflight.stores
+        selected_store_codes_for_summary = [
+            store.store_code.upper() for store in stores
+        ]
+        progress_rows = (
+            await _fetch_progress_rows(database_url, resume_run_id=resume_run_id)
+            if resume
+            else {}
+        )
+        metrics: list[WindowMetrics] = []
+        expected_windows: set[tuple[Source, str, date, date]] = set()
+        successful_windows: set[tuple[Source, str, date, date]] = set()
+        skipped_window_details: dict[
+            tuple[Source, str, date, date], dict[str, Any]
+        ] = {}
         log_event(
             logger=logger,
-            phase="order_line_items_rebuild_resume_scope",
+            phase="order_line_items_rebuild",
             status="info",
-            message=(
-                "order_line_items rebuild resume matches prior progress by "
-                "source/store/window, not the current run ID"
-            ),
+            message="Starting order_line_items historical rebuild",
             run_id=run_id,
-            resume_scope="source_store_window",
+            sources=sources,
+            stores=[s.store_code for s in stores],
+            start_date=start_date.isoformat() if start_date else None,
+            end_date=end_date.isoformat(),
+            requested_window_size_days=window_size_days,
+            max_source_window_days=30,
+            dry_run=dry_run,
+            fail_on_zero_snapshot=fail_on_zero_snapshot,
+            allow_ambiguous_empty=allow_ambiguous_empty,
+            resume=resume,
+            resume_scope="source_store_window" if resume else None,
             resume_run_id_filter=resume_run_id,
-            resume_ignores_current_run_id=resume_run_id is None,
+            resume_ignores_current_run_id=bool(resume and resume_run_id is None),
         )
-    for store in stores:
-        store_start_date = start_date or store.start_date
-        if store_start_date is None:
-            raise RuntimeError(
-                f"start_date is required for {store.source}:{store.store_code} "
-                "because store_master.start_date is not set"
+        if resume:
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_resume_scope",
+                status="info",
+                message=(
+                    "order_line_items rebuild resume matches prior progress by "
+                    "source/store/window, not the current run ID"
+                ),
+                run_id=run_id,
+                resume_scope="source_store_window",
+                resume_run_id_filter=resume_run_id,
+                resume_ignores_current_run_id=resume_run_id is None,
             )
-        source_window_days = preflight.source_window_days_by_store[
-            (store.source, store.store_code.upper())
-        ]
-        windows = iter_windows(store_start_date, end_date, source_window_days)
-        for window in windows:
-            key = (store.source, store.store_code.upper(), window.start, window.end)
-            uc_child_run_id = (
-                _uc_child_run_id(run_id=run_id, store=store, window=window)
-                if store.source == "uc"
-                else None
-            )
-            expected_windows.add(key)
-            existing = progress_rows.get(key)
-            existing_status = _window_status(existing)
-            if resume and _is_success_status(existing_status):
-                successful_windows.add(key)
-                log_event(
-                    logger=logger,
-                    phase="order_line_items_rebuild_window",
-                    status="info",
-                    message="Skipping previously successful order_line_items rebuild window",
-                    run_id=run_id,
-                    source=store.source,
-                    store_code=store.store_code,
-                    cost_center=store.cost_center,
-                    window_start=window.start.isoformat(),
-                    window_end=window.end.isoformat(),
-                    uc_child_run_id=uc_child_run_id,
-                    dry_run=dry_run,
-                    resume=resume,
-                    **_prior_progress_metadata(existing),
+        for store in stores:
+            store_start_date = start_date or store.start_date
+            if store_start_date is None:
+                raise RuntimeError(
+                    f"start_date is required for {store.source}:{store.store_code} "
+                    "because store_master.start_date is not set"
                 )
-                continue
-            if (
-                resume
-                and existing_status
-                and not should_retry_window_status(
-                    status=existing_status,
-                    error_message=(
-                        str(existing.get("error_message") or "") if existing else None
-                    ),
-                    status_note=None,
+            source_window_days = preflight.source_window_days_by_store[
+                (store.source, store.store_code.upper())
+            ]
+            windows = iter_windows(store_start_date, end_date, source_window_days)
+            for window in windows:
+                key = (store.source, store.store_code.upper(), window.start, window.end)
+                uc_child_run_id = (
+                    _uc_child_run_id(run_id=run_id, store=store, window=window)
+                    if store.source == "uc"
+                    else None
                 )
-            ):
-                log_event(
-                    logger=logger,
-                    phase="order_line_items_rebuild_window",
-                    status="info",
-                    message="Skipping non-retryable prior order_line_items rebuild window status",
-                    run_id=run_id,
-                    source=store.source,
-                    store_code=store.store_code,
-                    cost_center=store.cost_center,
-                    window_start=window.start.isoformat(),
-                    window_end=window.end.isoformat(),
-                    uc_child_run_id=uc_child_run_id,
-                    dry_run=dry_run,
-                    resume=resume,
-                    **_prior_progress_metadata(existing),
-                )
-                continue
-            max_attempts = 2 if existing is None or existing_status else 1
-            for attempt_no in range(1, max_attempts + 1):
-                try:
-                    metric = await rebuild_window(
-                        source=store.source,
-                        store=store,
-                        window=window,
-                        run_id=run_id,
-                        run_date=run_date,
-                        database_url=database_url,
-                        dry_run=dry_run,
-                        logger=logger,
-                        fetch_snapshot=fetch_snapshot,
-                    )
-                except TdOrdersOverduePopupBlocked as exc:
-                    skipped_window_details[key] = {
-                        "source": store.source,
-                        "store_code": store.store_code.upper(),
-                        "cost_center": store.cost_center,
-                        "window_start": window.start.isoformat(),
-                        "window_end": window.end.isoformat(),
-                        "reason": ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
-                        "skip_status": "resumable",
-                        "retryable": True,
-                    }
+                expected_windows.add(key)
+                existing = progress_rows.get(key)
+                existing_status = _window_status(existing)
+                if resume and _is_success_status(existing_status):
+                    successful_windows.add(key)
                     log_event(
                         logger=logger,
                         phase="order_line_items_rebuild_window",
-                        status="warning",
-                        message="Skipping TD order_line_items rebuild window due to overdue orders popup",
+                        status="info",
+                        message="Skipping previously successful order_line_items rebuild window",
                         run_id=run_id,
                         source=store.source,
                         store_code=store.store_code,
@@ -2020,38 +2265,69 @@ async def run_rebuild(
                         window_start=window.start.isoformat(),
                         window_end=window.end.isoformat(),
                         uc_child_run_id=uc_child_run_id,
-                        attempt_no=attempt_no,
-                        skip_status="resumable",
-                        retryable=True,
-                        reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
-                        auth_readiness=TD_OVERDUE_POPUP_READINESS_STATUS,
-                        modal_selector=exc.modal_selector,
                         dry_run=dry_run,
+                        resume=resume,
+                        **_prior_progress_metadata(existing),
                     )
-                    break
-                except Exception as exc:
-                    failure_class = classify_rebuild_failure(exc)
-                    source_fetch_fields = _td_garments_incomplete_log_fields(exc)
-                    if not dry_run:
-                        await _write_progress(
-                            database_url=database_url,
+                    continue
+                if (
+                    resume
+                    and existing_status
+                    and not should_retry_window_status(
+                        status=existing_status,
+                        error_message=(
+                            str(existing.get("error_message") or "") if existing else None
+                        ),
+                        status_note=None,
+                    )
+                ):
+                    log_event(
+                        logger=logger,
+                        phase="order_line_items_rebuild_window",
+                        status="info",
+                        message="Skipping non-retryable prior order_line_items rebuild window status",
+                        run_id=run_id,
+                        source=store.source,
+                        store_code=store.store_code,
+                        cost_center=store.cost_center,
+                        window_start=window.start.isoformat(),
+                        window_end=window.end.isoformat(),
+                        uc_child_run_id=uc_child_run_id,
+                        dry_run=dry_run,
+                        resume=resume,
+                        **_prior_progress_metadata(existing),
+                    )
+                    continue
+                max_attempts = 2 if existing is None or existing_status else 1
+                for attempt_no in range(1, max_attempts + 1):
+                    try:
+                        metric = await rebuild_window(
+                            source=store.source,
                             store=store,
                             window=window,
                             run_id=run_id,
-                            status="failed",
-                            attempt_no=attempt_no,
-                            error_message=str(exc),
-                            dry_run=False,
+                            run_date=run_date,
+                            database_url=database_url,
+                            dry_run=dry_run,
+                            logger=logger,
+                            fetch_snapshot=fetch_snapshot,
                         )
-                    if (
-                        failure_class == "retryable_transient_failure"
-                        and attempt_no < max_attempts
-                    ):
+                    except TdOrdersOverduePopupBlocked as exc:
+                        skipped_window_details[key] = {
+                            "source": store.source,
+                            "store_code": store.store_code.upper(),
+                            "cost_center": store.cost_center,
+                            "window_start": window.start.isoformat(),
+                            "window_end": window.end.isoformat(),
+                            "reason": ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                            "skip_status": "resumable",
+                            "retryable": True,
+                        }
                         log_event(
                             logger=logger,
                             phase="order_line_items_rebuild_window",
                             status="warning",
-                            message="Retrying order_line_items rebuild window after retryable failure",
+                            message="Skipping TD order_line_items rebuild window due to overdue orders popup",
                             run_id=run_id,
                             source=store.source,
                             store_code=store.store_code,
@@ -2060,18 +2336,76 @@ async def run_rebuild(
                             window_end=window.end.isoformat(),
                             uc_child_run_id=uc_child_run_id,
                             attempt_no=attempt_no,
-                            failure_class=failure_class,
-                            error_message=str(exc),
-                            **source_fetch_fields,
+                            skip_status="resumable",
+                            retryable=True,
+                            reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                            auth_readiness=TD_OVERDUE_POPUP_READINESS_STATUS,
+                            modal_selector=exc.modal_selector,
                             dry_run=dry_run,
                         )
-                        continue
-                    if failure_class == "systemic_setup_failure":
+                        break
+                    except Exception as exc:
+                        failure_class = classify_rebuild_failure(exc)
+                        source_fetch_fields = _td_garments_incomplete_log_fields(exc)
+                        if not dry_run:
+                            await _write_progress(
+                                database_url=database_url,
+                                store=store,
+                                window=window,
+                                run_id=run_id,
+                                status="failed",
+                                attempt_no=attempt_no,
+                                error_message=str(exc),
+                                dry_run=False,
+                            )
+                        if (
+                            failure_class == "retryable_transient_failure"
+                            and attempt_no < max_attempts
+                        ):
+                            log_event(
+                                logger=logger,
+                                phase="order_line_items_rebuild_window",
+                                status="warning",
+                                message="Retrying order_line_items rebuild window after retryable failure",
+                                run_id=run_id,
+                                source=store.source,
+                                store_code=store.store_code,
+                                cost_center=store.cost_center,
+                                window_start=window.start.isoformat(),
+                                window_end=window.end.isoformat(),
+                                uc_child_run_id=uc_child_run_id,
+                                attempt_no=attempt_no,
+                                failure_class=failure_class,
+                                error_message=str(exc),
+                                **source_fetch_fields,
+                                dry_run=dry_run,
+                            )
+                            continue
+                        if failure_class == "systemic_setup_failure":
+                            log_event(
+                                logger=logger,
+                                phase="order_line_items_rebuild",
+                                status="error",
+                                message="Stopping order_line_items rebuild after systemic setup failure",
+                                run_id=run_id,
+                                source=store.source,
+                                store_code=store.store_code,
+                                cost_center=store.cost_center,
+                                window_start=window.start.isoformat(),
+                                window_end=window.end.isoformat(),
+                                uc_child_run_id=uc_child_run_id,
+                                attempt_no=attempt_no,
+                                failure_class=failure_class,
+                                error_message=str(exc),
+                                **source_fetch_fields,
+                                dry_run=dry_run,
+                            )
+                            raise
                         log_event(
                             logger=logger,
-                            phase="order_line_items_rebuild",
+                            phase="order_line_items_rebuild_window",
                             status="error",
-                            message="Stopping order_line_items rebuild after systemic setup failure",
+                            message="order_line_items rebuild window failed",
                             run_id=run_id,
                             source=store.source,
                             store_code=store.store_code,
@@ -2085,188 +2419,219 @@ async def run_rebuild(
                             **source_fetch_fields,
                             dry_run=dry_run,
                         )
-                        raise
-                    log_event(
-                        logger=logger,
-                        phase="order_line_items_rebuild_window",
-                        status="error",
-                        message="order_line_items rebuild window failed",
-                        run_id=run_id,
-                        source=store.source,
-                        store_code=store.store_code,
-                        cost_center=store.cost_center,
-                        window_start=window.start.isoformat(),
-                        window_end=window.end.isoformat(),
-                        uc_child_run_id=uc_child_run_id,
-                        attempt_no=attempt_no,
-                        failure_class=failure_class,
-                        error_message=str(exc),
-                        **source_fetch_fields,
-                        dry_run=dry_run,
-                    )
-                    break
-                else:
-                    metrics.append(metric)
-                    successful_windows.add(key)
-                    if not dry_run:
-                        await _write_progress(
-                            database_url=database_url,
-                            store=store,
-                            window=window,
-                            run_id=run_id,
-                            status="success",
-                            attempt_no=attempt_no,
-                            metrics=metric,
-                            dry_run=False,
-                        )
-                    break
-    skipped_windows = [
-        skipped_window_details[key]
-        for key in sorted(
-            skipped_window_details, key=lambda item: (item[0], item[1], item[2], item[3])
-        )
-    ]
-    missing_windows = sorted(
-        expected_windows - successful_windows - set(skipped_window_details),
-        key=lambda item: (item[0], item[1], item[2], item[3]),
-    )
-    has_resumable_skips = bool(skipped_windows)
-    log_event(
-        logger=logger,
-        phase="order_line_items_rebuild_missing_windows",
-        status="warning" if missing_windows or has_resumable_skips else "ok",
-        message=(
-            "Detected missing order_line_items rebuild windows"
-            if missing_windows
-            else (
-                "No fatal missing order_line_items rebuild windows detected; "
-                "resumable skipped windows remain"
-                if has_resumable_skips
-                else "No missing order_line_items rebuild windows detected"
+                        break
+                    else:
+                        metrics.append(metric)
+                        successful_windows.add(key)
+                        if not dry_run:
+                            await _write_progress(
+                                database_url=database_url,
+                                store=store,
+                                window=window,
+                                run_id=run_id,
+                                status="success",
+                                attempt_no=attempt_no,
+                                metrics=metric,
+                                dry_run=False,
+                            )
+                        break
+        skipped_windows = [
+            skipped_window_details[key]
+            for key in sorted(
+                skipped_window_details, key=lambda item: (item[0], item[1], item[2], item[3])
             )
-        ),
-        run_id=run_id,
-        missing_window_count=len(missing_windows),
-        skipped_window_count=len(skipped_windows),
-        skipped_windows=skipped_windows,
-        resumable_skipped_window_count=len(skipped_windows),
-        missing_windows=[
-            {
-                "source": source,
-                "store_code": store_code,
-                "window_start": window_start.isoformat(),
-                "window_end": window_end.isoformat(),
-            }
-            for source, store_code, window_start, window_end in missing_windows
-        ],
-        dry_run=dry_run,
-    )
-    zero_counts = _zero_snapshot_counts(metrics)
-    final_status = _final_rebuild_status(
-        missing_window_count=len(missing_windows),
-        suspicious_zero_snapshot_count=zero_counts["suspicious_zero_snapshot_count"],
-        skipped_window_count=len(skipped_windows),
-    )
-    final_message = (
-        "Completed order_line_items historical rebuild with resumable skipped windows"
-        if has_resumable_skips and not missing_windows
-        else "Completed order_line_items historical rebuild"
-    )
-    log_event(
-        logger=logger,
-        phase="order_line_items_rebuild",
-        status=final_status,
-        message=final_message,
-        run_id=run_id,
-        window_count=len(metrics),
-        expected_window_count=len(expected_windows),
-        missing_window_count=len(missing_windows),
-        skipped_window_count=len(skipped_windows),
-        skipped_windows=skipped_windows,
-        resumable_skipped_window_count=len(skipped_windows),
-        dry_run=dry_run,
-        resume=resume,
-        allow_ambiguous_empty=allow_ambiguous_empty,
-        **zero_counts,
-    )
-    if missing_windows:
-        compact_missing_windows = tuple(
-            _compact_window_identifier(source, store_code, window_start, window_end)
-            for source, store_code, window_start, window_end in missing_windows
+        ]
+        missing_windows = sorted(
+            expected_windows - successful_windows - set(skipped_window_details),
+            key=lambda item: (item[0], item[1], item[2], item[3]),
         )
-        raise OrderLineItemsRebuildIncomplete(
-            run_id=run_id,
-            expected_window_count=len(expected_windows),
-            completed_window_count=len(successful_windows),
-            missing_window_count=len(missing_windows),
-            missing_windows=compact_missing_windows,
-        )
-
-    zero_metrics = [
-        metric for metric in metrics if _is_zero_authoritative_snapshot(metric)
-    ]
-    suspicious_zero_metrics = [
-        metric
-        for metric in zero_metrics
-        if metric.zero_snapshot_class != "confirmed_source_empty"
-    ]
-    ambiguous_zero_metrics = [
-        metric
-        for metric in zero_metrics
-        if metric.zero_snapshot_class == "unknown_ambiguous_empty"
-    ]
-    full_live_ambiguous_zero_requires_override = (
-        not dry_run
-        and "uc" in sources
-        and not store_codes
-        and start_date is None
-        and bool(ambiguous_zero_metrics)
-        and not allow_ambiguous_empty
-    )
-    all_selected_windows_zero = bool(metrics) and len(zero_metrics) == len(metrics)
-    if dry_run and all_selected_windows_zero:
-        zero_windows = tuple(
-            _compact_window_identifier(
-                metric.source,
-                metric.store_code,
-                metric.window_start,
-                metric.window_end,
-            )
-            for metric in zero_metrics
-        )
-        should_fail_zero_snapshot = (
-            fail_on_zero_snapshot and bool(suspicious_zero_metrics)
-        ) or full_live_ambiguous_zero_requires_override
+        has_resumable_skips = bool(skipped_windows)
         log_event(
             logger=logger,
-            phase="order_line_items_rebuild_zero_snapshot_summary",
-            status="error" if should_fail_zero_snapshot else "warning",
-            message=("all_selected_windows_zero_authoritative_orders_detected"),
+            phase="order_line_items_rebuild_missing_windows",
+            status="warning" if missing_windows or has_resumable_skips else "ok",
+            message=(
+                "Detected missing order_line_items rebuild windows"
+                if missing_windows
+                else (
+                    "No fatal missing order_line_items rebuild windows detected; "
+                    "resumable skipped windows remain"
+                    if has_resumable_skips
+                    else "No missing order_line_items rebuild windows detected"
+                )
+            ),
             run_id=run_id,
-            dry_run=dry_run,
-            fail_on_zero_snapshot=fail_on_zero_snapshot,
-            expected_window_count=len(expected_windows),
-            zero_window_count=len(zero_metrics),
-            suspicious_zero_window_count=len(suspicious_zero_metrics),
-            ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
-            confirmed_empty_snapshot_count=zero_counts[
-                "confirmed_empty_snapshot_count"
-            ],
-            full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
-            allow_ambiguous_empty=allow_ambiguous_empty,
-            zero_windows=[
+            missing_window_count=len(missing_windows),
+            skipped_window_count=len(skipped_windows),
+            skipped_windows=skipped_windows,
+            resumable_skipped_window_count=len(skipped_windows),
+            missing_windows=[
                 {
-                    "source": metric.source,
-                    "store_code": metric.store_code,
-                    "cost_center": metric.cost_center,
-                    "window_start": metric.window_start.isoformat(),
-                    "window_end": metric.window_end.isoformat(),
-                    "zero_snapshot_class": metric.zero_snapshot_class,
+                    "source": source,
+                    "store_code": store_code,
+                    "window_start": window_start.isoformat(),
+                    "window_end": window_end.isoformat(),
                 }
-                for metric in zero_metrics
+                for source, store_code, window_start, window_end in missing_windows
             ],
+            dry_run=dry_run,
         )
-        if should_fail_zero_snapshot:
+        zero_counts = _zero_snapshot_counts(metrics)
+        final_status = _final_rebuild_status(
+            missing_window_count=len(missing_windows),
+            suspicious_zero_snapshot_count=zero_counts["suspicious_zero_snapshot_count"],
+            skipped_window_count=len(skipped_windows),
+        )
+        final_message = (
+            "Completed order_line_items historical rebuild with resumable skipped windows"
+            if has_resumable_skips and not missing_windows
+            else "Completed order_line_items historical rebuild"
+        )
+        log_event(
+            logger=logger,
+            phase="order_line_items_rebuild",
+            status=final_status,
+            message=final_message,
+            run_id=run_id,
+            window_count=len(metrics),
+            expected_window_count=len(expected_windows),
+            missing_window_count=len(missing_windows),
+            skipped_window_count=len(skipped_windows),
+            skipped_windows=skipped_windows,
+            resumable_skipped_window_count=len(skipped_windows),
+            dry_run=dry_run,
+            resume=resume,
+            allow_ambiguous_empty=allow_ambiguous_empty,
+            **zero_counts,
+        )
+        if missing_windows:
+            compact_missing_windows = tuple(
+                _compact_window_identifier(source, store_code, window_start, window_end)
+                for source, store_code, window_start, window_end in missing_windows
+            )
+            raise OrderLineItemsRebuildIncomplete(
+                run_id=run_id,
+                expected_window_count=len(expected_windows),
+                completed_window_count=len(successful_windows),
+                missing_window_count=len(missing_windows),
+                missing_windows=compact_missing_windows,
+            )
+
+        zero_metrics = [
+            metric for metric in metrics if _is_zero_authoritative_snapshot(metric)
+        ]
+        suspicious_zero_metrics = [
+            metric
+            for metric in zero_metrics
+            if metric.zero_snapshot_class != "confirmed_source_empty"
+        ]
+        ambiguous_zero_metrics = [
+            metric
+            for metric in zero_metrics
+            if metric.zero_snapshot_class == "unknown_ambiguous_empty"
+        ]
+        full_live_ambiguous_zero_requires_override = (
+            not dry_run
+            and "uc" in sources
+            and not store_codes
+            and start_date is None
+            and bool(ambiguous_zero_metrics)
+            and not allow_ambiguous_empty
+        )
+        all_selected_windows_zero = bool(metrics) and len(zero_metrics) == len(
+            metrics
+        )
+        if dry_run and all_selected_windows_zero:
+            zero_windows = tuple(
+                _compact_window_identifier(
+                    metric.source,
+                    metric.store_code,
+                    metric.window_start,
+                    metric.window_end,
+                )
+                for metric in zero_metrics
+            )
+            should_fail_zero_snapshot = (
+                fail_on_zero_snapshot and bool(suspicious_zero_metrics)
+            ) or full_live_ambiguous_zero_requires_override
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_zero_snapshot_summary",
+                status="error" if should_fail_zero_snapshot else "warning",
+                message=("all_selected_windows_zero_authoritative_orders_detected"),
+                run_id=run_id,
+                dry_run=dry_run,
+                fail_on_zero_snapshot=fail_on_zero_snapshot,
+                expected_window_count=len(expected_windows),
+                zero_window_count=len(zero_metrics),
+                suspicious_zero_window_count=len(suspicious_zero_metrics),
+                ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
+                confirmed_empty_snapshot_count=zero_counts[
+                    "confirmed_empty_snapshot_count"
+                ],
+                full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
+                allow_ambiguous_empty=allow_ambiguous_empty,
+                zero_windows=[
+                    {
+                        "source": metric.source,
+                        "store_code": metric.store_code,
+                        "cost_center": metric.cost_center,
+                        "window_start": metric.window_start.isoformat(),
+                        "window_end": metric.window_end.isoformat(),
+                        "zero_snapshot_class": metric.zero_snapshot_class,
+                    }
+                    for metric in zero_metrics
+                ],
+            )
+            if should_fail_zero_snapshot:
+                raise OrderLineItemsZeroSnapshotDetected(
+                    run_id=run_id,
+                    zero_window_count=len(zero_metrics),
+                    expected_window_count=len(expected_windows),
+                    suspicious_window_count=len(suspicious_zero_metrics),
+                    zero_windows=zero_windows,
+                )
+        elif (
+            fail_on_zero_snapshot and suspicious_zero_metrics
+        ) or full_live_ambiguous_zero_requires_override:
+            zero_windows = tuple(
+                _compact_window_identifier(
+                    metric.source,
+                    metric.store_code,
+                    metric.window_start,
+                    metric.window_end,
+                )
+                for metric in suspicious_zero_metrics
+            )
+            log_event(
+                logger=logger,
+                phase="order_line_items_rebuild_zero_snapshot_summary",
+                status="error",
+                message="suspicious_zero_authoritative_orders_detected",
+                run_id=run_id,
+                dry_run=dry_run,
+                fail_on_zero_snapshot=fail_on_zero_snapshot,
+                expected_window_count=len(expected_windows),
+                zero_window_count=len(zero_metrics),
+                suspicious_zero_window_count=len(suspicious_zero_metrics),
+                ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
+                confirmed_empty_snapshot_count=zero_counts[
+                    "confirmed_empty_snapshot_count"
+                ],
+                full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
+                allow_ambiguous_empty=allow_ambiguous_empty,
+                zero_windows=[
+                    {
+                        "source": metric.source,
+                        "store_code": metric.store_code,
+                        "cost_center": metric.cost_center,
+                        "window_start": metric.window_start.isoformat(),
+                        "window_end": metric.window_end.isoformat(),
+                        "zero_snapshot_class": metric.zero_snapshot_class,
+                    }
+                    for metric in suspicious_zero_metrics
+                ],
+            )
             raise OrderLineItemsZeroSnapshotDetected(
                 run_id=run_id,
                 zero_window_count=len(zero_metrics),
@@ -2274,55 +2639,69 @@ async def run_rebuild(
                 suspicious_window_count=len(suspicious_zero_metrics),
                 zero_windows=zero_windows,
             )
-    elif (
-        fail_on_zero_snapshot and suspicious_zero_metrics
-    ) or full_live_ambiguous_zero_requires_override:
-        zero_windows = tuple(
-            _compact_window_identifier(
-                metric.source,
-                metric.store_code,
-                metric.window_start,
-                metric.window_end,
-            )
-            for metric in suspicious_zero_metrics
-        )
-        log_event(
+        await _persist_rebuild_summary_and_notify(
+            database_url=database_url,
             logger=logger,
-            phase="order_line_items_rebuild_zero_snapshot_summary",
-            status="error",
-            message="suspicious_zero_authoritative_orders_detected",
             run_id=run_id,
+            run_env=run_env,
+            source_selection=source_selection,
+            sources=sources,
+            selected_stores=selected_store_codes_for_summary,
             dry_run=dry_run,
-            fail_on_zero_snapshot=fail_on_zero_snapshot,
-            expected_window_count=len(expected_windows),
-            zero_window_count=len(zero_metrics),
-            suspicious_zero_window_count=len(suspicious_zero_metrics),
-            ambiguous_zero_snapshot_count=len(ambiguous_zero_metrics),
-            confirmed_empty_snapshot_count=zero_counts[
-                "confirmed_empty_snapshot_count"
-            ],
-            full_live_ambiguous_zero_requires_override=full_live_ambiguous_zero_requires_override,
-            allow_ambiguous_empty=allow_ambiguous_empty,
-            zero_windows=[
-                {
-                    "source": metric.source,
-                    "store_code": metric.store_code,
-                    "cost_center": metric.cost_center,
-                    "window_start": metric.window_start.isoformat(),
-                    "window_end": metric.window_end.isoformat(),
-                    "zero_snapshot_class": metric.zero_snapshot_class,
-                }
-                for metric in suspicious_zero_metrics
+            resume=resume,
+            resume_run_id=resume_run_id,
+            started_at=started_at,
+            report_date=end_date,
+            expected_windows=expected_windows,
+            successful_windows=successful_windows,
+            missing_windows=missing_windows,
+            skipped_windows=skipped_windows,
+            metrics=metrics,
+            final_status=final_status,
+            warnings=[
+                warning
+                for warning in (
+                    (
+                        f"{len(skipped_windows)} resumable window(s) skipped"
+                        if skipped_windows
+                        else None
+                    ),
+                    (
+                        "{} suspicious zero snapshot window(s) detected".format(
+                            zero_counts["suspicious_zero_snapshot_count"]
+                        )
+                        if zero_counts.get("suspicious_zero_snapshot_count")
+                        else None
+                    ),
+                )
+                if warning
             ],
         )
-        raise OrderLineItemsZeroSnapshotDetected(
+        return metrics
+    except Exception as exc:
+        failure_warning = f"{type(exc).__name__}: {exc}"
+        await _persist_rebuild_summary_and_notify(
+            database_url=database_url,
+            logger=logger,
             run_id=run_id,
-            zero_window_count=len(zero_metrics),
-            expected_window_count=len(expected_windows),
-            suspicious_window_count=len(suspicious_zero_metrics),
-            zero_windows=zero_windows,
+            run_env=run_env,
+            source_selection=source_selection,
+            sources=sources,
+            selected_stores=selected_store_codes_for_summary,
+            dry_run=dry_run,
+            resume=resume,
+            resume_run_id=resume_run_id,
+            started_at=started_at,
+            report_date=end_date,
+            expected_windows=expected_windows,
+            successful_windows=successful_windows,
+            missing_windows=missing_windows,
+            skipped_windows=skipped_windows,
+            metrics=metrics,
+            final_status="failed",
+            warnings=[failure_warning],
         )
-    return metrics
+        raise
 
 
 def _parse_date(value: str) -> date:
