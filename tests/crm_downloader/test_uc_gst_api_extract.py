@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import date
 from io import StringIO
+from urllib.parse import parse_qs, urlparse
 
 from app.crm_downloader.uc_orders_sync import gst_api_extract
 from app.crm_downloader.uc_orders_sync.gst_api_extract import collect_gst_orders_via_api
@@ -23,12 +24,179 @@ def _logged_events(stream: StringIO) -> list[dict[str, object]]:
     return [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
 
 
+def test_collect_gst_orders_via_api_uses_tax_report_get_query_and_har_fields(monkeypatch) -> None:
+    # Sanitized from docs/storepanel.ucleanlaundry.com_updated.har tax-report response.
+    tax_report_row = {
+        "order_number": "UC567-1810",
+        "invoice_number": "UC567-2026-27-218",
+        "invoice_date": "2026-06-06 18:36:46",
+        "name": "Sanitized Customer",
+        "customer_phone": "9999990000",
+        "customer_gst": None,
+        "service_names": "Laundry - Wash & Iron",
+        "cloth_item_names": "",
+        "cloth_quantity": 20,
+        "address": None,
+        "store_address": "Sanitized Store Address",
+        "city_name": "Gurugram",
+        "taxable_value": 625.5,
+        "cgst": 56.29,
+        "sgst": 56.29,
+        "total_tax": 112.59,
+        "final_amount": 738.09,
+        "payment_status": "Pending",
+    }
+    tax_report_urls: list[str] = []
+
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        if "tax-report" in url:
+            tax_report_urls.append(url)
+            assert method == "GET"
+            assert data is None
+            return {"data": [tax_report_row]}
+        return {"data": []}
+
+    async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
+        return None, None
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_resolve_booking_id_for_order", _fake_resolve_booking_id_for_order)
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC567",
+            logger=get_logger("test_uc_gst_api_extract"),
+            from_date=date(2026, 5, 6),
+            to_date=date(2026, 6, 6),
+        )
+    )
+
+    assert len(tax_report_urls) == 1
+    query = parse_qs(urlparse(tax_report_urls[0]).query)
+    assert query == {
+        "from": ["2026-05-06"],
+        "to": ["2026-06-06"],
+        "page": ["1"],
+        "limit": ["20"],
+        "sortBy": ["invoice_date"],
+        "sortOrder": ["DESC"],
+        "export": ["false"],
+        "franchise": ["UCLEAN"],
+    }
+    assert extract.source_fetch_status == "success"
+    assert extract.extractor_status == "success"
+    assert extract.confirmed_empty is False
+    assert extract.gst_rows[0] == {
+        "store_code": "UC567",
+        "order_number": "UC567-1810",
+        "invoice_number": "UC567-2026-27-218",
+        "invoice_date": "2026-06-06 18:36:46",
+        "name": "Sanitized Customer",
+        "customer_phone": "9999990000",
+        "customer_gst": None,
+        "service_names": "Laundry - Wash & Iron",
+        "cloth_item_names": "",
+        "cloth_quantity": 20,
+        "address": None,
+        "customer_source": None,
+        "store_address": "Sanitized Store Address",
+        "city_name": "Gurugram",
+        "taxable_value": 625.5,
+        "cgst": 56.29,
+        "sgst": 56.29,
+        "total_tax": 112.59,
+        "final_amount": 738.09,
+        "payment_status": "Pending",
+    }
+
+
+def test_collect_gst_orders_via_api_paginates_tax_report_until_short_page(monkeypatch) -> None:
+    tax_report_urls: list[str] = []
+
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        if "tax-report" not in url:
+            return {"data": []}
+        tax_report_urls.append(url)
+        page_number = int(parse_qs(urlparse(url).query)["page"][0])
+        if page_number == 1:
+            return {
+                "data": [
+                    {
+                        "order_number": f"UC610-PAGE1-{index}",
+                        "invoice_number": f"INV-PAGE1-{index}",
+                        "invoice_date": "2026-01-01",
+                        "name": "Page Customer",
+                        "customer_phone": "9999990001",
+                        "store_address": "Store Address",
+                        "city_name": "Pune",
+                        "taxable_value": 100,
+                        "cgst": 9,
+                        "sgst": 9,
+                        "total_tax": 18,
+                        "final_amount": 118,
+                        "payment_status": "Paid",
+                    }
+                    for index in range(gst_api_extract.GST_API_PAGE_LIMIT)
+                ]
+            }
+        return {
+            "data": [
+                {
+                    "order_number": "UC610-PAGE2-1",
+                    "invoice_number": "INV-PAGE2-1",
+                    "invoice_date": "2026-01-02",
+                    "name": "Short Page Customer",
+                    "customer_phone": "9999990002",
+                    "store_address": "Store Address",
+                    "city_name": "Pune",
+                    "taxable_value": 200,
+                    "cgst": 18,
+                    "sgst": 18,
+                    "total_tax": 36,
+                    "final_amount": 236,
+                    "payment_status": "Paid",
+                }
+            ]
+        }
+
+    async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
+        return None, None
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_resolve_booking_id_for_order", _fake_resolve_booking_id_for_order)
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=get_logger("test_uc_gst_api_extract"),
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert len(tax_report_urls) == 2
+    assert [parse_qs(urlparse(url).query)["page"][0] for url in tax_report_urls] == ["1", "2"]
+    assert len(extract.gst_rows) == gst_api_extract.GST_API_PAGE_LIMIT + 1
+    assert extract.confirmed_empty is False
+    assert extract.extractor_status == "success"
+
+
 def test_collect_gst_orders_via_api_keeps_base_row_when_invoice_fetch_fails(monkeypatch) -> None:
     async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {
@@ -117,7 +285,7 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {
@@ -191,7 +359,7 @@ def test_collect_gst_orders_via_api_keeps_gst_and_base_rows_when_booking_lookup_
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {
@@ -243,7 +411,7 @@ def test_collect_gst_orders_via_api_collects_disjoint_delivered_payment_rows(mon
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {
@@ -309,7 +477,7 @@ def test_collect_gst_orders_via_api_dedupes_payment_rows_with_overlap(monkeypatc
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {
@@ -503,7 +671,7 @@ def test_collect_gst_orders_via_api_non_empty_data_preserves_current_status(monk
         return "token"
 
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
-        if method == "POST":
+        if "tax-report" in url:
             return {
                 "data": [
                     {

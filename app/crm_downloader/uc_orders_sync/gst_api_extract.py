@@ -21,7 +21,8 @@ from app.crm_downloader.uc_orders_sync.archive_api_extract import (
 )
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
-GST_API_URL = "https://store.ucleanlaundry.com/api/v1/stores/generateGST?franchise=UCLEAN"
+GST_API_URL = "https://store.ucleanlaundry.com/api/v1/stores/report/tax-report"
+GST_API_PAGE_LIMIT = 20
 BOOKING_SEARCH_URL_TEMPLATE = (
     "https://store.ucleanlaundry.com/api/v1/bookings/search"
     "?query={query}&sortQuery=&page=1&filterQuery=&type="
@@ -63,6 +64,9 @@ GST_API_GST_COLUMNS = [
     "name",
     "customer_phone",
     "customer_gst",
+    "service_names",
+    "cloth_item_names",
+    "cloth_quantity",
     "address",
     "customer_source",
     "store_address",
@@ -496,6 +500,52 @@ async def _collect_gst_payment_rows_from_delivered_orders(
     extract.gst_orders_without_payments = len(gst_order_codes - matched_orders_with_payments)
 
 
+async def _collect_tax_report_rows(
+    *,
+    page: Page,
+    headers: Mapping[str, str],
+    from_date: date,
+    to_date: date,
+    page_limit: int = GST_API_PAGE_LIMIT,
+) -> tuple[str, list[Mapping[str, Any]] | None]:
+    rows: list[Mapping[str, Any]] = []
+    page_number = 1
+
+    while True:
+        query = urlencode(
+            {
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "page": page_number,
+                "limit": page_limit,
+                "sortBy": "invoice_date",
+                "sortOrder": "DESC",
+                "export": "false",
+                "franchise": "UCLEAN",
+            }
+        )
+        payload = await _request_json_with_retries(
+            page=page,
+            method="GET",
+            url=f"{GST_API_URL}?{query}",
+            headers=headers,
+            data=None,
+        )
+        if not isinstance(payload, Mapping):
+            return "failed", None
+
+        page_rows = payload.get("data")
+        if not isinstance(page_rows, list):
+            return "invalid_data", None
+        if not page_rows:
+            return "empty" if page_number == 1 and not rows else "success", rows
+
+        rows.extend(row for row in page_rows if isinstance(row, Mapping))
+        if len(page_rows) < page_limit:
+            return "success", rows
+        page_number += 1
+
+
 async def collect_gst_orders_via_api(
     *,
     page: Page,
@@ -508,30 +558,13 @@ async def collect_gst_orders_via_api(
     token = await _resolve_archive_bearer_token(page=page, logger=logger, store_code=store_code)
     headers = _build_headers(bearer_token=token)
 
-    payload = await _request_json_with_retries(
+    fetch_status, rows = await _collect_tax_report_rows(
         page=page,
-        method="POST",
-        url=GST_API_URL,
         headers=headers,
-        data={"from_date": from_date.isoformat(), "to_date": to_date.isoformat()},
+        from_date=from_date,
+        to_date=to_date,
     )
-    if not isinstance(payload, Mapping):
-        extract.source_fetch_status = "failed"
-        extract.source_fetch_error_class = "gst_api_failed"
-        extract.source_fetch_failure_reason = "GST API request did not return a JSON mapping"
-        extract.extractor_status = "failed"
-        _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_failed")
-        _log_gst_api_source_fetch_failure(
-            logger=logger,
-            store_code=store_code,
-            extract=extract,
-            message="GST API source fetch failed",
-        )
-        _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
-        return extract
-
-    rows = payload.get("data")
-    if not isinstance(rows, list):
+    if fetch_status == "invalid_data":
         extract.source_fetch_status = "failed"
         extract.source_fetch_error_class = "gst_api_invalid_data"
         extract.source_fetch_failure_reason = "GST API payload data field was not a list"
@@ -546,7 +579,22 @@ async def collect_gst_orders_via_api(
         _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
         return extract
 
-    if not rows:
+    if fetch_status == "failed" or rows is None:
+        extract.source_fetch_status = "failed"
+        extract.source_fetch_error_class = "gst_api_failed"
+        extract.source_fetch_failure_reason = "GST API request did not return a JSON mapping"
+        extract.extractor_status = "failed"
+        _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_failed")
+        _log_gst_api_source_fetch_failure(
+            logger=logger,
+            store_code=store_code,
+            extract=extract,
+            message="GST API source fetch failed",
+        )
+        _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
+        return extract
+
+    if fetch_status == "empty":
         extract.source_fetch_status = "complete"
         extract.confirmed_empty = True
         extract.extractor_status = "success"
@@ -590,6 +638,9 @@ async def collect_gst_orders_via_api(
             "name": row.get("name"),
             "customer_phone": row.get("customer_phone"),
             "customer_gst": row.get("customer_gst"),
+            "service_names": row.get("service_names"),
+            "cloth_item_names": row.get("cloth_item_names"),
+            "cloth_quantity": row.get("cloth_quantity"),
             "address": None,
             "customer_source": None,
             "store_address": row.get("store_address"),
@@ -713,7 +764,7 @@ async def collect_gst_orders_via_api(
         extract=extract,
     )
 
-    extract.extractor_status = "success" if not extract.skipped_order_counters else "partial"
+    extract.extractor_status = "success"
 
     _log_gst_api_extract_complete(logger=logger, store_code=store_code, extract=extract)
     return extract
