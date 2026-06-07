@@ -20,12 +20,43 @@ from app.dashboard_downloader.json_logger import JsonLogger, log_event
 ARCHIVE_API_BASE_URL = "https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders"
 ARCHIVE_INVOICE_URL_TEMPLATE = "https://store.ucleanlaundry.com/api/v1/bookings/generateInvoice/{booking_id}?franchise=UCLEAN"
 ARCHIVE_API_LIMIT = 30
+ARCHIVE_API_MAX_PAGES = 250
+ARCHIVE_API_DATE_TYPE = "pickup"
 ARCHIVE_API_MAX_RETRIES = 3
 ARCHIVE_API_RETRY_BASE_SECONDS = 1.0
 ARCHIVE_REQUESTED_WITH_HEADER = "XMLHttpRequest"
 ARCHIVE_REFERER = "https://store.ucleanlaundry.com/archive"
 ARCHIVE_ACCEPT_HEADER = "application/json, text/plain, */*"
 TOKEN_KEY_PATTERN = re.compile(r"token|auth|jwt", flags=re.I)
+
+
+def build_delivered_orders_query(
+    *,
+    page_number: int,
+    page_limit: int,
+    from_date: date,
+    to_date: date,
+) -> str:
+    """Build the UC delivered-orders query shape captured in the browser HAR."""
+    return urlencode(
+        {
+            "page": page_number,
+            "limit": page_limit,
+            "sortBy": "delivered_at",
+            "sortOrder": "desc",
+            "startDate": from_date.isoformat(),
+            "endDate": to_date.isoformat(),
+            "dateType": ARCHIVE_API_DATE_TYPE,
+            "franchise": "UCLEAN",
+        }
+    )
+
+
+def _booking_identity(booking: Mapping[str, Any]) -> str | None:
+    booking_id = booking.get("id")
+    if booking_id in (None, ""):
+        return None
+    return str(booking_id).strip() or None
 
 PAYMENT_MODE_MAP = {
     1: "UPI",
@@ -852,6 +883,7 @@ async def collect_archive_orders_via_api(
 ) -> ArchiveApiExtract:
     extract = ArchiveApiExtract()
     seen_orders: set[str] = set()
+    seen_booking_ids: set[str] = set()
     invoice_attempted = 0
     invoice_successful = 0
     invoice_failed = 0
@@ -863,17 +895,12 @@ async def collect_archive_orders_via_api(
     started_at = time.perf_counter()
 
     page_number = 1
-    while True:
-        query = urlencode(
-            {
-                "franchise": "UCLEAN",
-                "page": page_number,
-                "limit": ARCHIVE_API_LIMIT,
-                "dateRange": "custom",
-                "startDate": from_date.isoformat(),
-                "endDate": to_date.isoformat(),
-                "dateType": "delivery",
-            }
+    while page_number <= ARCHIVE_API_MAX_PAGES:
+        query = build_delivered_orders_query(
+            page_number=page_number,
+            page_limit=ARCHIVE_API_LIMIT,
+            from_date=from_date,
+            to_date=to_date,
         )
         url = f"{ARCHIVE_API_BASE_URL}?{query}"
         payload, failure_reason = await _api_get_json_with_retries(
@@ -919,6 +946,14 @@ async def collect_archive_orders_via_api(
 
         if not data:
             break
+
+        page_booking_ids = {
+            booking_id
+            for booking in data
+            if isinstance(booking, Mapping) and (booking_id := _booking_identity(booking)) is not None
+        }
+        new_booking_ids = page_booking_ids - seen_booking_ids
+        seen_booking_ids.update(page_booking_ids)
 
         for booking in data:
             if not isinstance(booking, Mapping):
@@ -1013,11 +1048,18 @@ async def collect_archive_orders_via_api(
                 base_row["customer_source"] = order_mode
             extract.order_detail_rows.extend(detail_rows)
 
+        if len(data) < ARCHIVE_API_LIMIT:
+            break
+        if not new_booking_ids:
+            _record_extractor_error(extract, reason="archive_api_duplicate_full_page")
+            break
         stop_by_total_pages = isinstance(extract.total_pages, int) and page_number >= extract.total_pages
         if stop_by_total_pages:
             break
 
         page_number += 1
+    else:
+        _record_extractor_error(extract, reason="archive_api_max_pages_reached")
 
     if extract.api_total is not None and len(extract.base_rows) != extract.api_total:
         log_event(

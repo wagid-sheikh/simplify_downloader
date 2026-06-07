@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 from datetime import date
+from urllib.parse import parse_qs, urlparse
 
 from app.crm_downloader.uc_orders_sync import archive_api_extract
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
@@ -253,6 +254,126 @@ def test_fetch_invoice_success_suppresses_per_order_success_log_by_default() -> 
     success_events = [e for e in events if e.get("message") == "Invoice API request succeeded"]
     assert success_events == []
 
+
+
+def test_collect_archive_orders_uses_har_delivered_orders_query_and_payment_details(monkeypatch) -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=stream, log_file_path=None)
+    urls: list[str] = []
+
+    async def _fake_api_get_json_with_retries(*, url: str, **_kwargs):
+        urls.append(url)
+        return (
+            {
+                "data": [
+                    {
+                        "id": 101,
+                        "booking_code": "UC610-0001",
+                        "status": 7,
+                        "pickupDate": "2026-06-01",
+                        "dropDate": "2026-06-02",
+                        "name": "Sanitized Customer",
+                        "mobile": "9999990000",
+                        "address": "Sanitized Address",
+                        "final_amount": "738.09",
+                        "suggestion": "Handle carefully",
+                        "delivered_at": "2026-06-02 18:36:46",
+                        "updated_at": "2026-06-02 18:36:46",
+                        "payment_details": json.dumps(
+                            [
+                                {
+                                    "payment_mode": 1,
+                                    "payment_amount": 500,
+                                    "created_at": "2026-06-02 18:36:46",
+                                    "transaction_id": "TXN-HAR-1",
+                                }
+                            ]
+                        ),
+                    }
+                ],
+                "pagination": {"total": 1, "totalPages": 1},
+            },
+            None,
+        )
+
+    async def _fake_fetch_invoice_html_with_retries(**_kwargs):
+        return None, 0
+
+    monkeypatch.setattr(archive_api_extract, "_api_get_json_with_retries", _fake_api_get_json_with_retries)
+    monkeypatch.setattr(archive_api_extract, "_fetch_invoice_html_with_retries", _fake_fetch_invoice_html_with_retries)
+
+    extract = asyncio.run(
+        collect_archive_orders_via_api(
+            page=_FakePage({}),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 2),
+        )
+    )
+
+    assert len(urls) == 1
+    assert parse_qs(urlparse(urls[0]).query) == {
+        "page": ["1"],
+        "limit": ["30"],
+        "sortBy": ["delivered_at"],
+        "sortOrder": ["desc"],
+        "startDate": ["2026-06-01"],
+        "endDate": ["2026-06-02"],
+        "dateType": ["pickup"],
+        "franchise": ["UCLEAN"],
+    }
+    assert extract.base_rows[0]["order_code"] == "UC610-0001"
+    assert extract.payment_detail_rows == [
+        {
+            "store_code": "UC610",
+            "order_code": "UC610-0001",
+            "payment_mode": "UPI",
+            "amount": 500,
+            "payment_date": "2026-06-02 18:36:46",
+            "transaction_id": None,
+        }
+    ]
+
+
+def test_collect_archive_orders_stops_on_duplicate_full_page(monkeypatch) -> None:
+    logger = get_logger("test_uc_archive_api_extract")
+    urls: list[str] = []
+    full_page = [
+        {
+            "id": index,
+            "booking_code": f"UC610-{index:04d}",
+            "status": 7,
+            "payment_details": "[]",
+            "delivered_at": "2026-06-02",
+        }
+        for index in range(archive_api_extract.ARCHIVE_API_LIMIT)
+    ]
+
+    async def _fake_api_get_json_with_retries(*, url: str, **_kwargs):
+        urls.append(url)
+        return ({"data": full_page, "pagination": {"total": 999, "totalPages": 999}}, None)
+
+    async def _fake_fetch_invoice_html_with_retries(**_kwargs):
+        return None, 0
+
+    monkeypatch.setattr(archive_api_extract, "_api_get_json_with_retries", _fake_api_get_json_with_retries)
+    monkeypatch.setattr(archive_api_extract, "_fetch_invoice_html_with_retries", _fake_fetch_invoice_html_with_retries)
+
+    extract = asyncio.run(
+        collect_archive_orders_via_api(
+            page=_FakePage({}),
+            store_code="UC610",
+            logger=logger,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 2),
+        )
+    )
+
+    assert len(urls) == 2
+    assert extract.page_count == 2
+    assert len(extract.base_rows) == archive_api_extract.ARCHIVE_API_LIMIT
+    assert "archive_api_duplicate_full_page" in extract.extractor_reason_codes
 
 def test_collect_archive_orders_logs_store_summary_payload() -> None:
     archive_api_extract._TOKEN_DIAGNOSTICS_LOGGED_STORES.clear()

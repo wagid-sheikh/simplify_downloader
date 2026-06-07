@@ -284,6 +284,8 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
     async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
         return "token"
 
+    delivered_urls: list[str] = []
+
     async def _fake_request_json_with_retries(*, page, method, url, headers, data):
         if "tax-report" in url:
             return {
@@ -306,12 +308,32 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
                     }
                 ]
             }
-        if "page=1" in url:
+        delivered_urls.append(url)
+        if parse_qs(urlparse(url).query)["page"] == ["1"]:
             return {
                 "data": [
                     {
+                        "id": 102,
                         "booking_code": "UC610-0002",
-                        "payment_details": "[{\"payment_mode\": 1, \"payment_amount\": 100, \"created_at\": \"2026-01-02 10:00:00\", \"transaction_id\": \"TXN-1\"}, {\"payment_mode\": \"99\", \"payment_amount\": 136, \"created_at\": \"2026-01-02 10:05:00\"}]",
+                        "status": 7,
+                        "pickupDate": "2026-01-01",
+                        "dropDate": "2026-01-02",
+                        "delivered_at": "2026-01-02 10:10:00",
+                        "payment_details": json.dumps(
+                            [
+                                {
+                                    "payment_mode": 1,
+                                    "payment_amount": 100,
+                                    "created_at": "2026-01-02 10:00:00",
+                                    "transaction_id": "TXN-1",
+                                },
+                                {
+                                    "payment_mode": "99",
+                                    "payment_amount": 136,
+                                    "created_at": "2026-01-02 10:05:00",
+                                },
+                            ]
+                        ),
                     }
                 ]
             }
@@ -344,6 +366,17 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
         )
     )
 
+    assert len(delivered_urls) == 1
+    assert parse_qs(urlparse(delivered_urls[0]).query) == {
+        "page": ["1"],
+        "limit": ["30"],
+        "sortBy": ["delivered_at"],
+        "sortOrder": ["desc"],
+        "startDate": ["2026-01-01"],
+        "endDate": ["2026-01-31"],
+        "dateType": ["pickup"],
+        "franchise": ["UCLEAN"],
+    }
     assert len(extract.payment_detail_rows) == 2
     assert extract.payment_detail_rows[0]["payment_mode"] == "UPI"
     assert extract.payment_detail_rows[0]["amount"] == 100
@@ -353,6 +386,42 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
     assert extract.order_detail_snapshot_rows[0]["snapshot_outcome"] == "complete_empty"
     assert extract.invoice_retry_count == 0
 
+
+
+def test_collect_gst_payment_rows_stops_on_duplicate_full_delivered_page(monkeypatch) -> None:
+    extract = gst_api_extract.GstApiExtract()
+    urls: list[str] = []
+    full_page = [
+        {
+            "id": index,
+            "booking_code": f"UC610-{index:04d}",
+            "payment_details": "[]",
+        }
+        for index in range(gst_api_extract.DELIVERED_ORDERS_LIMIT)
+    ]
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        urls.append(url)
+        return {"data": full_page}
+
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+
+    asyncio.run(
+        gst_api_extract._collect_gst_payment_rows_from_delivered_orders(
+            page=_FakePage(),
+            store_code="UC610",
+            headers={},
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 2),
+            gst_order_codes=set(),
+            extract=extract,
+        )
+    )
+
+    assert len(urls) == 2
+    assert [parse_qs(urlparse(url).query)["page"] for url in urls] == [["1"], ["2"]]
+    assert extract.delivered_rows_scanned == gst_api_extract.DELIVERED_ORDERS_LIMIT * 2
+    assert extract.skipped_order_counters["delivered_orders_duplicate_full_page"] == 1
 
 def test_collect_gst_orders_via_api_keeps_gst_and_base_rows_when_booking_lookup_misses(monkeypatch) -> None:
     async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
