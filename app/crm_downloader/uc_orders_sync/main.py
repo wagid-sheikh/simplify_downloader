@@ -125,6 +125,11 @@ UC_API_READINESS_ENDPOINTS = (
     "https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?page=1&limit=1&sortBy=delivered_at&sortOrder=desc&franchise=UCLEAN",
 )
 UC_API_UNAUTHORIZED_STATUSES = {401, 403}
+UC_FAILURE_INVALID_STORED_SESSION = "uc_invalid_stored_session"
+UC_FAILURE_LOGIN_FORM_OR_CREDENTIAL = "uc_login_form_or_credential_failure"
+UC_FAILURE_POST_LOGIN_DASHBOARD_NOT_REACHED = "uc_post_login_dashboard_not_reached"
+UC_FAILURE_AUTH_TOKEN_NOT_APPLIED = "uc_auth_token_not_applied"
+UC_FAILURE_DASHBOARD_SELECTOR_MISSING = "uc_dashboard_selector_card_missing"
 UC_DASHBOARD_SHELL_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -3836,19 +3841,24 @@ async def prepare_uc_api_page_for_store(
                     readiness_failure_reason
                     if isinstance(readiness_failure_reason, str)
                     and readiness_failure_reason.strip()
-                    else "Login failed after session probe"
+                    else "UC login form/credential failure"
                 )
+                failure_class = getattr(page, "_uc_failure_class", None)
                 reason_codes: list[str] = []
                 if isinstance(login_error_code, str) and login_error_code.strip():
                     reason_codes.append(login_error_code)
                 if login_error_code == "LOGIN_DOM_MISMATCH":
                     error_message = "Login DOM mismatch after session probe"
+                    failure_class = UC_FAILURE_LOGIN_FORM_OR_CREDENTIAL
+                elif not isinstance(failure_class, str) or not failure_class.strip():
+                    failure_class = UC_FAILURE_LOGIN_FORM_OR_CREDENTIAL
                 log_event(
                     logger=logger,
                     phase="login",
                     status="error",
                     message=error_message,
                     store_code=store.store_code,
+                    failure_class=failure_class,
                     error_code=login_error_code,
                     login_page_version_signature=getattr(
                         page, "_uc_login_page_version_signature", None
@@ -5879,6 +5889,26 @@ async def _probe_uc_home_readiness(
     )
 
 
+def _set_uc_readiness_failure(
+    page: Page, *, message: str, failure_class: str
+) -> None:
+    """Attach the factual readiness failure so callers do not relabel it."""
+
+    setattr(page, "_uc_home_readiness_failure_reason", message)
+    setattr(page, "_uc_failure_class", failure_class)
+
+
+def _uc_readiness_failure_for_source(
+    *, source: str, default_message: str, default_failure_class: str
+) -> tuple[str, str]:
+    normalized_source = source.strip().lower()
+    if normalized_source == "session":
+        return "UC stored session invalid before login", UC_FAILURE_INVALID_STORED_SESSION
+    if normalized_source in {"login", "post-login"}:
+        return default_message, default_failure_class
+    return default_message, default_failure_class
+
+
 async def _wait_for_home_ready(
     *, page: Page, store: UcStore, logger: JsonLogger, source: str
 ) -> bool:
@@ -5941,6 +5971,14 @@ async def _wait_for_home_ready(
         )
 
     if probe.login_page_visible:
+        failure_message, failure_class = _uc_readiness_failure_for_source(
+            source=source,
+            default_message="UC post-login dashboard not reached",
+            default_failure_class=UC_FAILURE_POST_LOGIN_DASHBOARD_NOT_REACHED,
+        )
+        _set_uc_readiness_failure(
+            page, message=failure_message, failure_class=failure_class
+        )
         dom_snippet = await _maybe_get_dom_snippet(page)
         probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
             page=page, store=store, source=source
@@ -5949,11 +5987,16 @@ async def _wait_for_home_ready(
             logger=logger,
             phase="navigation",
             status="error",
-            message="Home page not reached; login/session page is visible",
+            message=(
+                "Home page not reached; login/session page is visible"
+                if source.strip().lower() not in {"login", "post-login", "session"}
+                else failure_message
+            ),
             store_code=store.store_code,
             home_url=home_url,
             current_url=probe.final_url,
             source=source,
+            failure_class=failure_class,
             **probe.as_log_fields(),
             **_dom_snippet_fields(dom_snippet),
         )
@@ -5961,15 +6004,33 @@ async def _wait_for_home_ready(
 
     if probe.api_probe_unauthorized:
         setattr(page, "_uc_login_required", True)
+        failure_message, failure_class = _uc_readiness_failure_for_source(
+            source=source,
+            default_message="UC post-login API probe unauthorized",
+            default_failure_class=UC_FAILURE_AUTH_TOKEN_NOT_APPLIED,
+        )
+        _set_uc_readiness_failure(
+            page, message=failure_message, failure_class=failure_class
+        )
+        normalized_source = source.strip().lower()
         log_event(
             logger=logger,
             phase="navigation",
-            status="warning",
-            message="UC API readiness probe returned unauthorized; login required",
+            status=(
+                "error"
+                if normalized_source in {"login", "post-login"}
+                else "warning"
+            ),
+            message=(
+                "UC API readiness probe returned unauthorized; login required"
+                if normalized_source not in {"login", "post-login", "session"}
+                else failure_message
+            ),
             store_code=store.store_code,
             home_url=home_url,
             current_url=probe.final_url,
             source=source,
+            failure_class=failure_class,
             **probe.as_log_fields(),
         )
         return False
@@ -6009,16 +6070,27 @@ async def _wait_for_home_ready(
         )
         return True
 
-    readiness_failure_reason = (
-        "UC API readiness failed after dashboard shell loaded"
-        if (
-            dashboard_url_matched
-            and probe.dashboard_shell_visible
-            and not probe.api_probe_ready
+    if probe.dashboard_shell_visible and not probe.target_card_visible:
+        readiness_failure_reason = "UC dashboard selector/card missing"
+        failure_class = UC_FAILURE_DASHBOARD_SELECTOR_MISSING
+    elif (
+        dashboard_url_matched
+        and probe.dashboard_shell_visible
+        and not probe.api_probe_ready
+    ):
+        readiness_failure_reason = "UC API readiness failed after dashboard shell loaded"
+        failure_class = UC_FAILURE_AUTH_TOKEN_NOT_APPLIED
+    else:
+        readiness_failure_reason, failure_class = _uc_readiness_failure_for_source(
+            source=source,
+            default_message=(
+                "UC dashboard readiness failed before required URL/shell/API signals"
+            ),
+            default_failure_class=UC_FAILURE_POST_LOGIN_DASHBOARD_NOT_REACHED,
         )
-        else "UC dashboard readiness failed before required URL/shell/API signals"
+    _set_uc_readiness_failure(
+        page, message=readiness_failure_reason, failure_class=failure_class
     )
-    setattr(page, "_uc_home_readiness_failure_reason", readiness_failure_reason)
     dom_snippet = await _maybe_get_dom_snippet(page)
     probe.artifact_paths = await _capture_uc_navigation_failure_artifacts(
         page=page, store=store, source=source
@@ -6033,6 +6105,7 @@ async def _wait_for_home_ready(
         current_url=probe.final_url,
         source=source,
         selectors=list(UC_DASHBOARD_SHELL_SELECTORS),
+        failure_class=failure_class,
         **probe.as_log_fields(),
         **_dom_snippet_fields(dom_snippet),
     )
