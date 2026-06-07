@@ -22,29 +22,6 @@ class _FakePage:
         self.url = url
 
 
-class _VisibleLocator:
-    @property
-    def first(self) -> "_VisibleLocator":
-        return self
-
-    async def wait_for(self, *, state: str, timeout: int) -> None:
-        assert state == "visible"
-        assert timeout > 0
-
-
-@dataclass
-class _HomeReadyPage:
-    url: str
-
-    async def wait_for_url(self, predicate, *, timeout: int) -> None:
-        assert timeout == uc_main.NAV_TIMEOUT_MS
-        if not predicate(self.url):
-            raise uc_main.TimeoutError("home URL did not match")
-
-    def locator(self, selector: str) -> _VisibleLocator:
-        assert selector
-        return _VisibleLocator()
-
 
 class _FakeContext:
     def __init__(self, page: _FakePage) -> None:
@@ -103,7 +80,18 @@ async def test_migrated_uc_dashboard_url_is_ready_without_home_url_timeout() -> 
             }
         },
     )
-    page = _HomeReadyPage(url="https://storepanel.ucleanlaundry.com/dashboard")
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav"},
+        html="<html></html>",
+        api_responses=[_FakeApiResponse(status=200, payload={"latestOrderId": 12345})],
+    )
+    setattr(page, "_uc_home_response_status", 200)
+    setattr(
+        page,
+        "_uc_home_response_url",
+        "https://storepanel.ucleanlaundry.com/dashboard",
+    )
 
     ready = await uc_main._wait_for_home_ready(
         page=page, store=store, logger=logger, source="test"
@@ -665,7 +653,11 @@ async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payloa
         html='<html><input type="password" value="secret"><body>operator@example.com</body></html>',
     )
     setattr(page, "_uc_home_response_status", 200)
-    setattr(page, "_uc_home_response_url", "https://storepanel.ucleanlaundry.com/dashboard")
+    setattr(
+        page,
+        "_uc_home_response_url",
+        "https://storepanel.ucleanlaundry.com/dashboard",
+    )
     monkeypatch.setattr(uc_main, "default_download_dir", lambda: tmp_path)
     monkeypatch.setattr(
         uc_main,
@@ -679,7 +671,11 @@ async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payloa
 
     assert ready is False
     output = stream.getvalue()
-    assert "UC dashboard shell loaded but Daily Operations Tracker card selector is missing" in output
+    assert (
+        "UC dashboard shell loaded but legacy Daily Operations Tracker "
+        "card selector is missing; API readiness did not succeed"
+    ) in output
+    assert "UC API readiness failed after dashboard shell loaded" in output
     assert '"final_url": "https://storepanel.ucleanlaundry.com/dashboard"' in output
     assert '"page_title": "UC Dashboard"' in output
     assert '"response_status": 200' in output
@@ -718,6 +714,12 @@ async def test_uc_dashboard_shell_without_tracker_card_is_ready_when_api_probe_s
         html="<html></html>",
         api_responses=[_FakeApiResponse(status=200, payload={"latestOrderId": 12345})],
     )
+    setattr(page, "_uc_home_response_status", 200)
+    setattr(
+        page,
+        "_uc_home_response_url",
+        "https://storepanel.ucleanlaundry.com/dashboard",
+    )
 
     ready = await uc_main._wait_for_home_ready(
         page=page, store=store, logger=logger, source="test"
@@ -725,7 +727,11 @@ async def test_uc_dashboard_shell_without_tracker_card_is_ready_when_api_probe_s
 
     assert ready is True
     output = stream.getvalue()
-    assert "Daily Operations Tracker card selector is missing; API readiness succeeded" in output
+    assert (
+        "legacy Daily Operations Tracker card selector is missing; "
+        "API readiness succeeded"
+    ) in output
+    assert '"response_status": 200' in output
     assert '"target_card_visible": false' in output
     assert '"api_probe_ready": true' in output
     assert '"status": "info"' in output
@@ -802,7 +808,7 @@ async def test_uc_login_page_visible_is_not_home_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uc_dashboard_tracker_card_visible_passes_staged_readiness() -> None:
+async def test_uc_dashboard_tracker_card_visible_still_requires_api_readiness() -> None:
     stream = io.StringIO()
     logger = JsonLogger(stream=stream, log_file_path=None)
     store = uc_main.UcStore(
@@ -826,7 +832,9 @@ async def test_uc_dashboard_tracker_card_visible_passes_staged_readiness() -> No
         page=page, store=store, logger=logger, source="test"
     )
 
-    assert ready is True
+    assert ready is False
     output = stream.getvalue()
     assert "UC home staged readiness probe" in output
+    assert "UC API readiness failed after dashboard shell loaded" in output
     assert '"target_card_visible": true' in output
+    assert '"api_probe_ready": false' in output
