@@ -110,6 +110,43 @@ async def test_migrated_uc_dashboard_url_is_ready_without_home_url_timeout() -> 
 
 
 @pytest.mark.asyncio
+async def test_uc_dashboard_readiness_allows_missing_legacy_tracker_card() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC568",
+        store_name="UC Store",
+        cost_center="SC3568",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _DashboardProbePage(
+        url="https://storepanel.ucleanlaundry.com/dashboard",
+        visible_selectors={"nav"},
+        html="<html><nav></nav></html>",
+        api_responses=[_FakeApiResponse(status=200, payload={"latestOrderId": 12345})],
+        title="UClean Suite 2.0",
+    )
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert ready is True
+    output = stream.getvalue()
+    assert "UC home staged readiness probe" in output
+    assert '"page_title": "UClean Suite 2.0"' in output
+    assert '"dashboard_shell_visible": true' in output
+    assert '"target_card_visible": false' in output
+    assert '"api_probe_ready": true' in output
+    assert "UC dashboard selector/card missing" not in output
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("configured_value", "expected_ignore_https_errors"),
     [
@@ -664,11 +701,13 @@ class _DashboardProbePage:
         visible_selectors: set[str],
         html: str,
         api_responses: list[_FakeApiResponse] | None = None,
+        title: str = "UC Dashboard",
     ) -> None:
         self.url = url
         self.visible_selectors = visible_selectors
         self._html = html
         self.request = _FakeRequestContext(api_responses or [])
+        self._title = title
         self.screenshot_path: str | None = None
 
     async def wait_for_url(self, predicate, *, timeout: int) -> None:
@@ -680,7 +719,7 @@ class _DashboardProbePage:
         return _MappedLocator(visible=selector in self.visible_selectors)
 
     async def title(self) -> str:
-        return "UC Dashboard"
+        return self._title
 
     async def content(self) -> str:
         return self._html
@@ -739,8 +778,8 @@ async def test_uc_dashboard_shell_without_tracker_card_logs_final_failure_payloa
         "UC dashboard shell loaded but legacy Daily Operations Tracker "
         "card selector is missing; API readiness did not succeed"
     ) in output
-    assert "UC dashboard selector/card missing" in output
-    assert '"failure_class": "uc_dashboard_selector_card_missing"' in output
+    assert "UC API readiness failed after dashboard shell loaded" in output
+    assert '"failure_class": "uc_auth_token_not_applied"' in output
     assert '"final_url": "https://storepanel.ucleanlaundry.com/dashboard"' in output
     assert '"page_title": "UC Dashboard"' in output
     assert '"response_status": 200' in output
@@ -800,7 +839,6 @@ async def test_uc_dashboard_shell_without_tracker_card_is_ready_when_api_probe_s
     assert '"target_card_visible": false' in output
     assert '"api_probe_ready": true' in output
     assert '"status": "info"' in output
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [401, 403])
