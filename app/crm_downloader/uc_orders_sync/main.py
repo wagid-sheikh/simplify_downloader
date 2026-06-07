@@ -4919,6 +4919,47 @@ async def _run_store_discovery(
                 await context.close()
 
 
+def _extract_uc_login_bearer_token(payload: Any) -> str | None:
+    """Extract the UC API bearer token from the login JSON envelope."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    token = data.get("token")
+    if not isinstance(token, str):
+        return None
+    token = token.strip()
+    if not token:
+        return None
+    if token.lower().startswith("bearer "):
+        token = token.split(None, 1)[1].strip()
+    return token or None
+
+
+async def _persist_uc_login_bearer_token(*, page: Page, token: str | None) -> bool:
+    """Persist the login token in the same localStorage source archive/GST helpers read."""
+
+    if not token:
+        return False
+    setattr(page, "_uc_bearer_token", token)
+    try:
+        await page.evaluate(
+            """
+            (token) => {
+              const value = `Bearer ${token}`;
+              window.localStorage.setItem('token', value);
+              window.localStorage.setItem('authToken', value);
+            }
+            """,
+            token,
+        )
+        return True
+    except Exception:
+        return False
+
+
 async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
     setattr(page, "_uc_login_error_code", None)
     setattr(page, "_uc_login_page_version_signature", None)
@@ -5141,6 +5182,23 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             response_url=response.url,
             response_status=response.status,
         )
+        if int(getattr(response, "status", 0) or 0) == 200:
+            login_token: str | None = None
+            with contextlib.suppress(Exception):
+                login_token = _extract_uc_login_bearer_token(await response.json())
+            if login_token:
+                token_persisted = await _persist_uc_login_bearer_token(
+                    page=page, token=login_token
+                )
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    status="debug",
+                    message="UC login bearer token captured from login response",
+                    store_code=store.store_code,
+                    token_length=len(login_token),
+                    local_storage_persisted=token_persisted,
+                )
     else:
         log_event(
             logger=logger,
@@ -5599,44 +5657,170 @@ def _uc_api_readiness_json_shape_valid(payload: Any, endpoint_url: str) -> bool:
     return bool(payload)
 
 
-async def _probe_uc_api_readiness(page: Page) -> dict[str, Any]:
-    """Probe an authenticated UC API endpoint using the browser request context."""
+def _build_uc_api_readiness_headers(*, bearer_token: str | None) -> dict[str, str]:
+    """Build UC API readiness headers consistent with authenticated archive/GST calls."""
 
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://storepanel.ucleanlaundry.com",
+        "Referer": "https://storepanel.ucleanlaundry.com/",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    return headers
+
+
+async def _resolve_uc_api_readiness_bearer_token(page: Page) -> str | None:
+    token = getattr(page, "_uc_bearer_token", None)
+    if isinstance(token, str) and token.strip():
+        return token.removeprefix("Bearer ").strip()
+    try:
+        candidate = await page.evaluate(
+            r"""
+            () => {
+              const parseToken = (value) => {
+                if (typeof value !== 'string') return null;
+                const trimmed = value.trim();
+                if (!trimmed) return null;
+                const bearer = trimmed.match(/(?:^|\s)Bearer\s+([A-Za-z0-9\-_.~+/]+=*)/i);
+                if (bearer) return bearer[1].trim();
+                const jwt = trimmed.match(/^([A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+)$/);
+                if (jwt) return jwt[1].trim();
+                return null;
+              };
+              const keyRegex = /(token|auth|jwt)/i;
+              const storage = window.localStorage;
+              if (!storage) return null;
+              for (let i = 0; i < storage.length; i += 1) {
+                const key = storage.key(i);
+                const value = storage.getItem(key);
+                const direct = parseToken(value);
+                if (direct && keyRegex.test(key || '')) return direct;
+                if (!value) continue;
+                try {
+                  const parsed = JSON.parse(value);
+                  const stack = [parsed];
+                  while (stack.length) {
+                    const item = stack.pop();
+                    const nested = parseToken(item);
+                    if (nested) return nested;
+                    if (item && typeof item === 'object') {
+                      for (const [nestedKey, nestedValue] of Object.entries(item)) {
+                        if (keyRegex.test(nestedKey)) {
+                          const keyed = parseToken(nestedValue);
+                          if (keyed) return keyed;
+                        }
+                        stack.push(nestedValue);
+                      }
+                    }
+                  }
+                } catch (_) {
+                  // not JSON
+                }
+              }
+              return null;
+            }
+            """
+        )
+        return (
+            candidate.strip()
+            if isinstance(candidate, str) and candidate.strip()
+            else None
+        )
+    except Exception:
+        return None
+
+
+async def _fetch_uc_api_readiness_via_page(
+    *, page: Page, endpoint_url: str, headers: Mapping[str, str]
+) -> tuple[Any | None, int | None]:
+    """Run the readiness probe inside the page when request-context auth is insufficient."""
+
+    try:
+        result = await page.evaluate(
+            """
+            async ({ requestUrl, requestHeaders }) => {
+              try {
+                const response = await fetch(requestUrl, {
+                  method: 'GET',
+                  headers: requestHeaders,
+                  credentials: 'include',
+                  referrer: 'https://storepanel.ucleanlaundry.com/',
+                });
+                let payload = null;
+                try { payload = await response.json(); } catch (_) { payload = null; }
+                return { status: response.status, payload };
+              } catch (error) {
+                return { status: 0, error: String(error) };
+              }
+            }
+            """,
+            {"requestUrl": endpoint_url, "requestHeaders": dict(headers)},
+        )
+    except Exception:
+        return None, None
+    if not isinstance(result, Mapping):
+        return None, None
+    status = result.get("status")
+    return result.get("payload"), (status if isinstance(status, int) else None)
+
+
+async def _probe_uc_api_readiness(page: Page) -> dict[str, Any]:
+    """Probe UC API readiness with bearer headers and browser cookies."""
+
+    bearer_token = await _resolve_uc_api_readiness_bearer_token(page)
+    headers = _build_uc_api_readiness_headers(bearer_token=bearer_token)
     request_context = getattr(page, "request", None)
     if request_context is None:
         context = getattr(page, "context", None)
         request_context = (
             getattr(context, "request", None) if context is not None else None
         )
-    if request_context is None:
-        return {
-            "attempted": False,
-            "ready": False,
-            "unauthorized": False,
-            "error": "browser request context unavailable",
-        }
 
     last_result: dict[str, Any] = {
         "attempted": True,
         "ready": False,
         "unauthorized": False,
+        "auth_header_present": "Authorization" in headers,
     }
     for endpoint_url in UC_API_READINESS_ENDPOINTS:
+        result: dict[str, Any] = {
+            "attempted": True,
+            "ready": False,
+            "unauthorized": False,
+            "url": endpoint_url,
+            "json_shape_valid": False,
+            "auth_header_present": "Authorization" in headers,
+        }
+        status: int | None = None
+        payload: Any | None = None
         try:
-            response = await request_context.get(endpoint_url, timeout=15_000)
-            status = int(getattr(response, "status", 0) or 0)
-            result: dict[str, Any] = {
-                "attempted": True,
-                "ready": False,
-                "unauthorized": status in UC_API_UNAUTHORIZED_STATUSES,
-                "status": status,
-                "url": endpoint_url,
-                "json_shape_valid": False,
-            }
+            if request_context is not None:
+                try:
+                    response = await request_context.get(
+                        endpoint_url, timeout=15_000, headers=headers
+                    )
+                except TypeError:
+                    response = await request_context.get(endpoint_url, timeout=15_000)
+                status = int(getattr(response, "status", 0) or 0)
+                if status == 200:
+                    payload = await response.json()
+            if status in UC_API_UNAUTHORIZED_STATUSES and bearer_token:
+                payload, status = await _fetch_uc_api_readiness_via_page(
+                    page=page, endpoint_url=endpoint_url, headers=headers
+                )
+            elif request_context is None:
+                payload, status = await _fetch_uc_api_readiness_via_page(
+                    page=page, endpoint_url=endpoint_url, headers=headers
+                )
+
+            if isinstance(status, int):
+                result["status"] = status
+                result["unauthorized"] = status in UC_API_UNAUTHORIZED_STATUSES
             if result["unauthorized"]:
                 return result
             if status == 200:
-                payload = await response.json()
                 result["json_shape_valid"] = _uc_api_readiness_json_shape_valid(
                     payload, endpoint_url
                 )
@@ -5646,10 +5830,7 @@ async def _probe_uc_api_readiness(page: Page) -> dict[str, Any]:
             last_result = result
         except Exception as exc:
             last_result = {
-                "attempted": True,
-                "ready": False,
-                "unauthorized": False,
-                "url": endpoint_url,
+                **result,
                 "error": str(exc),
             }
     return last_result
