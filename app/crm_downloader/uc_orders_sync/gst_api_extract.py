@@ -11,6 +11,9 @@ from urllib.parse import urlencode
 from playwright.async_api import Page
 
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
+    ARCHIVE_API_MAX_PAGES,
+    _booking_identity,
+    build_delivered_orders_query,
     _extract_invoice_customer_address,
     InvoiceApiCallStats,
     TOKEN_KEY_PATTERN,
@@ -424,20 +427,16 @@ async def _collect_gst_payment_rows_from_delivered_orders(
     extract: GstApiExtract,
 ) -> None:
     page_number = 1
+    seen_booking_ids: set[str] = set()
     seen_payment_keys: set[tuple[Any, ...]] = set()
     matched_orders_with_payments: set[str] = set()
 
-    while True:
-        query = urlencode(
-            {
-                "franchise": "UCLEAN",
-                "page": page_number,
-                "limit": DELIVERED_ORDERS_LIMIT,
-                "dateRange": "custom",
-                "startDate": from_date.isoformat(),
-                "endDate": to_date.isoformat(),
-                "dateType": "delivery",
-            }
+    while page_number <= ARCHIVE_API_MAX_PAGES:
+        query = build_delivered_orders_query(
+            page_number=page_number,
+            page_limit=DELIVERED_ORDERS_LIMIT,
+            from_date=from_date,
+            to_date=to_date,
         )
         payload = await _request_json_with_retries(
             page=page,
@@ -456,6 +455,14 @@ async def _collect_gst_payment_rows_from_delivered_orders(
             break
         if not data:
             break
+
+        page_booking_ids = {
+            booking_id
+            for booking in data
+            if isinstance(booking, Mapping) and (booking_id := _booking_identity(booking)) is not None
+        }
+        new_booking_ids = page_booking_ids - seen_booking_ids
+        seen_booking_ids.update(page_booking_ids)
 
         for booking in data:
             if not isinstance(booking, Mapping):
@@ -495,7 +502,14 @@ async def _collect_gst_payment_rows_from_delivered_orders(
             if appended_for_order and order_code in gst_order_codes:
                 matched_orders_with_payments.add(order_code)
 
+        if len(data) < DELIVERED_ORDERS_LIMIT:
+            break
+        if not new_booking_ids:
+            _record_skip(extract, order_code=f"page:{page_number}", reason="delivered_orders_duplicate_full_page")
+            break
         page_number += 1
+    else:
+        _record_skip(extract, order_code=f"page:{page_number - 1}", reason="delivered_orders_max_pages_reached")
 
     extract.gst_orders_without_payments = len(gst_order_codes - matched_orders_with_payments)
 
