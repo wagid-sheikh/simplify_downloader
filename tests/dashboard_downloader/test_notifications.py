@@ -7,6 +7,7 @@ import pytest
 from app.dashboard_downloader.notifications import (
     PROFILER_HTML_TEMPLATE,
     _build_fact_rows,
+    _build_order_line_items_rebuild_context,
     _build_profiler_context,
     _build_run_plan,
     _build_store_plans,
@@ -19,6 +20,51 @@ from app.dashboard_downloader.notifications import (
     _td_summary_text_from_payload,
     _uc_summary_text_from_payload,
 )
+
+
+def test_order_line_items_rebuild_context_flattens_notification_payload() -> None:
+    run_data = {
+        "overall_status": "warning",
+        "total_time_taken": "00:00:03",
+        "metrics_json": {
+            "notification_payload": {
+                "overall_status": "warning",
+                "sources": ["td", "uc"],
+                "selected_stores": ["TD001", "UC001"],
+                "expected_window_count": 3,
+                "completed_window_count": 1,
+                "missing_window_count": 1,
+                "skipped_window_count": 1,
+                "completed_windows": [
+                    {"source": "td", "store_code": "TD001", "from_date": "2026-06-01"}
+                ],
+                "missing_windows": [
+                    {"source": "uc", "store_code": "UC001", "from_date": "2026-06-02"}
+                ],
+                "skipped_windows": [
+                    {"source": "td", "store_code": "TD001", "from_date": "2026-06-03"}
+                ],
+                "zero_snapshot_counts": {"zero_snapshot_count": 2},
+                "warnings": [{"code": "PARTIAL", "message": "one window skipped"}],
+            }
+        },
+    }
+
+    context = _build_order_line_items_rebuild_context(run_data)
+
+    assert context["sources"] == ["td", "uc"]
+    assert context["stores"] == ["TD001", "UC001"]
+    assert context["expected_window_count"] == 3
+    assert context["completed_window_count"] == 1
+    assert context["missing_window_count"] == 1
+    assert context["skipped_window_count"] == 1
+    assert context["zero_snapshot_count"] == 2
+    assert context["warnings"] == ["PARTIAL: one window skipped"]
+    assert [row["window_status"] for row in context["window_rows"]] == [
+        "completed",
+        "missing",
+        "skipped",
+    ]
 
 
 def test_prepare_ingest_remarks_includes_all_rows() -> None:

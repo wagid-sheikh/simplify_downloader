@@ -2862,6 +2862,97 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _coalesce_rebuild_payload_value(
+    payload: Mapping[str, Any], metrics: Mapping[str, Any], key: str, default: Any
+) -> Any:
+    value = payload.get(key)
+    if value is not None:
+        return value
+    value = metrics.get(key)
+    if value is not None:
+        return value
+    return default
+
+
+def _build_rebuild_window_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    window_rows = payload.get("window_rows")
+    if isinstance(window_rows, Sequence) and not isinstance(window_rows, (str, bytes)):
+        return [dict(row) if isinstance(row, Mapping) else {"value": row} for row in window_rows]
+
+    rows: list[dict[str, Any]] = []
+    for status, key in (
+        ("completed", "completed_windows"),
+        ("missing", "missing_windows"),
+        ("skipped", "skipped_windows"),
+    ):
+        windows = payload.get(key) or []
+        if not isinstance(windows, Sequence) or isinstance(windows, (str, bytes)):
+            continue
+        for window in windows:
+            row = dict(window) if isinstance(window, Mapping) else {"value": window}
+            row.setdefault("window_status", status)
+            rows.append(row)
+
+    if rows:
+        return rows
+
+    expected_windows = payload.get("expected_windows") or []
+    if not isinstance(expected_windows, Sequence) or isinstance(expected_windows, (str, bytes)):
+        return []
+    for window in expected_windows:
+        row = dict(window) if isinstance(window, Mapping) else {"value": window}
+        row.setdefault("window_status", "expected")
+        rows.append(row)
+    return rows
+
+
+def _build_order_line_items_rebuild_context(run_data: dict[str, Any]) -> dict[str, Any]:
+    metrics = run_data.get("metrics_json") or {}
+    payload = (run_data.get("metrics_json") or {}).get("notification_payload") or {}
+    zero_counts = _coalesce_rebuild_payload_value(payload, metrics, "zero_snapshot_counts", {}) or {}
+    warnings = _normalize_warning_entries(
+        _coalesce_rebuild_payload_value(payload, metrics, "warnings", []) or []
+    )
+    stores = _coalesce_rebuild_payload_value(payload, metrics, "stores", None)
+    if stores is None:
+        stores = _coalesce_rebuild_payload_value(payload, metrics, "selected_stores", []) or []
+
+    overall_status = payload.get("overall_status") or run_data.get("overall_status")
+    return {
+        "started_at": _normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
+        "finished_at": _normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
+        "overall_status": overall_status,
+        "overall_status_label": _format_status_label(overall_status),
+        "sources": _coalesce_rebuild_payload_value(payload, metrics, "sources", []) or [],
+        "stores": stores,
+        "source_selection": _coalesce_rebuild_payload_value(payload, metrics, "source_selection", "") or "",
+        "dry_run": _coalesce_rebuild_payload_value(payload, metrics, "dry_run", False),
+        "resume": _coalesce_rebuild_payload_value(payload, metrics, "resume", False),
+        "resume_run_id": _coalesce_rebuild_payload_value(payload, metrics, "resume_run_id", None),
+        "expected_window_count": _coalesce_rebuild_payload_value(
+            payload, metrics, "expected_window_count", 0
+        ),
+        "completed_window_count": _coalesce_rebuild_payload_value(
+            payload, metrics, "completed_window_count", 0
+        ),
+        "missing_window_count": _coalesce_rebuild_payload_value(
+            payload, metrics, "missing_window_count", 0
+        ),
+        "skipped_window_count": _coalesce_rebuild_payload_value(
+            payload, metrics, "skipped_window_count", 0
+        ),
+        "warnings": warnings,
+        "warnings_text": "\n".join(str(entry) for entry in warnings) if warnings else "",
+        "warnings_count": len(warnings),
+        "has_warnings": bool(warnings),
+        "zero_snapshot_counts": zero_counts,
+        "zero_snapshot_count": zero_counts.get("zero_snapshot_count", 0),
+        "window_rows": _build_rebuild_window_rows(payload),
+        "notification_payload": payload,
+    }
+
+
 def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
     if not stores_payload:
         return True
@@ -3357,6 +3448,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         context.update(_build_uc_orders_context(run_data, missing_windows_by_store=profiler_missing_windows))
     elif pipeline_name == "orders_sync_run_profiler":
         context.update(_build_profiler_context(run_data))
+    elif pipeline_name == "order_line_items_rebuild":
+        context.update(_build_order_line_items_rebuild_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
@@ -3502,6 +3595,8 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         context.update(_build_uc_orders_context(run_data))
     elif pipeline_name == "orders_sync_run_profiler":
         context.update(_build_profiler_context(run_data))
+    elif pipeline_name == "order_line_items_rebuild":
+        context.update(_build_order_line_items_rebuild_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
