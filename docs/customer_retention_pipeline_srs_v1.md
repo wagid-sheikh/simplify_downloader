@@ -1,11 +1,11 @@
 # Customer Retention & Multi-Source Lead Management Pipeline SRS
 
-Version: v1.1
+Version: v1.2
 Project: TSV-RSM
 Module: Customer Retention Pipeline
 Prepared For: The Shaw Ventures
 Prepared On: 2026-05-07
-Status: Revised after owner decisions
+Status: Revised after owner decisions and operational analytics gaps
 
 ---
 
@@ -139,7 +139,7 @@ Initial/default RETENTION cap:
 
 This value is the initial/default configured cap for the `RETENTION` + `FRESH_RETENTION` scope; it must not be hardcoded in application logic. Store-specific cap rows can override the global/default cap, and active selection must respect effective dates.
 
-However, fresh retention leads are generated only when previous actionable workload is completed.
+Fresh retention leads are generated only while the store remains below the configured incomplete carry-forward workload threshold.
 
 ---
 
@@ -163,7 +163,7 @@ Rules:
 - The unified lead table becomes the operational follow-up source of truth.
 - TD leads are not counted against the `RETENTION` cap.
 - TD leads are not counted against the `EXTERNAL` cap.
-- TD leads remain uncapped in v1.1 because they are CRM-source-driven inbound/actionable leads.
+- TD leads remain uncapped in v1.2 because they are CRM-source-driven inbound/actionable leads.
 - TD lead inclusion is still subject to idempotency, suppression, closure, and workbook workload rules using normalized mobile number for customer matching.
 - TD leads must appear in the same store workbook.
 - TD leads must support the same follow-up, closure, suppression, and reporting lifecycle.
@@ -192,7 +192,7 @@ Rules:
 - External leads are not counted against the retention cap, but must respect their own configured external lead cap.
 - External leads must appear in the same store workbook.
 - External leads are assigned to one specific store only.
-- Inter-store transfer is out of scope for now.
+- Automated inter-store transfer is out of scope for now. Manual shifted-location handoff is supported only through the controlled `Shifted Location` + `Target Cost Center` workflow defined in Sections 7 and 45.
 
 ---
 
@@ -281,8 +281,15 @@ Rules:
 
 - Lead workbook is generated store-wise.
 - A lead appears only in the workbook for its assigned cost center.
-- Inter-store transfer/reassignment is not supported in this version.
-- If a customer says they belong to another area/store, staff can write it in remarks, but system will not transfer automatically.
+- Automated inter-store transfer/reassignment is not supported in this version.
+- Manual shifted-location handoff is supported only through the controlled workbook bridge below.
+- If staff select Customer Response = `Shifted Location`, the workbook must unlock an optional `Target Cost Center` text/dropdown column for that row.
+- If staff do not provide a valid `Target Cost Center`, the current-store lead follows the normal `Shifted Location` dead-end/suppression behavior and no destination lead is created.
+- Upon ingestion, if Customer Response = `Shifted Location` and a valid alternative cost center is provided, the pipeline must close the lead at the current store as `CLOSED - Shifted`, create the appropriate current-store suppression/audit records, and automatically initialize a new lead in the master lead table for the target store under source type `EXTERNAL`.
+- The destination `EXTERNAL` lead created from a valid shifted-location handoff must bypass the permanent suppression rule only for that specific destination cost center and only for that one handoff event.
+- The bypass must not remove, weaken, or ignore suppression for the original/current store.
+- The bypass must not create a general cross-store exemption for future leads, other stores, other source types, or unrelated runs.
+- The target cost center must be validated against active store master data; invalid or same-store values are row-level warnings and must not create a destination lead.
 
 ---
 
@@ -329,7 +336,7 @@ Recommended flow:
 13. Pull pending carry-forward leads.
 14. Pull pending TD leads from existing `td_leads_sync` tables.
 15. Pull pending external leads subject to configured external cap.
-16. Generate fresh retention leads subject to configured retention cap and pending-work rules.
+16. Generate fresh retention leads subject to configured retention cap and configurable carry-forward backlog threshold rules.
 17. Upsert/convert TD and capped external leads into unified master lead table using normalized mobile number for matching and idempotency.
 18. Build one workbook per store.
 19. Archive processed input files.
@@ -437,6 +444,10 @@ Therefore:
 - TD leads remain uncapped
 - caps must not hide or drop previously assigned actionable work
 - if a store has incomplete actionable work, the pipeline must preserve it instead of silently replacing it with new capped work
+- fresh RETENTION lead generation must not require zero pending work; it must continue while the store's incomplete carry-forward workload is at or below the configured backlog threshold
+- if a store's incomplete carry-forward workload exceeds the configured backlog threshold, fresh RETENTION lead generation for that store must be frozen for the run
+- the initial/default backlog threshold is 20 incomplete carry-forward leads per store, but this value must be configurable and must not be hardcoded in application logic
+- any threshold breach must trigger a high-priority `Store Workload Backlog Warning` in the management email summary so operations can intervene
 
 ---
 
@@ -473,6 +484,8 @@ If previous lead work was not completed:
 - do not let RETENTION or EXTERNAL caps hide or drop this previously assigned actionable work
 - do not auto-expire it
 - do not auto-mark stale
+- allow fresh RETENTION lead generation only while the store's incomplete carry-forward workload is at or below the configured backlog threshold
+- freeze fresh RETENTION lead generation for the store when incomplete carry-forward workload exceeds the configured backlog threshold
 - do not generate unlimited fresh retention leads on top of unworked leads
 
 Important owner decision:
@@ -505,7 +518,7 @@ Inputs:
 
 Lifetime sales must be computed by the pipeline from `orders`.
 
-Codex must inspect actual amount columns in `orders` before finalizing calculation. For `orders.source_system='TumbleDry'` use `orders.net_amount` for all other `source_system` use `orders.gross_amount`.
+Codex must inspect the existing order amount contract before finalizing calculation. Reporting, recovered revenue, and payment/recovery decisions must use `vw_orders.order_amount`; direct report reads from raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment` are prohibited unless explicitly approved for source synchronization, reconciliation, or raw-payload audit purposes.
 
 ---
 
@@ -594,6 +607,9 @@ next_followup_date
 complaint_flag
 do_not_contact_flag
 staff_remarks
+target_cost_center
+shifted_from_lead_id
+shifted_from_cost_center
 
 is_closed
 closed_at
@@ -645,6 +661,7 @@ next_followup_date
 complaint_flag
 do_not_contact_flag
 staff_remarks
+target_cost_center
 raw_excel_value_json
 normalized_value_json
 created_at
@@ -1037,6 +1054,7 @@ Only these columns should be editable.
 | Complaint           | Dropdown                                  | Mandatory                                |
 | Do Not Contact      | Dropdown                                  | Mandatory                                |
 | Staff Remarks       | Free text                                 | Optional, but recommended                |
+| Target Cost Center  | Text/dropdown                             | Optional; unlocked only when Customer Response = `Shifted Location` |
 
 ---
 
@@ -1078,6 +1096,8 @@ Do Not Contact
 Invalid Number
 Lead Stale
 ```
+
+When `Shifted Location` is selected, the workbook must make `Target Cost Center` editable for that row. If a valid alternative cost center is supplied, ingestion must use the manual shifted-location bridge in Section 7.
 
 ## 26.4 Order Expected
 
@@ -1363,10 +1383,16 @@ For each store:
 - workbook generated path
 - due follow-ups included
 - pending carry-forward included
+- Aging Actionable Workload: incomplete carry-forward leads unworked for more than 3 days and more than 7 days
+- incomplete carry-forward workload count versus configured backlog threshold
+- high-priority `Store Workload Backlog Warning` when incomplete carry-forward workload exceeds the configured threshold and fresh RETENTION generation is frozen
 - fresh retention leads generated
+- fresh retention leads frozen because of backlog threshold, if applicable
 - TD leads included
 - external leads included
+- shifted-location destination leads created under `EXTERNAL`, grouped by target cost center
 - recovered customers
+- Recovered Revenue Value, calculated by summing `vw_orders.order_amount` for the actual orders that recovered customers placed and that were tracked during that run
 - closed leads
 - suppression additions by outcome, including permanent suppressions for `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`
 - 90-day suppression additions for `Not Interested`
@@ -1374,13 +1400,38 @@ For each store:
 - complaints raised
 - rows with warnings
 
+## Aging Actionable Workload
+
+For each store, the email must include aging counts for carry-forward leads that remain incomplete and unworked.
+
+| Cost Center | Pending Carry-Forward | Unworked >3 Days | Unworked >7 Days | Backlog Threshold | Fresh RETENTION Frozen |
+| ----------- | --------------------: | ---------------: | ---------------: | ----------------: | ---------------------- |
+|             |                       |                  |                  |                   |                        |
+
+A lead is counted as unworked based on the age of its current incomplete carry-forward assignment since it was first generated or last returned to pending state, using the same timezone/date conventions used elsewhere in the pipeline.
+
+## Staff Productivity Breakdown
+
+For each store and each `Handled By` value captured during the run, the email must include staff productivity counts.
+
+| Cost Center | Handled By | Total Leads Assigned | Worked | Dead-ends Logged |
+| ----------- | ---------- | -------------------: | -----: | ---------------: |
+|             |            |                      |        |                  |
+
+Definitions:
+
+- `Total Leads Assigned` counts workbook rows assigned to that staff member when assignment data exists, otherwise rows whose ingested `Handled By` value matches that staff member.
+- `Worked` counts rows with valid completed staff input for the run.
+- `Dead-ends Logged` counts worked rows that produced dead-end outcomes including `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
+- Blank or missing `Handled By` values must be grouped under `UNSPECIFIED` and included in warning counts rather than being dropped from the productivity table.
+
 ## Source-Wise Summary
 
-| Source    | Included | Worked | Pending | Closed | Recovered |
-| --------- | -------: | -----: | ------: | -----: | --------: |
-| RETENTION |          |        |         |        |           |
-| TD        |          |        |         |        |           |
-| EXTERNAL  |          |        |         |        |           |
+| Source    | Included | Worked | Pending | Closed | Recovered | Recovered Revenue Value |
+| --------- | -------: | -----: | ------: | -----: | --------: | ----------------------: |
+| RETENTION |          |        |         |        |           |                         |
+| TD        |          |        |         |        |           |                         |
+| EXTERNAL  |          |        |         |        |           |                         |
 
 ## Warning/Error Summary
 
@@ -1392,6 +1443,9 @@ For each store:
 - invalid or unnormalizable mobile numbers reported as row-level warnings
 - rows left pending due to missing fields
 - rows skipped because mobile numbers were invalid or unnormalizable
+- invalid or same-store `Target Cost Center` values for `Shifted Location` rows
+- destination `EXTERNAL` leads created from valid shifted-location handoffs
+- stores where fresh RETENTION lead generation was frozen by backlog threshold
 
 ---
 
@@ -1446,13 +1500,16 @@ CUSTOMER_FOLLOWUP_INPUT_DIR
 CUSTOMER_FOLLOWUP_ARCHIVE_DIR
 CUSTOMER_FOLLOWUP_EXTERNAL_INPUT_DIR
 CUSTOMER_FOLLOWUP_EMAIL_ENABLED
+CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD
 ```
 
-Environment/system configuration must be limited to folders, email behavior, and runtime switches. Lead caps must not be sourced from an environment variable or generic `system_config` key.
+Environment/system configuration must be limited to folders, email behavior, runtime switches, and the carry-forward backlog warning threshold. Lead caps must not be sourced from an environment variable or generic `system_config` key.
 
 Caps must be read from `customer_followup_cap_config` through existing DB/config conventions, including the same database access, typed loading, validation, and logging patterns used elsewhere in the project.
 
-If the project uses DB-backed `system_config`, follow existing convention only for non-cap settings such as directories, email, and runtime feature switches.
+If the project uses DB-backed `system_config`, follow existing convention only for non-cap settings such as directories, email, runtime feature switches, and the carry-forward backlog warning threshold.
+
+The carry-forward backlog warning threshold controls only whether fresh RETENTION lead generation is frozen and whether the management email shows a high-priority backlog warning. It is not a lead cap and must not hide due follow-ups, pending carry-forward work, TD leads, or already-selected EXTERNAL work.
 
 Do not add ad-hoc `.env` handling.
 
@@ -1553,7 +1610,9 @@ Non-critical issues must be logged and summarized, not crash the whole run.
 - Protect generated workbook.
 - Preserve audit history.
 - Avoid leaking other store data into wrong workbook.
-- No inter-store lead transfer in this version.
+- No automated inter-store lead transfer in this version.
+- Validate `Target Cost Center` against store master data before creating any shifted-location destination lead.
+- Preserve original-store suppression and audit records when a valid shifted-location destination lead is created.
 
 ---
 
@@ -1575,8 +1634,12 @@ Minimum tests:
 10. Recovery detection from orders.
 11. Due follow-up prioritization.
 12. Fresh retention cap enforcement.
-13. Pending work prevents fresh retention generation.
+13. Carry-forward backlog threshold freezes fresh RETENTION generation only when the threshold is exceeded.
 14. Summary email data builder.
+15. Aging actionable workload summary for >3 days and >7 days.
+16. Staff productivity breakdown by `Handled By`.
+17. Recovered Revenue Value calculation from `vw_orders.order_amount` for actual recovered orders.
+18. Shifted-location handoff creates a destination `EXTERNAL` lead only for a valid alternative target cost center.
 
 ---
 
@@ -1599,16 +1662,19 @@ Implementation is accepted only when:
 13. RETENTION cap applies only to newly generated fresh retention leads.
 14. EXTERNAL cap applies only to newly converted/imported external leads selected for workbook inclusion.
 15. Caps never hide or drop previously assigned actionable work.
-16. Fresh retention leads are generated only when previous actionable work is completed.
-17. Store team input is ingested idempotently.
-18. Idiotic inputs are normalized or safely logged, and invalid or unnormalizable mobile numbers remain row-level warnings that do not create actionable leads until corrected.
-19. Suppression works by `(cost_center, normalized_mobile_number)` for every suppression-producing outcome: `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
-20. Stale-lead suppression works: `Lead Stale` closes the lead, creates a suppression record for 90 days unless the owner specifies a different duration, and excludes the same customer/store from future retention lead generation until suppression expires.
-21. Lead closes when order is created or dead-end is reached.
-22. Recovery is confirmed from `orders`.
-23. Owner summary email is sent.
-24. Existing config/logging/email/DB helpers are reused.
-25. Existing pipelines are not broken.
+16. Fresh retention leads are generated while incomplete carry-forward workload is at or below the configured threshold, and are frozen for the store when incomplete carry-forward workload exceeds that threshold.
+17. A high-priority `Store Workload Backlog Warning` appears in the management email when fresh RETENTION generation is frozen by threshold breach.
+18. Store team input is ingested idempotently.
+19. Idiotic inputs are normalized or safely logged, and invalid or unnormalizable mobile numbers remain row-level warnings that do not create actionable leads until corrected.
+20. Suppression works by `(cost_center, normalized_mobile_number)` for every suppression-producing outcome: `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
+21. Stale-lead suppression works: `Lead Stale` closes the lead, creates a suppression record for 90 days unless the owner specifies a different duration, and excludes the same customer/store from future retention lead generation until suppression expires.
+22. Lead closes when order is created or dead-end is reached.
+23. Recovery is confirmed from `orders`.
+24. Owner summary email is sent.
+25. Existing config/logging/email/DB helpers are reused.
+26. Existing pipelines are not broken.
+27. Valid `Shifted Location` + `Target Cost Center` input closes the source-store lead as `CLOSED - Shifted`, preserves source-store suppression/audit records, and creates one destination `EXTERNAL` lead for the validated target store.
+28. Invalid, blank, or same-store `Target Cost Center` input does not create a destination lead and is summarized as a row-level warning.
 
 ---
 
@@ -1641,11 +1707,11 @@ Do not change existing dashboard/downloader ingestion behavior.
 
 ---
 
-# 45. Out of Scope for v1.1
+# 45. Out of Scope for v1.2
 
 The following are explicitly out of scope for this version:
 
-- inter-store lead transfer
+- automated inter-store lead transfer/reassignment outside the controlled `Shifted Location` + `Target Cost Center` manual bridge
 - WhatsApp automation
 - automatic SMS sending
 - mobile app interface
@@ -1669,7 +1735,8 @@ The owner has approved:
 - one workbook per cost center
 - source type visible in workbook
 - lead assigned to specific store only
-- no inter-store transfer for now
+- no automated inter-store transfer for now
+- manual shifted-location handoff is allowed only when `Shifted Location` has a valid alternative `Target Cost Center`, closing the source lead as `CLOSED - Shifted` and creating a destination `EXTERNAL` lead
 - lead closes on actual order or dead-end outcome
 - TD leads not counted in the configured fresh RETENTION cap
 - external leads capped separately through table configuration
