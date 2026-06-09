@@ -1008,6 +1008,84 @@ def _serialize_window_key(key: tuple[Source, str, date, date]) -> dict[str, str]
     }
 
 
+def _serialize_completed_window(
+    metric: WindowMetrics, *, window_status: str = "completed"
+) -> dict[str, Any]:
+    payload = metric.checkpoint()
+    payload["window_status"] = window_status
+    # Operator-facing alias: these are the order_line_items rows rebuilt for
+    # this source/store/date window. Keep inserted_rows for machine consumers.
+    payload["rows_rebuilt"] = metric.inserted_rows
+    return payload
+
+
+def _completed_window_payloads(
+    *,
+    successful_windows: set[tuple[Source, str, date, date]],
+    metrics: Sequence[WindowMetrics],
+) -> list[dict[str, Any]]:
+    metrics_by_key = {
+        (
+            metric.source,
+            metric.store_code.upper(),
+            metric.window_start,
+            metric.window_end,
+        ): metric
+        for metric in metrics
+    }
+    rows: list[dict[str, Any]] = []
+    for key in sorted(successful_windows):
+        metric = metrics_by_key.get(key)
+        if metric is not None:
+            rows.append(_serialize_completed_window(metric))
+            continue
+        row = _serialize_window_key(key)
+        row["window_status"] = "previously_completed"
+        rows.append(row)
+    return rows
+
+
+def _aggregate_rebuild_store_rows(
+    completed_windows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+    summed_fields = (
+        "rows_rebuilt",
+        "inserted_rows",
+        "deleted_rows",
+        "orphan_rows",
+        "inspected_orders",
+        "complete_with_rows_orders",
+        "complete_empty_orders",
+        "skipped_incomplete_orders",
+    )
+    for window in completed_windows:
+        source = str(window.get("source") or "").strip()
+        store_code = str(window.get("store_code") or "").strip().upper()
+        if not source or not store_code:
+            continue
+        key = (source, store_code)
+        aggregate = aggregates.setdefault(
+            key,
+            {
+                "source": source,
+                "store_code": store_code,
+                "cost_center": window.get("cost_center"),
+                "window_count": 0,
+                **{field: 0 for field in summed_fields},
+            },
+        )
+        aggregate["window_count"] += 1
+        if not aggregate.get("cost_center") and window.get("cost_center"):
+            aggregate["cost_center"] = window.get("cost_center")
+        for field in summed_fields:
+            try:
+                aggregate[field] += int(window.get(field) or 0)
+            except (TypeError, ValueError):
+                continue
+    return [aggregates[key] for key in sorted(aggregates)]
+
+
 def _build_rebuild_summary_text(
     *,
     run_id: str,
@@ -1068,6 +1146,7 @@ def _build_rebuild_notification_payload(
     completed_windows: Sequence[Mapping[str, Any]],
     missing_windows: Sequence[Mapping[str, Any]],
     skipped_windows: Sequence[Mapping[str, Any]],
+    store_rows: Sequence[Mapping[str, Any]],
     zero_counts: Mapping[str, int],
     final_status: str,
     warnings: Sequence[str],
@@ -1094,6 +1173,7 @@ def _build_rebuild_notification_payload(
         "completed_windows": list(completed_windows),
         "missing_windows": list(missing_windows),
         "skipped_windows": list(skipped_windows),
+        "store_rows": list(store_rows),
         "zero_snapshot_counts": dict(zero_counts),
         "overall_status": final_status,
         "warnings": list(warnings),
@@ -1136,9 +1216,10 @@ async def _persist_rebuild_summary_and_notify(
     finished_at = datetime.now(timezone.utc)
     total_time_taken = _format_duration_hhmmss(started_at, finished_at)
     expected_payload = [_serialize_window_key(key) for key in sorted(expected_windows)]
-    completed_payload = [
-        _serialize_window_key(key) for key in sorted(successful_windows)
-    ]
+    completed_payload = _completed_window_payloads(
+        successful_windows=successful_windows, metrics=metrics
+    )
+    store_rows = _aggregate_rebuild_store_rows(completed_payload)
     missing_payload = [_serialize_window_key(key) for key in missing_windows]
     zero_counts = _zero_snapshot_counts(metrics)
     overall_status = _summary_overall_status(final_status)
@@ -1174,6 +1255,7 @@ async def _persist_rebuild_summary_and_notify(
         completed_windows=completed_payload,
         missing_windows=missing_payload,
         skipped_windows=skipped_windows,
+        store_rows=store_rows,
         zero_counts=zero_counts,
         final_status=overall_status,
         warnings=warnings,
@@ -1204,6 +1286,8 @@ async def _persist_rebuild_summary_and_notify(
         "missing_window_count": len(missing_payload),
         "skipped_window_count": len(skipped_windows),
         "zero_snapshot_counts": zero_counts,
+        "store_rows": store_rows,
+        "completed_windows": completed_payload,
         "warnings": list(warnings),
         "notification_payload": notification_payload,
     }
