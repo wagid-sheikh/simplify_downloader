@@ -1,6 +1,6 @@
 # Customer Retention & Multi-Source Lead Management Pipeline SRS
 
-Version: v1.2
+Version: v1.3
 Project: TSV-RSM
 Module: Customer Retention Pipeline
 Prepared For: The Shaw Ventures
@@ -139,7 +139,7 @@ Initial/default RETENTION cap:
 
 This value is the initial/default configured cap for the `RETENTION` + `FRESH_RETENTION` scope; it must not be hardcoded in application logic. Store-specific cap rows can override the global/default cap, and active selection must respect effective dates.
 
-Fresh retention leads are generated only while the store remains below the configured incomplete carry-forward workload threshold.
+Fresh retention leads are generated only while the store remains at or below the configured rolling 14-day incomplete carry-forward workload threshold.
 
 ---
 
@@ -163,7 +163,7 @@ Rules:
 - The unified lead table becomes the operational follow-up source of truth.
 - TD leads are not counted against the `RETENTION` cap.
 - TD leads are not counted against the `EXTERNAL` cap.
-- TD leads remain uncapped in v1.2 because they are CRM-source-driven inbound/actionable leads.
+- TD leads remain uncapped in v1.3 because they are CRM-source-driven inbound/actionable leads.
 - TD lead inclusion is still subject to idempotency, suppression, closure, and workbook workload rules using normalized mobile number for customer matching.
 - TD leads must appear in the same store workbook.
 - TD leads must support the same follow-up, closure, suppression, and reporting lifecycle.
@@ -256,14 +256,16 @@ Dead-end outcomes and suppression durations are:
 
 | Outcome          | Suppression duration                                      |
 | ---------------- | --------------------------------------------------------- |
-| Do Not Contact   | Permanent                                                 |
-| Wrong Number     | Permanent                                                 |
-| Invalid Number   | Permanent                                                 |
-| Shifted Location | Permanent                                                 |
+| Do Not Contact   | Permanent after manager/owner approval                    |
+| Wrong Number     | Permanent after manager/owner approval                    |
+| Invalid Number   | Permanent after manager/owner approval                    |
+| Shifted Location | Permanent after manager/owner approval                    |
 | Not Interested   | 90 days                                                   |
 | Lead Stale       | 90 days unless owner specifies a different duration       |
 
-All dead-end outcomes close the lead and must create suppression records.
+All dead-end outcomes close the lead and must create suppression records or suppression-approval records as defined below.
+
+Staff-submitted permanent dead-end outcomes are not self-authorizing. When store staff log `Do Not Contact`, `Wrong Number`, `Invalid Number`, or `Shifted Location` in the workbook, the pipeline must not automatically commit that row as an active permanent suppression in `trx_customer_suppression`. The pipeline must route the row into a temporary `PENDING_APPROVAL` state within the suppression framework and require an explicit manager/owner approval flag before finalizing the permanent suppression. Until approval is present, the row must remain auditable as pending suppression approval rather than being treated as an active permanent suppression.
 
 `Lead Stale` is a store-explicit dead-end outcome. When selected, the pipeline must close the lead, create a suppression record for 90 days unless the owner specifies a different duration, and exclude the same customer/store from future retention lead generation until that suppression expires.
 
@@ -283,9 +285,11 @@ Rules:
 - A lead appears only in the workbook for its assigned cost center.
 - Automated inter-store transfer/reassignment is not supported in this version.
 - Manual shifted-location handoff is supported only through the controlled workbook bridge below.
-- If staff select Customer Response = `Shifted Location`, the workbook must unlock an optional `Target Cost Center` text/dropdown column for that row.
-- If staff do not provide a valid `Target Cost Center`, the current-store lead follows the normal `Shifted Location` dead-end/suppression behavior and no destination lead is created.
-- Upon ingestion, if Customer Response = `Shifted Location` and a valid alternative cost center is provided, the pipeline must close the lead at the current store as `CLOSED - Shifted`, create the appropriate current-store suppression/audit records, and automatically initialize a new lead in the master lead table for the target store under source type `EXTERNAL`.
+- If staff select Customer Response = `Shifted Location`, the workbook must unlock an optional `Target Cost Center` column for that row.
+- The generated workbook must make `Target Cost Center` a strict Excel Data Validation dropdown list populated programmatically from active `cost_center` strings dynamically pulled from `store_master`.
+- Free-text or unvalidated string entry for `Target Cost Center` must be structurally impossible inside the generated sheet template.
+- If staff do not provide a valid `Target Cost Center`, the current-store lead follows the normal `Shifted Location` dead-end and pending-approval suppression behavior and no destination lead is created.
+- Upon ingestion, if Customer Response = `Shifted Location` and a valid alternative cost center is provided, the pipeline must close the lead at the current store as `CLOSED - Shifted`, create the appropriate current-store suppression-approval/audit records, and automatically initialize a new lead in the master lead table for the target store under source type `EXTERNAL`.
 - The destination `EXTERNAL` lead created from a valid shifted-location handoff must bypass the permanent suppression rule only for that specific destination cost center and only for that one handoff event.
 - The bypass must not remove, weaken, or ignore suppression for the original/current store.
 - The bypass must not create a general cross-store exemption for future leads, other stores, other source types, or unrelated runs.
@@ -444,9 +448,11 @@ Therefore:
 - TD leads remain uncapped
 - caps must not hide or drop previously assigned actionable work
 - if a store has incomplete actionable work, the pipeline must preserve it instead of silently replacing it with new capped work
-- fresh RETENTION lead generation must not require zero pending work; it must continue while the store's incomplete carry-forward workload is at or below the configured backlog threshold
-- if a store's incomplete carry-forward workload exceeds the configured backlog threshold, fresh RETENTION lead generation for that store must be frozen for the run
-- the initial/default backlog threshold is 20 incomplete carry-forward leads per store, but this value must be configurable and must not be hardcoded in application logic
+- fresh RETENTION lead generation must not require zero pending work; it must continue while the store's rolling-window incomplete carry-forward workload is at or below the configured backlog threshold
+- the backlog threshold count must include only incomplete carry-forward leads generated within a rolling 14-day window ending on the run date
+- older unworked carry-forward leads must still be carried forward as mandated above, but they must be excluded from the backlog threshold count so stagnant cold leads do not permanently freeze generation of fresh warm RETENTION leads
+- if a store's rolling 14-day incomplete carry-forward workload exceeds the configured backlog threshold, fresh RETENTION lead generation for that store must be frozen for the run
+- the initial/default backlog threshold is 20 incomplete carry-forward leads per store within the rolling 14-day window, but this value must be configurable and must not be hardcoded in application logic
 - any threshold breach must trigger a high-priority `Store Workload Backlog Warning` in the management email summary so operations can intervene
 
 ---
@@ -484,9 +490,11 @@ If previous lead work was not completed:
 - do not let RETENTION or EXTERNAL caps hide or drop this previously assigned actionable work
 - do not auto-expire it
 - do not auto-mark stale
-- allow fresh RETENTION lead generation only while the store's incomplete carry-forward workload is at or below the configured backlog threshold
-- freeze fresh RETENTION lead generation for the store when incomplete carry-forward workload exceeds the configured backlog threshold
-- do not generate unlimited fresh retention leads on top of unworked leads
+- allow fresh RETENTION lead generation only while the store's rolling-window incomplete carry-forward workload is at or below the configured backlog threshold
+- the backlog threshold count must include only incomplete carry-forward leads generated within a rolling 14-day window ending on the run date
+- older unworked carry-forward leads must continue to be carried forward, must remain actionable, and must not be auto-expired, but they must be excluded from the backlog threshold count
+- freeze fresh RETENTION lead generation for the store when the rolling 14-day incomplete carry-forward workload exceeds the configured backlog threshold
+- do not generate unlimited fresh retention leads on top of recently generated unworked leads
 
 Important owner decision:
 
@@ -526,18 +534,22 @@ Codex must inspect the existing order amount contract before finalizing calculat
 
 | Outcome          | Suppression duration                                      |
 | ---------------- | --------------------------------------------------------- |
-| Do Not Contact   | Permanent                                                 |
-| Wrong Number     | Permanent                                                 |
-| Invalid Number   | Permanent                                                 |
-| Shifted Location | Permanent                                                 |
+| Do Not Contact   | Permanent after manager/owner approval                    |
+| Wrong Number     | Permanent after manager/owner approval                    |
+| Invalid Number   | Permanent after manager/owner approval                    |
+| Shifted Location | Permanent after manager/owner approval                    |
 | Not Interested   | 90 days                                                   |
 | Lead Stale       | 90 days unless owner specifies a different duration       |
 
 Suppressed customers must be excluded from future retention lead generation until suppression expires.
 
+Permanent suppression outcomes entered by store staff in the workbook must first be recorded inside the suppression framework with state `PENDING_APPROVAL`. The pipeline must not automatically create or activate a permanent `trx_customer_suppression` record for staff-entered `Do Not Contact`, `Wrong Number`, `Invalid Number`, or `Shifted Location` outcomes. A permanent suppression may be finalized only when an explicit manager/owner approval flag is present for that pending suppression row.
+
+Rows in `PENDING_APPROVAL` must remain auditable and must be summarized for management action, but they must not be treated as approved permanent suppressions until approval is recorded. This guardrail prevents store staff from permanently suppressing valid customers by gaming workbook outcomes.
+
 For `Lead Stale`, suppression lasts 90 days unless the owner specifies a different duration. During that period, the same customer/store must not be selected for future retention lead generation.
 
-Permanent suppressions do not expire.
+Permanent suppressions do not expire after manager/owner approval.
 
 Suppression must apply across all source types where normalized mobile number and store match.
 
@@ -1054,7 +1066,9 @@ Only these columns should be editable.
 | Complaint           | Dropdown                                  | Mandatory                                |
 | Do Not Contact      | Dropdown                                  | Mandatory                                |
 | Staff Remarks       | Free text                                 | Optional, but recommended                |
-| Target Cost Center  | Text/dropdown                             | Optional; unlocked only when Customer Response = `Shifted Location` |
+| Target Cost Center  | Strict Excel Data Validation dropdown     | Optional; unlocked only when Customer Response = `Shifted Location`; values must be populated programmatically from active `store_master.cost_center` strings |
+
+`Target Cost Center` must not allow free-text or unvalidated string entry in the generated workbook. The sheet template must structurally enforce selection from the dynamically generated active-store dropdown list.
 
 ---
 
@@ -1097,7 +1111,7 @@ Invalid Number
 Lead Stale
 ```
 
-When `Shifted Location` is selected, the workbook must make `Target Cost Center` editable for that row. If a valid alternative cost center is supplied, ingestion must use the manual shifted-location bridge in Section 7.
+When `Shifted Location` is selected, the workbook must enable the strict `Target Cost Center` dropdown for that row. If a valid alternative cost center is supplied, ingestion must use the manual shifted-location bridge in Section 7.
 
 ## 26.4 Order Expected
 
@@ -1384,8 +1398,8 @@ For each store:
 - due follow-ups included
 - pending carry-forward included
 - Aging Actionable Workload: incomplete carry-forward leads unworked for more than 3 days and more than 7 days
-- incomplete carry-forward workload count versus configured backlog threshold
-- high-priority `Store Workload Backlog Warning` when incomplete carry-forward workload exceeds the configured threshold and fresh RETENTION generation is frozen
+- rolling 14-day incomplete carry-forward workload count versus configured backlog threshold
+- high-priority `Store Workload Backlog Warning` when rolling 14-day incomplete carry-forward workload exceeds the configured threshold and fresh RETENTION generation is frozen
 - fresh retention leads generated
 - fresh retention leads frozen because of backlog threshold, if applicable
 - TD leads included
@@ -1394,7 +1408,8 @@ For each store:
 - recovered customers
 - Recovered Revenue Value, calculated by summing `vw_orders.order_amount` for the actual orders that recovered customers placed and that were tracked during that run
 - closed leads
-- suppression additions by outcome, including permanent suppressions for `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`
+- suppression additions by outcome, including approved permanent suppressions for `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`
+- Pending Suppression Approval Count for staff-entered permanent suppression outcomes awaiting explicit manager/owner approval
 - 90-day suppression additions for `Not Interested`
 - stale suppression additions for `Lead Stale`, reported separately when the owner specifies a non-default duration
 - complaints raised
@@ -1404,11 +1419,11 @@ For each store:
 
 For each store, the email must include aging counts for carry-forward leads that remain incomplete and unworked.
 
-| Cost Center | Pending Carry-Forward | Unworked >3 Days | Unworked >7 Days | Backlog Threshold | Fresh RETENTION Frozen |
-| ----------- | --------------------: | ---------------: | ---------------: | ----------------: | ---------------------- |
-|             |                       |                  |                  |                   |                        |
+| Cost Center | Pending Carry-Forward | Rolling 14-Day Backlog Count | Unworked >3 Days | Unworked >7 Days | Backlog Threshold | Fresh RETENTION Frozen |
+| ----------- | --------------------: | ---------------------------: | ---------------: | ---------------: | ----------------: | ---------------------- |
+|             |                       |                              |                  |                  |                   |                        |
 
-A lead is counted as unworked based on the age of its current incomplete carry-forward assignment since it was first generated or last returned to pending state, using the same timezone/date conventions used elsewhere in the pipeline.
+A lead is counted as unworked based on the age of its current incomplete carry-forward assignment since it was first generated or last returned to pending state, using the same timezone/date conventions used elsewhere in the pipeline. The backlog threshold comparison must use only the rolling 14-day backlog count; older unworked carry-forward leads remain in `Pending Carry-Forward` but are excluded from threshold enforcement.
 
 ## Staff Productivity Breakdown
 
@@ -1445,7 +1460,8 @@ Definitions:
 - rows skipped because mobile numbers were invalid or unnormalizable
 - invalid or same-store `Target Cost Center` values for `Shifted Location` rows
 - destination `EXTERNAL` leads created from valid shifted-location handoffs
-- stores where fresh RETENTION lead generation was frozen by backlog threshold
+- pending suppression approval count for staff-entered permanent suppression outcomes
+- stores where fresh RETENTION lead generation was frozen by rolling 14-day backlog threshold
 
 ---
 
@@ -1612,7 +1628,7 @@ Non-critical issues must be logged and summarized, not crash the whole run.
 - Avoid leaking other store data into wrong workbook.
 - No automated inter-store lead transfer in this version.
 - Validate `Target Cost Center` against store master data before creating any shifted-location destination lead.
-- Preserve original-store suppression and audit records when a valid shifted-location destination lead is created.
+- Preserve original-store suppression-approval and audit records when a valid shifted-location destination lead is created.
 
 ---
 
@@ -1634,7 +1650,7 @@ Minimum tests:
 10. Recovery detection from orders.
 11. Due follow-up prioritization.
 12. Fresh retention cap enforcement.
-13. Carry-forward backlog threshold freezes fresh RETENTION generation only when the threshold is exceeded.
+13. Rolling 14-day carry-forward backlog threshold freezes fresh RETENTION generation only when the threshold is exceeded.
 14. Summary email data builder.
 15. Aging actionable workload summary for >3 days and >7 days.
 16. Staff productivity breakdown by `Handled By`.
@@ -1662,18 +1678,18 @@ Implementation is accepted only when:
 13. RETENTION cap applies only to newly generated fresh retention leads.
 14. EXTERNAL cap applies only to newly converted/imported external leads selected for workbook inclusion.
 15. Caps never hide or drop previously assigned actionable work.
-16. Fresh retention leads are generated while incomplete carry-forward workload is at or below the configured threshold, and are frozen for the store when incomplete carry-forward workload exceeds that threshold.
+16. Fresh retention leads are generated while rolling 14-day incomplete carry-forward workload is at or below the configured threshold, and are frozen for the store when that rolling 14-day workload exceeds the threshold; older carry-forward leads remain included but excluded from threshold enforcement.
 17. A high-priority `Store Workload Backlog Warning` appears in the management email when fresh RETENTION generation is frozen by threshold breach.
 18. Store team input is ingested idempotently.
 19. Idiotic inputs are normalized or safely logged, and invalid or unnormalizable mobile numbers remain row-level warnings that do not create actionable leads until corrected.
-20. Suppression works by `(cost_center, normalized_mobile_number)` for every suppression-producing outcome: `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
+20. Suppression works by `(cost_center, normalized_mobile_number)` for every suppression-producing outcome, with staff-entered permanent outcomes (`Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`) routed to `PENDING_APPROVAL` until explicit manager/owner approval and time-bound outcomes (`Not Interested` and `Lead Stale`) applied according to their configured durations.
 21. Stale-lead suppression works: `Lead Stale` closes the lead, creates a suppression record for 90 days unless the owner specifies a different duration, and excludes the same customer/store from future retention lead generation until suppression expires.
 22. Lead closes when order is created or dead-end is reached.
 23. Recovery is confirmed from `orders`.
 24. Owner summary email is sent.
 25. Existing config/logging/email/DB helpers are reused.
 26. Existing pipelines are not broken.
-27. Valid `Shifted Location` + `Target Cost Center` input closes the source-store lead as `CLOSED - Shifted`, preserves source-store suppression/audit records, and creates one destination `EXTERNAL` lead for the validated target store.
+27. Valid `Shifted Location` + strict-dropdown `Target Cost Center` input closes the source-store lead as `CLOSED - Shifted`, preserves source-store suppression-approval/audit records, and creates one destination `EXTERNAL` lead for the validated target store.
 28. Invalid, blank, or same-store `Target Cost Center` input does not create a destination lead and is summarized as a row-level warning.
 
 ---
@@ -1707,7 +1723,7 @@ Do not change existing dashboard/downloader ingestion behavior.
 
 ---
 
-# 45. Out of Scope for v1.2
+# 45. Out of Scope for v1.3
 
 The following are explicitly out of scope for this version:
 
