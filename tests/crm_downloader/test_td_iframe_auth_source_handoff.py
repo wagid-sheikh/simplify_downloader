@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+from datetime import date
 
 import pytest
 
+from app.crm_downloader import order_line_items_rebuild as rebuild
 from app.crm_downloader.td_orders_sync import main as td_orders_main
 from app.dashboard_downloader.json_logger import JsonLogger
 
@@ -144,3 +147,64 @@ def test_dashboard_context_trial_event_includes_required_fields() -> None:
     assert event["orders_cookie_shape_failure_reason"] == "auth_rejection"
     assert event["orders_cookie_shape_fallback_used"] is True
     assert event["orders_cookie_shape_runtime_delta_ms"] == 87
+
+
+@pytest.mark.asyncio
+async def test_prepare_td_api_context_bounds_browser_context_creation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = io.StringIO()
+    logger = JsonLogger(stream=output, log_file_path=None)
+    monkeypatch.setattr(td_orders_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        td_orders_main,
+        "config",
+        type("Cfg", (), {"td_browser_operation_timeout_seconds": 0.01})(),
+    )
+
+    class _BrowserType:
+        name = "chromium"
+
+    class _HangingBrowser:
+        browser_type = _BrowserType()
+        version = "test-browser-1"
+
+        async def new_context(self, **_kwargs: object) -> object:
+            await asyncio.sleep(3600)
+            raise AssertionError("new_context should be abandoned by the bounded phase")
+
+    store = td_orders_main.TdStore(
+        store_code="A1", store_name=None, cost_center=None, sync_config={}
+    )
+
+    with pytest.raises(td_orders_main.TdBrowserPhaseTimeoutError) as exc_info:
+        await td_orders_main.prepare_td_api_context_for_store(
+            browser=_HangingBrowser(),
+            store=store,
+            logger=logger,
+            run_id="run-context-timeout",
+            run_start_date=date(2025, 1, 1),
+            run_end_date=date(2025, 1, 1),
+        )
+
+    assert exc_info.value.phase_name == "browser_context_create"
+    logs = _read_logs(output)
+    timeout_logs = [
+        log for log in logs if log.get("phase") == "browser_context_create"
+    ]
+    assert timeout_logs
+    assert timeout_logs[-1]["status"] == "error"
+    assert timeout_logs[-1]["run_id"] == "run-context-timeout"
+    assert timeout_logs[-1]["store_code"] == "A1"
+    assert timeout_logs[-1]["timeout_seconds"] == 0.01
+    assert timeout_logs[-1]["browser_backend"] == "_HangingBrowser"
+    assert timeout_logs[-1]["browser_type"] == "chromium"
+    assert timeout_logs[-1]["browser_version"] == "test-browser-1"
+
+
+def test_td_browser_context_timeout_is_rebuild_retryable() -> None:
+    exc = td_orders_main.TdBrowserPhaseTimeoutError(
+        phase_name="browser_context_create", timeout_seconds=1, duration_ms=1000
+    )
+
+    assert rebuild.classify_rebuild_failure(exc) == "retryable_transient_failure"

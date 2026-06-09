@@ -108,6 +108,97 @@ API_ONLY_NAVIGATION_WARNING_MESSAGE = (
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
+class TdBrowserPhaseTimeoutError(asyncio.TimeoutError):
+    """Retryable TD browser operation timeout that does not wait forever on cancellation."""
+
+    def __init__(
+        self, *, phase_name: str, timeout_seconds: float, duration_ms: int
+    ) -> None:
+        self.phase_name = phase_name
+        self.timeout_seconds = timeout_seconds
+        self.duration_ms = duration_ms
+        super().__init__(
+            f"TD browser phase {phase_name!r} timed out after {timeout_seconds}s"
+        )
+
+
+def _td_browser_operation_timeout_seconds() -> float:
+    return float(
+        getattr(
+            config,
+            "td_browser_operation_timeout_seconds",
+            getattr(config, "td_leads_browser_operation_timeout_seconds", 90),
+        )
+    )
+
+
+def _consume_background_browser_task(task: asyncio.Future[Any]) -> None:
+    """Consume eventual exceptions after abandoning a stuck Playwright awaitable."""
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
+def _browser_backend_details(browser: Browser) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "browser_backend": type(browser).__name__,
+    }
+    browser_type = getattr(browser, "browser_type", None)
+    backend_name = getattr(browser_type, "name", None)
+    if backend_name:
+        details["browser_type"] = backend_name
+    with contextlib.suppress(Exception):
+        details["browser_version"] = browser.version
+    return details
+
+
+async def _run_bounded_td_browser_phase(
+    awaitable: Any,
+    *,
+    browser: Browser,
+    logger: JsonLogger,
+    run_id: str,
+    store_code: str,
+    phase_name: str,
+    timeout_seconds: float,
+) -> Any:
+    started_at = datetime.now(timezone.utc)
+    fields = {
+        "run_id": run_id,
+        "store_code": store_code,
+        "timeout_seconds": timeout_seconds,
+        **_browser_backend_details(browser),
+    }
+    task = asyncio.ensure_future(awaitable)
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if not done:
+        duration_ms = int(
+            (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+        )
+        log_event(
+            logger=logger,
+            phase=phase_name,
+            status="error",
+            message="TD browser phase timed out",
+            duration_ms=duration_ms,
+            **fields,
+        )
+        # Do not use asyncio.wait_for(): Playwright operations can resist
+        # cancellation acknowledgement, so abandon the task after requesting
+        # cancellation and let the rebuild/window retry policy handle this as a
+        # transient timeout instead of hanging indefinitely.
+        task.cancel()
+        task.add_done_callback(_consume_background_browser_task)
+        raise TdBrowserPhaseTimeoutError(
+            phase_name=phase_name,
+            timeout_seconds=timeout_seconds,
+            duration_ms=duration_ms,
+        )
+    try:
+        return await task
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            setattr(exc, "td_browser_phase_name", phase_name)
+        raise
 
 
 def _td_api_debug_logging_enabled() -> bool:
@@ -5284,9 +5375,19 @@ async def prepare_td_api_context_for_store(
     if context is None:
         if browser is None:
             raise ValueError("browser is required when context is not provided")
-        context = await browser.new_context(
-            storage_state=str(store.storage_state_path) if storage_state_exists else None,
-            accept_downloads=accept_downloads,
+        context = await _run_bounded_td_browser_phase(
+            browser.new_context(
+                storage_state=(
+                    str(store.storage_state_path) if storage_state_exists else None
+                ),
+                accept_downloads=accept_downloads,
+            ),
+            browser=browser,
+            logger=logger,
+            run_id=run_id,
+            store_code=store.store_code,
+            phase_name="browser_context_create",
+            timeout_seconds=_td_browser_operation_timeout_seconds(),
         )
     if page is None:
         page = await context.new_page()
