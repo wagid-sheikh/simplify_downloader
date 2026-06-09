@@ -53,6 +53,7 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "pipeline_skip_dom_logging": "false",
         "skip_lead_assignment": "false",
         "UC_IGNORE_HTTPS_ERRORS": "false",
+        "TD_BROWSER_OPERATION_TIMEOUT_SECONDS": "90",
         "TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS": "90",
         "TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS": "10",
         "TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS": "240",
@@ -144,6 +145,7 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.pdf_render_chrome_executable is None
     assert cfg.pipeline_skip_dom_logging is False
     assert cfg.uc_ignore_https_errors is False
+    assert cfg.td_browser_operation_timeout_seconds == 90
 
 
 def test_missing_env_variable_raises(monkeypatch, tmp_path):
