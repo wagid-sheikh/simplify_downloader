@@ -983,6 +983,198 @@ async def test_td_unauthorized_window_is_reported_missing(
     ]
 
 
+
+@pytest.mark.asyncio
+async def test_run_rebuild_persists_summary_before_notifications_for_zero_snapshot_warning(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    calls: list[tuple[str, Any]] = []
+
+    async def fake_insert_run_summary(database_url: str, summary: dict[str, Any]) -> None:
+        calls.append(("summary", {"database_url": database_url, "summary": summary}))
+
+    async def fake_send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
+        calls.append(
+            (
+                "notification",
+                {"pipeline_name": pipeline_name, "run_id": run_id},
+            )
+        )
+        return {"sent": 1}
+
+    async def fetcher(**_kwargs: Any) -> rebuild.SourceSnapshot:
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    monkeypatch.setattr(rebuild, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(
+        rebuild, "send_notifications_for_run", fake_send_notifications_for_run
+    )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="summary-before-notify",
+        logger=_InMemoryLogger("summary-before-notify"),
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 1
+    assert [name for name, _payload in calls] == ["summary", "notification"]
+    summary = calls[0][1]["summary"]
+    notification = calls[1][1]
+    assert summary["pipeline_name"] == "order_line_items_rebuild"
+    assert summary["run_id"] == "summary-before-notify"
+    assert summary["overall_status"] in {"success", "warning"}
+    assert summary["overall_status"] == "warning"
+    assert "notification_payload" in summary["metrics_json"]
+    assert summary["metrics_json"]["notification_payload"]["pipeline_name"] == (
+        "order_line_items_rebuild"
+    )
+    assert summary["metrics_json"]["notification_payload"]["run_id"] == (
+        "summary-before-notify"
+    )
+    assert summary["metrics_json"]["warnings"] == [
+        "1 suspicious zero snapshot window(s) detected"
+    ]
+    assert summary["metrics_json"]["notification_payload"]["warnings"] == [
+        "1 suspicious zero snapshot window(s) detected"
+    ]
+    assert notification == {
+        "pipeline_name": "order_line_items_rebuild",
+        "run_id": "summary-before-notify",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_rebuild_failure_persists_failed_summary_and_notifies_before_raising(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    calls: list[tuple[str, Any]] = []
+
+    async def fake_insert_run_summary(database_url: str, summary: dict[str, Any]) -> None:
+        calls.append(("summary", {"database_url": database_url, "summary": summary}))
+
+    async def fake_send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
+        calls.append(
+            (
+                "notification",
+                {"pipeline_name": pipeline_name, "run_id": run_id},
+            )
+        )
+        return {"sent": 1}
+
+    async def fetcher(**_kwargs: Any) -> rebuild.SourceSnapshot:
+        raise ValueError("deterministic fetch failure")
+
+    monkeypatch.setattr(rebuild, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(
+        rebuild, "send_notifications_for_run", fake_send_notifications_for_run
+    )
+
+    with pytest.raises(rebuild.OrderLineItemsRebuildIncomplete):
+        await rebuild.run_rebuild(
+            source_selection="td",
+            store_codes=None,
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            window_size_days=1,
+            dry_run=True,
+            run_id="failure-summary-notify",
+            logger=_InMemoryLogger("failure-summary-notify"),
+            fetch_snapshot=fetcher,
+        )
+
+    assert [name for name, _payload in calls] == ["summary", "notification"]
+    summary = calls[0][1]["summary"]
+    assert summary["pipeline_name"] == "order_line_items_rebuild"
+    assert summary["run_id"] == "failure-summary-notify"
+    assert summary["overall_status"] == "failed"
+    assert summary["metrics_json"]["missing_window_count"] == 1
+    assert summary["metrics_json"]["notification_payload"]["overall_status"] == "failed"
+    assert summary["metrics_json"]["warnings"]
+    assert "OrderLineItemsRebuildIncomplete" in summary["metrics_json"]["warnings"][0]
+    assert calls[1][1] == {
+        "pipeline_name": "order_line_items_rebuild",
+        "run_id": "failure-summary-notify",
+    }
+
+
+def test_rebuild_cli_preserves_nonzero_exit_after_notification_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_insert_run_summary(database_url: str, summary: dict[str, Any]) -> None:
+        calls.append("summary")
+
+    async def fake_send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
+        calls.append("notification")
+        return {"sent": 1}
+
+    async def fake_run_rebuild(**kwargs: Any) -> list[rebuild.WindowMetrics]:
+        await rebuild._persist_rebuild_summary_and_notify(
+            database_url="sqlite+aiosqlite:///:memory:",
+            logger=_InMemoryLogger(str(kwargs.get("run_id"))),
+            run_id=str(kwargs.get("run_id")),
+            run_env="test",
+            source_selection=str(kwargs["source_selection"]),
+            sources=["td"],
+            selected_stores=["TD001"],
+            dry_run=bool(kwargs["dry_run"]),
+            resume=bool(kwargs["resume"]),
+            resume_run_id=kwargs.get("resume_run_id"),
+            started_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            report_date=date(2025, 1, 1),
+            expected_windows={("td", "TD001", date(2025, 1, 1), date(2025, 1, 1))},
+            successful_windows=set(),
+            missing_windows=[("td", "TD001", date(2025, 1, 1), date(2025, 1, 1))],
+            skipped_windows=[],
+            metrics=[],
+            final_status="failed",
+            warnings=["synthetic CLI failure"],
+        )
+        raise rebuild.OrderLineItemsRebuildIncomplete(
+            run_id=str(kwargs.get("run_id")),
+            expected_window_count=1,
+            completed_window_count=0,
+            missing_window_count=1,
+            missing_windows=("td:TD001:2025-01-01..2025-01-01",),
+        )
+
+    monkeypatch.setattr(rebuild, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(
+        rebuild, "send_notifications_for_run", fake_send_notifications_for_run
+    )
+    monkeypatch.setattr(rebuild, "run_rebuild", fake_run_rebuild)
+
+    with pytest.raises(SystemExit) as exc_info:
+        rebuild.run(
+            [
+                "--source",
+                "td",
+                "--start-date",
+                "2025-01-01",
+                "--end-date",
+                "2025-01-01",
+                "--window-size",
+                "1",
+                "--dry-run",
+                "--run-id",
+                "cli-notified-failure",
+            ]
+        )
+
+    assert calls == ["summary", "notification"]
+    assert exc_info.value.code == 1
+
 def test_cli_exits_nonzero_when_td_garments_auth_failure_would_be_zero_row_window(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
