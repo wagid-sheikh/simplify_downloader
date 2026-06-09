@@ -234,6 +234,63 @@ async def test_write_progress_works_against_alembic_created_table(tmp_path) -> N
     ] == [(1, "td", "TD001", "alembic-shape", "success", 2, 3)]
 
 
+def test_rebuild_summary_payload_includes_per_window_and_store_row_counts() -> None:
+    metrics = [
+        rebuild.WindowMetrics(
+            source="td",
+            store_code="TD001",
+            cost_center="CC01",
+            window_start=date(2025, 1, 1),
+            window_end=date(2025, 1, 31),
+            inspected_orders=5,
+            complete_with_rows_orders=4,
+            complete_empty_orders=1,
+            deleted_rows=7,
+            inserted_rows=9,
+            orphan_rows=2,
+        ),
+        rebuild.WindowMetrics(
+            source="td",
+            store_code="TD001",
+            cost_center="CC01",
+            window_start=date(2025, 2, 1),
+            window_end=date(2025, 2, 28),
+            inspected_orders=3,
+            complete_with_rows_orders=3,
+            deleted_rows=9,
+            inserted_rows=11,
+            orphan_rows=1,
+        ),
+    ]
+
+    completed = rebuild._completed_window_payloads(
+        successful_windows={
+            ("td", "TD001", date(2025, 1, 1), date(2025, 1, 31)),
+            ("td", "TD001", date(2025, 2, 1), date(2025, 2, 28)),
+        },
+        metrics=metrics,
+    )
+    store_rows = rebuild._aggregate_rebuild_store_rows(completed)
+
+    assert [row["rows_rebuilt"] for row in completed] == [9, 11]
+    assert store_rows == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "cost_center": "CC01",
+            "window_count": 2,
+            "rows_rebuilt": 20,
+            "inserted_rows": 20,
+            "deleted_rows": 16,
+            "orphan_rows": 3,
+            "inspected_orders": 8,
+            "complete_with_rows_orders": 7,
+            "complete_empty_orders": 1,
+            "skipped_incomplete_orders": 0,
+        }
+    ]
+
+
 @pytest.fixture
 def patch_config_and_stores(monkeypatch: pytest.MonkeyPatch, tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'rebuild.sqlite'}"
@@ -1042,8 +1099,43 @@ async def test_run_rebuild_persists_summary_before_notifications_for_zero_snapsh
     assert summary["metrics_json"]["warnings"] == [
         "1 suspicious zero snapshot window(s) detected"
     ]
-    assert summary["metrics_json"]["notification_payload"]["warnings"] == [
-        "1 suspicious zero snapshot window(s) detected"
+    payload = summary["metrics_json"]["notification_payload"]
+    assert payload["warnings"] == ["1 suspicious zero snapshot window(s) detected"]
+    assert payload["completed_windows"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "cost_center": "CC01",
+            "window_start": "2025-01-01",
+            "window_end": "2025-01-01",
+            "dry_run": True,
+            "zero_snapshot_class": "unknown_ambiguous_empty",
+            "inspected_orders": 0,
+            "complete_with_rows_orders": 0,
+            "complete_empty_orders": 0,
+            "skipped_incomplete_orders": 0,
+            "deleted_rows": 0,
+            "inserted_rows": 0,
+            "orphan_rows": 0,
+            "window_status": "completed",
+            "rows_rebuilt": 0,
+        }
+    ]
+    assert payload["store_rows"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "cost_center": "CC01",
+            "window_count": 1,
+            "rows_rebuilt": 0,
+            "inserted_rows": 0,
+            "deleted_rows": 0,
+            "orphan_rows": 0,
+            "inspected_orders": 0,
+            "complete_with_rows_orders": 0,
+            "complete_empty_orders": 0,
+            "skipped_incomplete_orders": 0,
+        }
     ]
     assert notification == {
         "pipeline_name": "order_line_items_rebuild",
