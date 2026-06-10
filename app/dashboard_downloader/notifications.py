@@ -166,8 +166,18 @@ PROFILER_HTML_TEMPLATE = """
                       {{ store.secondary_metrics.final_updated or store.secondary_metrics.staging_updated or 0 }}
                     </td>
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">
-                      {% if store.td_garment_incomplete_windows %}
+                      {% if store.warning_windows or store.td_garment_incomplete_windows or store.failed_windows %}
                         <ul style="margin:0; padding-left:16px;">
+                          {% for window in store.warning_windows %}
+                          <li style="margin:0 0 4px 0;">
+                            WARNING: {{ window.from_date|e }} to {{ window.to_date|e }}:
+                            status={{ window.status|e }}
+                            {% if window.status_note %}; status_note={{ window.status_note|e }}{% endif %}
+                            {% if window.error_message %}; error_message={{ window.error_message|e }}{% endif %}
+                            {% if window.attempt_no is not none %}; attempt_no={{ window.attempt_no|e }}{% endif %}
+                            {% if window.warning_count is not none %}; warning_count={{ window.warning_count|e }}{% endif %}
+                          </li>
+                          {% endfor %}
                           {% for window in store.td_garment_incomplete_windows %}
                           <li style="margin:0 0 4px 0;">
                             DATA INCOMPLETE: TD garment details incomplete {{ window.from_date|e }} to {{ window.to_date|e }};
@@ -179,9 +189,6 @@ PROFILER_HTML_TEMPLATE = """
                             garment-dependent reports may be incomplete
                           </li>
                           {% endfor %}
-                        </ul>
-                      {% elif store.failed_windows %}
-                        <ul style="margin:0; padding-left:16px;">
                           {% for window in store.failed_windows %}
                           <li style="margin:0 0 4px 0;">
                             {{ window.from_date|e }} to {{ window.to_date|e }}:
@@ -2280,7 +2287,6 @@ def _build_td_orders_context(
     )
     dropped_identifiers = _unique_rows(sales_dropped_rows, lambda row: _format_identifier(row))
     dropped_samples = dropped_identifiers
-    dropped_truncated = False
     if not dropped_samples:
         dropped_samples = ["(none)"]
     dropped_lines = [
@@ -2671,6 +2677,31 @@ def _profiler_failed_windows_from_payload(store: Mapping[str, Any]) -> list[dict
     return failed_windows
 
 
+def _profiler_warning_windows_from_payload(store: Mapping[str, Any]) -> list[dict[str, Any]]:
+    existing = store.get("warning_windows")
+    candidates = existing if isinstance(existing, list) else store.get("window_audit")
+    warning_windows: list[dict[str, Any]] = []
+    for window in candidates or []:
+        if not isinstance(window, Mapping):
+            continue
+        status = _sanitize_profiler_window_text(window.get("status"))
+        if status.lower() != "success_with_warnings":
+            continue
+        warning_windows.append(
+            {
+                "store_code": _sanitize_profiler_window_text(window.get("store_code") or store.get("store_code")),
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "status": status,
+                "status_note": _sanitize_profiler_window_text(window.get("status_note")),
+                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+                "attempt_no": _coerce_int(window.get("attempt_no")),
+                "warning_count": _coerce_int(window.get("warning_count")),
+            }
+        )
+    return warning_windows
+
+
 def _profiler_td_garment_warnings_from_payload(store: Mapping[str, Any]) -> list[dict[str, Any]]:
     existing = store.get("td_garment_incomplete_windows")
     if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes, Mapping)):
@@ -2760,6 +2791,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         failed_windows = _profiler_failed_windows_from_payload(store)
+        warning_windows = _profiler_warning_windows_from_payload(store)
         td_garment_warnings = _profiler_td_garment_warnings_from_payload(store)
         stores.append(
             {
@@ -2769,6 +2801,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "status": _normalize_uc_status(store.get("status")),
                 "window_count": store.get("window_count"),
                 "status_conflict_count": store.get("status_conflict_count"),
+                "warning_windows": warning_windows,
                 "failed_windows": failed_windows,
                 "failed_windows_note": _format_profiler_failed_windows_note(failed_windows),
                 "td_garment_warning_count": store.get("td_garment_warning_count") or len(td_garment_warnings),
@@ -3145,8 +3178,6 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     started = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     duration = payload.get("total_time_taken") or run_data.get("total_time_taken") or ""
-    orders_status = payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
-    sales_status = payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
     window_summary = metrics.get("window_summary") or {}
     overall_status = _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status"))
     window_lines: list[str] = []

@@ -1808,6 +1808,27 @@ def _profiler_failed_window_entries(window_audit: Iterable[Mapping[str, Any]] | 
     return entries
 
 
+def _profiler_warning_window_entries(window_audit: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for window in window_audit or []:
+        status = _sanitize_profiler_window_text(window.get("status"))
+        if status.lower() != "success_with_warnings":
+            continue
+        entries.append(
+            {
+                "store_code": _sanitize_profiler_window_text(window.get("store_code")),
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "status": status,
+                "status_note": _sanitize_profiler_window_text(window.get("status_note")),
+                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+                "attempt_no": _coerce_int(window.get("attempt_no")),
+                "warning_count": _coerce_int(window.get("warning_count")),
+            }
+        )
+    return entries
+
+
 def _store_result_failure_reasons(result: StoreRunResult) -> set[str]:
     reasons: set[str] = set()
     for window in result.window_audit:
@@ -1914,6 +1935,21 @@ def _build_profiler_summary_text(
         lines.append(f"  window_count: {window_count}")
         lines.append(f"  primary_metrics: {_format_unified_metrics(primary_metrics)}")
         lines.append(f"  secondary_metrics: {_format_unified_metrics(secondary_metrics)}")
+        warning_windows = entry.get("warning_windows") or _profiler_warning_window_entries(entry.get("window_audit"))
+        if warning_windows:
+            lines.append("  warning_windows:")
+            for window in warning_windows:
+                window_range = f"{window.get('from_date', '')} to {window.get('to_date', '')}"
+                details = [f"status={window.get('status', '')}"]
+                if window.get("status_note"):
+                    details.append(f"status_note={window['status_note']}")
+                if window.get("error_message"):
+                    details.append(f"error_message={window['error_message']}")
+                if window.get("attempt_no") is not None:
+                    details.append(f"attempt_no={window['attempt_no']}")
+                if window.get("warning_count") is not None:
+                    details.append(f"warning_count={window['warning_count']}")
+                lines.append(f"    - {window_range}: " + "; ".join(details))
         failed_windows = _profiler_failed_window_entries(entry.get("window_audit"))
         if failed_windows:
             lines.append("  failed_windows:")
@@ -2888,6 +2924,10 @@ async def main(
         if secondary_label:
             secondary_metrics["label"] = secondary_label
         store_status = _rollup_overall_status(result.status_counts)
+        warning_windows = _profiler_warning_window_entries(result.window_audit)
+        for warning_window in warning_windows:
+            if not warning_window.get("store_code"):
+                warning_window["store_code"] = result.store_code
         store_entries.append(
             {
                 "store_code": result.store_code,
@@ -2898,6 +2938,7 @@ async def main(
                 "status_counts": result.status_counts,
                 "window_audit": result.window_audit,
                 "status_conflict_count": len(status_conflicts),
+                "warning_windows": warning_windows,
                 "td_garment_warning_count": len(td_garment_warnings),
                 "td_garment_incomplete_windows": td_garment_warnings,
                 "primary_metrics": primary_metrics,
