@@ -521,15 +521,18 @@ def _strip_uc_gstin_warning(raw: Any) -> tuple[str | None, bool]:
     return cleaned, True
 
 
-def _clean_uc_rows_for_reporting(
+def _clean_uc_rows_for_reporting_with_summary(
     rows: Iterable[Mapping[str, Any]] | None,
     *,
     drop_empty: bool,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     cleaned_rows: list[dict[str, Any]] = []
+    suppressed: dict[str, int] = {}
     for row in rows or []:
         remark_value = _extract_row_value(row, "ingest_remarks", "ingestion_remarks", "remarks")
         cleaned_remark, removed = _strip_uc_gstin_warning(remark_value)
+        if removed:
+            suppressed[UC_GSTIN_MISSING_REMARK] = suppressed.get(UC_GSTIN_MISSING_REMARK, 0) + 1
         if cleaned_remark is None and removed and drop_empty:
             continue
         data = dict(row)
@@ -542,6 +545,15 @@ def _clean_uc_rows_for_reporting(
             data["ingestion_remarks"] = ""
             data["remarks"] = ""
         cleaned_rows.append(data)
+    return cleaned_rows, suppressed
+
+
+def _clean_uc_rows_for_reporting(
+    rows: Iterable[Mapping[str, Any]] | None,
+    *,
+    drop_empty: bool,
+) -> list[dict[str, Any]]:
+    cleaned_rows, _ = _clean_uc_rows_for_reporting_with_summary(rows, drop_empty=drop_empty)
     return cleaned_rows
 
 
@@ -1217,6 +1229,63 @@ def _build_profiler_row_fact_warnings(
     if error_rows:
         warnings.append(f"ROW_ERRORS: {len(error_rows)} row(s) errored")
     return warnings
+
+
+
+
+def _uc_warning_count_from_profiler_payload(
+    warnings: Sequence[str], stores: Sequence[Mapping[str, Any]]
+) -> int:
+    for warning in warnings:
+        match = re.search(r"UC_STORE_WARNINGS:\s*(\d+)\s+row-level warning", str(warning))
+        if match:
+            return int(match.group(1))
+    total = 0
+    for store in stores:
+        if store.get("pipeline_name") != "uc_orders_sync":
+            continue
+        for window in store.get("window_audit") or []:
+            if isinstance(window, Mapping):
+                total += _coerce_int(window.get("warning_count")) or 0
+    return total
+
+
+def _append_uc_suppressed_warning_explanation(
+    warnings: list[str],
+    *,
+    stores: Sequence[Mapping[str, Any]],
+    displayed_warning_rows: int,
+    suppressed_categories: Mapping[str, int],
+) -> list[str]:
+    suppressed_total = sum(int(count or 0) for count in suppressed_categories.values())
+    if suppressed_total <= 0:
+        return warnings
+    total = _uc_warning_count_from_profiler_payload(warnings, stores)
+    if total <= 0:
+        total = displayed_warning_rows + suppressed_total
+    category_text = "; ".join(
+        f"{count} {reason} suppressed from row table"
+        for reason, count in sorted(suppressed_categories.items())
+        if count
+    )
+    replacement = (
+        f"UC_STORE_WARNINGS: {total} row-level warning(s); "
+        f"{displayed_warning_rows} displayed in row table"
+    )
+    if category_text:
+        replacement = f"{replacement}; {category_text}"
+    replaced = False
+    updated: list[str] = []
+    for warning in warnings:
+        if str(warning).startswith("UC_STORE_WARNINGS:"):
+            if not replaced:
+                updated.append(replacement)
+                replaced = True
+            continue
+        updated.append(warning)
+    if not replaced:
+        updated.append(replacement)
+    return updated
 
 
 def _replace_profiler_warnings_section(summary_text: str, warnings: Sequence[str]) -> str:
@@ -2812,7 +2881,9 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         )
 
     row_facts = payload.get("row_facts") or metrics.get("row_facts") or {}
-    warning_rows = _clean_uc_rows_for_reporting(row_facts.get("warning_rows"), drop_empty=True)
+    warning_rows, suppressed_warning_categories = _clean_uc_rows_for_reporting_with_summary(
+        row_facts.get("warning_rows"), drop_empty=True
+    )
     dropped_rows = _clean_uc_rows_for_reporting(row_facts.get("dropped_rows"), drop_empty=False)
     edited_rows = row_facts.get("edited_rows") or []
     error_rows = _clean_uc_rows_for_reporting(row_facts.get("error_rows"), drop_empty=False)
@@ -2848,6 +2919,12 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
             edited_rows=edited_fact_rows,
             error_rows=error_fact_rows,
         )
+    warnings = _append_uc_suppressed_warning_explanation(
+        warnings,
+        stores=stores_payload,
+        displayed_warning_rows=len(warning_fact_rows),
+        suppressed_categories=suppressed_warning_categories,
+    )
     fact_sections_text = _format_fact_sections_text_by_store(
         warning_rows=warning_fact_rows,
         dropped_rows=dropped_fact_rows,

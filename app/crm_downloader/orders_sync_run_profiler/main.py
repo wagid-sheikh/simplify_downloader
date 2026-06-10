@@ -663,6 +663,30 @@ def _rows_with_store_metadata(
     return prepared
 
 
+def _warning_reason_from_row(row: Mapping[str, Any]) -> str | None:
+    for key in ("ingest_remarks", "ingestion_remarks", "remarks", "reason_code", "reason"):
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _sanitize_uc_warning_row(row: Mapping[str, Any], *, store_code: str | None) -> dict[str, Any]:
+    data = _rows_with_store_metadata([row], store_code=store_code)
+    prepared = data[0] if data else dict(row)
+    sanitized: dict[str, Any] = {}
+    if prepared.get("store_code") not in (None, ""):
+        sanitized["store_code"] = str(prepared["store_code"])
+    if prepared.get("order_number") not in (None, ""):
+        sanitized["order_number"] = str(prepared["order_number"])
+    reason = _warning_reason_from_row(prepared)
+    if reason:
+        sanitized["ingest_remarks"] = reason
+        sanitized["ingestion_remarks"] = reason
+        sanitized["remarks"] = reason
+    return sanitized
+
+
 def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     if not summary:
         return _init_row_facts()
@@ -675,6 +699,7 @@ def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[s
     sales_stores = _coerce_dict(sales_payload.get("stores"))
     stores_payload = _coerce_dict(metrics.get("stores"))
     outcome_stores = _coerce_dict(stores_payload.get("outcomes"))
+    summary_stores = _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores"))
     extracted = _init_row_facts()
     row_keys = ("warning_rows", "dropped_rows", "edited_rows", "error_rows")
     payload_rows_by_store: dict[str, dict[str, bool]] = {}
@@ -807,6 +832,22 @@ def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[s
         _add_rows("dropped_rows", dropped_rows, store_code=store_code)
         _add_rows("edited_rows", edited_rows, store_code=store_code)
         _add_rows("error_rows", error_rows, store_code=store_code)
+
+    for store_code, store_summary in summary_stores.items():
+        store_code = str(store_code)
+        if not isinstance(store_summary, Mapping) or not _should_fallback(store_code, "warning_rows"):
+            continue
+        warning_rows = store_summary.get("warning_rows")
+        if not _is_row_list(warning_rows):
+            continue
+        sanitized_rows = [
+            _sanitize_uc_warning_row(row, store_code=store_code)
+            for row in warning_rows
+            if isinstance(row, Mapping)
+        ]
+        sanitized_rows = [row for row in sanitized_rows if row]
+        if sanitized_rows:
+            extracted["warning_rows"].extend(sanitized_rows)
 
     return extracted
 
@@ -1296,14 +1337,15 @@ def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None
     return entries
 
 
-def _extract_uc_warning_count_from_summary(
+def _extract_uc_warning_details_from_summary(
     summary: Mapping[str, Any] | None, *, store_code: str
-) -> int:
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"warning_count": 0, "warning_categories": {}, "warning_rows": []}
     if not summary:
-        return 0
+        return details
     metrics = _coerce_dict(summary.get("metrics_json"))
     if not metrics:
-        return 0
+        return details
     normalized_code = store_code.upper()
     summary_store = _coerce_dict(
         _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores")).get(
@@ -1312,8 +1354,45 @@ def _extract_uc_warning_count_from_summary(
     )
     warning_count = summary_store.get("warning_count")
     if isinstance(warning_count, int) and warning_count > 0:
-        return warning_count
-    return 0
+        details["warning_count"] = warning_count
+
+    rows: list[dict[str, Any]] = []
+    candidate_rows = summary_store.get("warning_rows")
+    if isinstance(candidate_rows, Sequence) and not isinstance(candidate_rows, (str, bytes, Mapping)):
+        rows.extend(
+            _sanitize_uc_warning_row(row, store_code=normalized_code)
+            for row in candidate_rows
+            if isinstance(row, Mapping)
+        )
+    row_facts = _extract_row_facts_from_summary(summary)
+    rows.extend(
+        _sanitize_uc_warning_row(row, store_code=normalized_code)
+        for row in row_facts.get("warning_rows", [])
+        if isinstance(row, Mapping)
+    )
+
+    seen: set[tuple[str, str, str]] = set()
+    unique_rows: list[dict[str, Any]] = []
+    categories: dict[str, int] = {}
+    for row in rows:
+        if not row:
+            continue
+        reason = _warning_reason_from_row(row) or "warning"
+        key = (str(row.get("store_code") or ""), str(row.get("order_number") or ""), reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+        categories[reason] = categories.get(reason, 0) + 1
+    details["warning_rows"] = unique_rows
+    details["warning_categories"] = categories
+    return details
+
+
+def _extract_uc_warning_count_from_summary(
+    summary: Mapping[str, Any] | None, *, store_code: str
+) -> int:
+    return int(_extract_uc_warning_details_from_summary(summary, store_code=store_code)["warning_count"] or 0)
 
 
 def _merge_ingestion_counts(
@@ -2200,6 +2279,7 @@ async def _run_store_windows(
         ingestion_counts: dict[str, Any] = {}
         uc_payload: dict[str, Any] | None = None
         uc_warning_count = 0
+        uc_warning_categories: dict[str, int] = {}
         td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
         attempts = 0
@@ -2235,9 +2315,11 @@ async def _run_store_windows(
             summary = await fetch_summary_for_run(config.database_url, attempt_run_id)
             attempt_row_facts = _extract_row_facts_from_summary(summary)
             if pipeline_name == "uc_orders_sync":
-                uc_warning_count = _extract_uc_warning_count_from_summary(
+                uc_warning_details = _extract_uc_warning_details_from_summary(
                     summary, store_code=store.store_code
                 )
+                uc_warning_count = int(uc_warning_details.get("warning_count", 0) or 0)
+                uc_warning_categories = dict(uc_warning_details.get("warning_categories") or {})
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -2399,6 +2481,7 @@ async def _run_store_windows(
                     "orders_sync_log_id": log_row.get("id") if log_row else None,
                     "td_garment_warning": td_garment_warning,
                     "warning_count": 1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0,
+                    "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
                 }
             )
             if not fetched_status:
@@ -2479,6 +2562,7 @@ async def _run_store_windows(
                     if pipeline_name == "uc_orders_sync" and uc_payload
                     else (1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0)
                 ),
+                "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
             }
         )
         if pipeline_name == "uc_orders_sync":

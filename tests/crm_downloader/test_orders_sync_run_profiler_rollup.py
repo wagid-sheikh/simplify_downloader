@@ -1593,3 +1593,66 @@ def test_mixed_navigation_and_success_is_not_browser_runtime_incident() -> None:
     )
 
     assert profiler._all_store_navigation_infrastructure_incident([failed, succeeded]) is None
+
+
+def test_extract_row_facts_preserves_sanitized_uc_warning_rows_from_summary() -> None:
+    summary = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "UC01": {
+                        "warning_count": 1,
+                        "warning_rows": [
+                            {
+                                "store_code": "UC01",
+                                "order_number": "U-1",
+                                "customer_name": "Sensitive Name",
+                                "mobile_number": "9999999999",
+                                "values": {"Customer GSTIN": ""},
+                                "ingest_remarks": "Customer GSTIN missing",
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    row_facts = profiler._extract_row_facts_from_summary(summary)
+
+    assert row_facts["warning_rows"] == [
+        {
+            "store_code": "UC01",
+            "order_number": "U-1",
+            "ingest_remarks": "Customer GSTIN missing",
+            "ingestion_remarks": "Customer GSTIN missing",
+            "remarks": "Customer GSTIN missing",
+        }
+    ]
+
+
+def test_extract_uc_warning_details_from_summary_categorizes_warning_rows() -> None:
+    summary = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "UC01": {
+                        "warning_count": 2,
+                        "warning_rows": [
+                            {"order_number": "U-1", "ingest_remarks": "Customer GSTIN missing"},
+                            {"order_number": "U-2", "reason_code": "amount_mismatch"},
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+    details = profiler._extract_uc_warning_details_from_summary(summary, store_code="uc01")
+
+    assert details["warning_count"] == 2
+    assert details["warning_categories"] == {
+        "Customer GSTIN missing": 1,
+        "amount_mismatch": 1,
+    }
+    assert details["warning_rows"][0]["store_code"] == "UC01"
