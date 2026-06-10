@@ -634,8 +634,22 @@ def _resolve_td_customer_type_display(*, source_customer_type: Any, previous_num
     return raw_customer_type
 
 
+def _is_td_new_customer(row: Mapping[str, Any]) -> bool:
+    return str(row.get("customer_type") or "").strip().lower() == "new"
+
+
+def _is_td_existing_customer(row: Mapping[str, Any]) -> bool:
+    return str(row.get("customer_type") or "").strip().lower() == "existing"
+
+
+def _td_existing_customer_value(row: Mapping[str, Any], key: str) -> str:
+    if _is_td_new_customer(row):
+        return ""
+    return str(row.get(key) or "").strip()
+
+
 def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
-    if str(row.get("customer_type") or "").strip().lower() != "existing":
+    if not _is_td_existing_customer(row):
         return ""
     if "previous_number_of_orders" not in row or "average_order_amount" not in row:
         return ""
@@ -643,7 +657,15 @@ def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
     if previous_number_of_orders == 0:
         return ""
     average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
-    return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
+    suffix_parts = [f"Orders: {previous_number_of_orders}", f"Avg. Value: {average_order_amount}"]
+    last_order_details = (
+        ("Last Order Date", _td_existing_customer_value(row, "last_order_date")),
+        ("Last Order No", _td_existing_customer_value(row, "last_order_number")),
+        ("Last Payment Date", _td_existing_customer_value(row, "last_payment_date")),
+        ("Last Services", _td_existing_customer_value(row, "last_service_names")),
+    )
+    suffix_parts.extend(f"{label}: {value}" for label, value in last_order_details if value)
+    return " | ".join(suffix_parts)
 
 
 def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
@@ -1722,7 +1744,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         pending_detail_rows: list[list[str]] = []
         for row in pending_rows:
             customer_type = _format_td_customer_type_for_email(row)
-            is_new_customer = str(row.get("customer_type") or "").strip().lower() == "new"
+            is_new_customer = _is_td_new_customer(row)
             previous_number_of_orders = (
                 "" if is_new_customer else str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
             )
@@ -1736,6 +1758,10 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     customer_type,
                     previous_number_of_orders,
                     average_order_amount,
+                    _td_existing_customer_value(row, "last_order_date"),
+                    _td_existing_customer_value(row, "last_order_number"),
+                    _td_existing_customer_value(row, "last_payment_date"),
+                    _td_existing_customer_value(row, "last_service_names"),
                     _format_pickup_created_display(row),
                 ]
             )
@@ -1762,7 +1788,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         blocks.append(
             _build_td_leads_section_table_html(
                 section_label=f"Pending Leads ({len(pending_rows)})",
-                headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
+                headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time"),
                 rows=pending_detail_rows,
             )
         )
@@ -1866,6 +1892,10 @@ def _build_td_existing_cancelled_current_state_html(*, rows_payload: Sequence[Ma
             _format_td_customer_type_for_email(row),
             str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0),
             _format_td_average_order_amount(row.get("average_order_amount")),
+            _td_existing_customer_value(row, "last_order_date"),
+            _td_existing_customer_value(row, "last_order_number"),
+            _td_existing_customer_value(row, "last_payment_date"),
+            _td_existing_customer_value(row, "last_service_names"),
             _format_pickup_created_display(row),
         ]
         for row in rows_payload
@@ -1873,7 +1903,7 @@ def _build_td_existing_cancelled_current_state_html(*, rows_payload: Sequence[Ma
     ]
     return _build_td_leads_section_table_html(
         section_label=f"Existing Customer Leads Marked as Cancelled (All-time/current-state) ({len(rows)})",
-        headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Cancel Reason/Context", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
+        headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Cancel Reason/Context", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time"),
         rows=rows,
     )
 
@@ -1889,13 +1919,15 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
         if column == "lead_created_at":
             return _format_pickup_created_display(row)
         if column == "previous_number_of_orders":
-            if str(row.get("customer_type") or "").strip().lower() == "new":
+            if _is_td_new_customer(row):
                 return ""
             return str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
         if column == "average_order_amount":
-            if str(row.get("customer_type") or "").strip().lower() == "new":
+            if _is_td_new_customer(row):
                 return ""
             return _format_td_average_order_amount(row.get("average_order_amount"))
+        if column in TD_LAST_ORDER_FIELDS:
+            return _td_existing_customer_value(row, column)
         return str(row.get(column) or "None")
 
     high_age_columns = (
@@ -1906,6 +1938,10 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
         "customer_type",
         "previous_number_of_orders",
         "average_order_amount",
+        "last_order_date",
+        "last_order_number",
+        "last_payment_date",
+        "last_service_names",
         "lead_created_at",
     )
     high_age_rows = [
@@ -1928,7 +1964,7 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     blocks.append(
         _build_td_leads_section_table_html_with_rich_cells(
             section_label=f"Open leads with high age ({threshold_days}+ days) ({len(high_age_rows)})",
-            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time"),
             rows=high_age_rows,
             rich_html_columns=None,
             row_styles=high_age_row_styles,

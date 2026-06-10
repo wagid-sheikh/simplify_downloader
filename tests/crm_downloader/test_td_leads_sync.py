@@ -860,7 +860,9 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert (
         "<th align='left'>Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th>"
         "<th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th>"
-        "<th align='left'>Average Order Value</th><th align='left'>Created Date/Time</th>"
+        "<th align='left'>Average Order Value</th><th align='left'>Last Order Date</th>"
+        "<th align='left'>Last Order No</th><th align='left'>Last Payment Date</th>"
+        "<th align='left'>Last Services</th><th align='left'>Created Date/Time</th>"
     ) in tables_html
 
     new_lead_payload = "A817, Pending 1, 9000000000, None, Retail, None"
@@ -1871,6 +1873,10 @@ def test_td_leads_tables_html_pending_renders_enriched_fields_and_customer_metri
                         "customer_type": "Existing",
                         "previous_number_of_orders": 3,
                         "average_order_amount": "1234.5",
+                        "last_order_date": "2026-04-20 10:30:00+00:00",
+                        "last_order_number": "TD-LAST-1",
+                        "last_payment_date": "2026-04-20 11:30:00+00:00",
+                        "last_service_names": "Dry Clean, Steam Iron",
                         "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
                     },
                 ],
@@ -1890,8 +1896,12 @@ def test_td_leads_tables_html_pending_renders_enriched_fields_and_customer_metri
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "A817</td><td>A817-EXISTING</td><td>Existing Customer</td><td>9000000002</td><td>Existing | Orders: 3 | Avg. Value: ₹1,234.50</td><td>3</td><td>₹1,234.50</td><td>21 Apr 2026 03:03:39 PM IST" in tables_html
-    assert "A817</td><td>A817-NEW</td><td>New Customer</td><td>9000000001</td><td>New</td><td></td><td></td><td>21 Apr 2026 3:03:39 PM" in tables_html
+    assert "Last Order Date" in tables_html
+    assert "Last Order No" in tables_html
+    assert "Last Payment Date" in tables_html
+    assert "Last Services" in tables_html
+    assert "A817</td><td>A817-EXISTING</td><td>Existing Customer</td><td>9000000002</td><td>Existing | Orders: 3 | Avg. Value: ₹1,234.50 | Last Order Date: 2026-04-20 10:30:00+00:00 | Last Order No: TD-LAST-1 | Last Payment Date: 2026-04-20 11:30:00+00:00 | Last Services: Dry Clean, Steam Iron</td><td>3</td><td>₹1,234.50</td><td>2026-04-20 10:30:00+00:00</td><td>TD-LAST-1</td><td>2026-04-20 11:30:00+00:00</td><td>Dry Clean, Steam Iron</td><td>21 Apr 2026 03:03:39 PM IST" in tables_html
+    assert "A817</td><td>A817-NEW</td><td>New Customer</td><td>9000000001</td><td>New</td><td></td><td></td><td></td><td></td><td></td><td></td><td>21 Apr 2026 3:03:39 PM" in tables_html
 
 
 def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
@@ -4151,7 +4161,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
         await engine.dispose()
 
     assert list(payload.keys()) == [
-        "warning", "report_date", "reference_ts", "open_leads", "cancelled_leads_today", "completed_leads_today", "action_required"
+        "warning", "report_date", "reference_ts", "open_leads", "cancelled_leads_today", "existing_customer_cancelled_current_state", "completed_leads_today", "action_required"
     ]
     assert payload["warning"] is None
 
@@ -4162,7 +4172,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     cancelled_row = payload["cancelled_leads_today"][0]
     assert cancelled_row["lead_age_days_at_cancel"] == 1
     assert list(cancelled_row.keys()) == [
-        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "cancelled_at", "lead_age_days_at_cancel", "cancel_reason", "cancelled_flag", "source", "customer_type", "previous_number_of_orders", "average_order_amount"
+        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "cancelled_at", "lead_age_days_at_cancel", "cancel_reason", "cancelled_flag", "source", "customer_type", "cost_center", "previous_number_of_orders", "average_order_amount", "last_order_date", "last_order_number", "last_payment_date", "last_service_names"
     ]
 
     by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
@@ -4194,8 +4204,12 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
         "first_order_date",
         "last_order_date",
         "reconciliation_note",
+        "cost_center",
         "previous_number_of_orders",
         "average_order_amount",
+        "last_order_number",
+        "last_payment_date",
+        "last_service_names",
     ]
 
     action_required = payload["action_required"]
@@ -4310,9 +4324,9 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
         "open_leads_high_age": payload["action_required"]["open_leads_high_age"],
         "completed_leads_without_order_match": payload["action_required"]["completed_without_order_match"],
     })
-    assert "Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th><th align='left'>Average Order Value</th><th align='left'>Created Date/Time" in action_required_html
+    assert "Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th><th align='left'>Average Order Value</th><th align='left'>Last Order Date</th><th align='left'>Last Order No</th><th align='left'>Last Payment Date</th><th align='left'>Last Services</th><th align='left'>Created Date/Time" in action_required_html
     assert "Lead Age (Days)" not in action_required_html
-    assert "Last Seen Status" not in action_required_html
+    assert "Last Seen Status" not in action_required_html.split("Open leads with high age", 1)[1].split("Completed leads without order match", 1)[0]
     assert "Source" not in action_required_html.split("Open leads with high age", 1)[1].split("Completed leads without order match", 1)[0]
     assert "A200-HIST</td>" in action_required_html
     assert "₹1,234.50" in action_required_html
