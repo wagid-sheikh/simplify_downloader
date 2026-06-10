@@ -153,6 +153,46 @@ async def test_failed_profiler_status_can_fail_cli_after_persistence_and_notific
     assert calls["notification_calls"] == [("orders_sync_run_profiler", "profiler-failed-run")]
 
 
+
+def test_profiler_summary_includes_success_with_warnings_window_details() -> None:
+    summary = _build_profiler_summary_text(
+        run_id="profiler-warning-run",
+        run_env="test",
+        started_at=datetime(2024, 2, 1, 5, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2024, 2, 1, 5, 1, tzinfo=timezone.utc),
+        overall_status="success_with_warnings",
+        store_entries=[
+            {
+                "store_code": "UC01",
+                "pipeline_name": "uc_orders_sync",
+                "status": "success_with_warnings",
+                "window_count": 1,
+                "primary_metrics": {},
+                "secondary_metrics": {},
+                "window_audit": [
+                    {
+                        "store_code": "UC01",
+                        "from_date": "2024-02-01",
+                        "to_date": "2024-02-02",
+                        "status": "success_with_warnings",
+                        "status_note": "GSTIN missing for 2 row(s)",
+                        "error_message": "non-fatal validation warnings",
+                        "attempt_no": 2,
+                        "warning_count": 2,
+                    }
+                ],
+            }
+        ],
+        window_summary={"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+        warnings=[],
+    )
+
+    assert "  warning_windows:" in summary
+    assert "status_note=GSTIN missing for 2 row(s)" in summary
+    assert "error_message=non-fatal validation warnings" in summary
+    assert "attempt_no=2" in summary
+    assert "warning_count=2" in summary
+
 def test_window_status_prefers_summary_success_with_warnings() -> None:
     status, note = _resolve_window_outcome_status(
         raw_status="success",
@@ -1137,6 +1177,18 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
     store = payload["stores"][0]
 
     assert summary["overall_status"] == "success_with_warnings"
+    assert store["warning_windows"] == [
+        {
+            "store_code": "TD01",
+            "from_date": "2024-02-01",
+            "to_date": "2024-02-02",
+            "status": "success_with_warnings",
+            "status_note": "",
+            "error_message": "",
+            "attempt_no": None,
+            "warning_count": 1,
+        }
+    ]
     assert store["td_garment_warning_count"] == 1
     assert store["td_garment_incomplete_windows"] == [
         {
