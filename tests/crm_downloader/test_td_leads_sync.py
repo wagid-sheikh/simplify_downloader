@@ -73,6 +73,111 @@ def test_build_td_mobile_match_debug_diagnostics_masks_originals_and_emits_norma
         "normalized_order_mobile_last4": "2207",
     }
 
+
+@pytest.mark.asyncio
+async def test_fetch_td_customer_last_order_facts_returns_latest_order_payment_and_services(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_last_order_facts.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE vw_orders (
+                        cost_center TEXT,
+                        mobile_number TEXT,
+                        order_number TEXT,
+                        order_date TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE sales (
+                        cost_center TEXT,
+                        order_number TEXT,
+                        payment_date TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE order_line_items (
+                        cost_center TEXT,
+                        order_number TEXT,
+                        service_name TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO vw_orders (cost_center, mobile_number, order_number, order_date) VALUES
+                        ('CC01', '+91 95992 42207', 'TD-OLD', '2026-04-01T09:00:00'),
+                        ('CC01', '9599242207.0', 'TD-LATEST-A', '2026-04-03T09:00:00'),
+                        ('CC01', '(+91) 95992-42207', 'TD-LATEST-B', '2026-04-03T09:00:00'),
+                        ('CC02', '9599242207', 'TD-OTHER-STORE', '2026-04-04T09:00:00'),
+                        ('CC01', '8888888888', 'TD-OTHER-MOBILE', '2026-04-05T09:00:00')
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO sales (cost_center, order_number, payment_date) VALUES
+                        ('CC01', 'TD-LATEST-B', '2026-04-03T10:00:00'),
+                        ('CC01', 'TD-LATEST-B', '2026-04-03T11:00:00'),
+                        ('CC02', 'TD-LATEST-B', '2026-04-04T11:00:00')
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO order_line_items (cost_center, order_number, service_name) VALUES
+                        ('CC01', 'TD-LATEST-B', 'Wash'),
+                        ('CC01', 'TD-LATEST-B', 'Iron'),
+                        ('CC01', 'TD-LATEST-B', 'Wash'),
+                        ('CC01', 'TD-LATEST-B', ''),
+                        ('CC01', 'TD-LATEST-B', NULL),
+                        ('CC02', 'TD-LATEST-B', 'Dry Clean')
+                    """
+                )
+            )
+
+        async with td_leads_main.session_scope(database_url) as session:
+            facts = await td_leads_main._fetch_td_customer_last_order_facts(
+                session=session,
+                cost_center="CC01",
+                mobile_number="9.599242207E9",
+            )
+            missing_facts = await td_leads_main._fetch_td_customer_last_order_facts(
+                session=session,
+                cost_center="CC01",
+                mobile_number="7777777777",
+            )
+    finally:
+        await engine.dispose()
+
+    assert facts == {
+        "last_order_date": "2026-04-03T09:00:00",
+        "last_order_number": "TD-LATEST-B",
+        "last_payment_date": "2026-04-03T11:00:00",
+        "last_service_names": "Iron, Wash",
+    }
+    assert missing_facts == {
+        "last_order_date": None,
+        "last_order_number": None,
+        "last_payment_date": None,
+        "last_service_names": "",
+    }
+
+
 def test_business_day_bounds_utc_respects_pipeline_timezone() -> None:
     reference_ts = datetime(2026, 4, 22, 10, 15, tzinfo=timezone.utc)
 
