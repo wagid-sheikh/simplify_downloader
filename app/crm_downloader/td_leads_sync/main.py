@@ -386,7 +386,7 @@ def _validate_td_reporting_payload_schema(payload: Mapping[str, Any]) -> list[st
         errors.append("missing_or_invalid_section:action_required")
     else:
         for key, columns in (
-            ("open_leads_high_age", ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS),
+            ("pending_leads", ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS),
             ("completed_without_order_match", ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS),
         ):
             section = action_required.get(key)
@@ -990,7 +990,7 @@ async def build_td_leads_reporting_payload(
                 "open_leads_high_age_threshold_days": open_leads_high_age_threshold_days
                 if open_leads_high_age_threshold_days is not None
                 else TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT,
-                "open_leads_high_age": [],
+                "pending_leads": [],
                 "completed_without_order_match": [],
             },
         }
@@ -1123,13 +1123,13 @@ async def build_td_leads_reporting_payload(
     await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=completed_leads_today)
 
     threshold_days = max(0, open_leads_high_age_threshold_days or TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT)
+    sorted_open_leads = sorted(
+        (_without_td_order_history_diagnostics(row) for row in open_leads),
+        key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or "")),
+    )
     action_required = {
         "open_leads_high_age_threshold_days": threshold_days,
-        "open_leads_high_age": [
-            _without_td_order_history_diagnostics(row)
-            for row in open_leads
-            if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
-        ],
+        "pending_leads": list(sorted_open_leads),
         "completed_without_order_match": [
             _without_td_order_history_diagnostics(row) for row in completed_leads_today if not row.get("order_match_found")
         ],
@@ -1139,10 +1139,7 @@ async def build_td_leads_reporting_payload(
         "warning": None,
         "report_date": day_start_local.date().isoformat(),
         "reference_ts": anchor_ts.isoformat(),
-        "open_leads": sorted(
-            (_without_td_order_history_diagnostics(row) for row in open_leads),
-            key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or "")),
-        ),
+        "open_leads": sorted_open_leads,
         "cancelled_leads_today": sorted(
             (_without_td_order_history_diagnostics(row) for row in cancelled_leads_today),
             key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
@@ -1789,7 +1786,7 @@ def _td_completed_lead_has_order_match(row: Mapping[str, Any]) -> bool:
 def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
     open_statuses = set(_resolved_open_status_buckets())
     threshold_days = _resolve_td_open_lead_age_threshold_days()
-    high_age_open_leads: list[dict[str, Any]] = []
+    pending_leads: list[dict[str, Any]] = []
     completed_without_order_match: list[dict[str, Any]] = []
 
     for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
@@ -1798,27 +1795,26 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
             if status_bucket in open_statuses:
                 lead_created_at = row.get("pickup_created_at")
                 lead_age_days = _calculate_lead_age_days(lead_created_at=lead_created_at, reference_ts=aware_now(_UTC))
-                if lead_age_days is not None and lead_age_days >= threshold_days:
-                    payload = {
-                        "store_code": result.store_code,
-                        "pickup_no": row.get("pickup_no"),
-                        "customer_name": row.get("customer_name"),
-                        "mobile": row.get("mobile"),
-                        "lead_created_at": _format_pickup_created_display(row),
-                        "lead_age_days": lead_age_days,
-                        "source": row.get("source"),
-                        "customer_type": row.get("customer_type"),
-                        "last_seen_status": status_bucket or None,
-                    }
-                    for order_history_key in (
-                        "previous_number_of_orders",
-                        "average_order_amount",
-                        *TD_LAST_ORDER_FIELDS,
-                        "order_history_warning_marker",
-                    ):
-                        if order_history_key in row:
-                            payload[order_history_key] = row.get(order_history_key)
-                    high_age_open_leads.append(payload)
+                payload = {
+                    "store_code": result.store_code,
+                    "pickup_no": row.get("pickup_no"),
+                    "customer_name": row.get("customer_name"),
+                    "mobile": row.get("mobile"),
+                    "lead_created_at": _format_pickup_created_display(row),
+                    "lead_age_days": lead_age_days,
+                    "source": row.get("source"),
+                    "customer_type": row.get("customer_type"),
+                    "last_seen_status": status_bucket or None,
+                }
+                for order_history_key in (
+                    "previous_number_of_orders",
+                    "average_order_amount",
+                    *TD_LAST_ORDER_FIELDS,
+                    "order_history_warning_marker",
+                ):
+                    if order_history_key in row:
+                        payload[order_history_key] = row.get(order_history_key)
+                pending_leads.append(payload)
             if status_bucket == "completed":
                 if not _td_completed_lead_has_order_match(row):
                     payload = {
@@ -1843,7 +1839,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
 
     return {
         "open_leads_high_age_threshold_days": threshold_days,
-        "open_leads_high_age": high_age_open_leads,
+        "pending_leads": pending_leads,
         "completed_leads_without_order_match": completed_without_order_match,
     }
 
@@ -1876,8 +1872,9 @@ def _build_td_existing_cancelled_current_state_html(*, rows_payload: Sequence[Ma
 
 
 def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str:
-    threshold_days = int(daily_reporting.get("open_leads_high_age_threshold_days") or 0)
-    high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
+    pending_rows_payload = daily_reporting.get("pending_leads") if isinstance(daily_reporting.get("pending_leads"), list) else []
+    if not pending_rows_payload and isinstance(daily_reporting.get("open_leads_high_age"), list):
+        pending_rows_payload = daily_reporting.get("open_leads_high_age", [])
     completed_rows_payload = daily_reporting.get("completed_leads_without_order_match") if isinstance(daily_reporting.get("completed_leads_without_order_match"), list) else []
 
     def _action_cell(row: Mapping[str, Any], column: str) -> str:
@@ -1885,6 +1882,8 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
             return _format_td_customer_type_for_email(row)
         if column == "lead_created_at":
             return _format_pickup_created_display(row)
+        if column == "lead_age_days":
+            return str(row.get("lead_age_days")) if row.get("lead_age_days") is not None else ""
         if column == "previous_number_of_orders":
             if _is_td_new_customer(row):
                 return ""
@@ -1897,7 +1896,7 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
             return _td_existing_customer_value(row, column)
         return str(row.get(column) or "None")
 
-    high_age_columns = (
+    pending_columns = (
         "store_code",
         "pickup_no",
         "customer_name",
@@ -1910,15 +1909,16 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
         "last_payment_date",
         "last_service_names",
         "lead_created_at",
+        "lead_age_days",
     )
-    high_age_rows = [
-        [_action_cell(row, column) for column in high_age_columns]
-        for row in high_age_rows_payload
+    pending_rows = [
+        [_action_cell(row, column) for column in pending_columns]
+        for row in pending_rows_payload
         if isinstance(row, Mapping)
     ]
-    high_age_row_styles = [
+    pending_row_styles = [
         "color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(row) else None
-        for row in high_age_rows_payload
+        for row in pending_rows_payload
         if isinstance(row, Mapping)
     ]
     completed_rows = [
@@ -1930,11 +1930,11 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
     blocks.append(
         _build_td_leads_section_table_html_with_rich_cells(
-            section_label=f"Open leads with high age ({threshold_days}+ days) ({len(high_age_rows)})",
-            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time"),
-            rows=high_age_rows,
+            section_label=f"Pending Leads ({len(pending_rows)})",
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time", "Lead Age Days"),
+            rows=pending_rows,
             rich_html_columns=None,
-            row_styles=high_age_row_styles,
+            row_styles=pending_row_styles,
         )
     )
     blocks.append(
@@ -1959,7 +1959,7 @@ def _resolve_daily_reporting_for_mode(
         if isinstance(action_required, Mapping):
             return {
                 "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
-                "open_leads_high_age": action_required.get("open_leads_high_age", []),
+                "pending_leads": action_required.get("pending_leads", action_required.get("open_leads_high_age", [])),
                 "cancelled_leads_today": reporting_payload.get("cancelled_leads_today", []),
                 "existing_customer_cancelled_current_state": reporting_payload.get("existing_customer_cancelled_current_state", []),
                 "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),

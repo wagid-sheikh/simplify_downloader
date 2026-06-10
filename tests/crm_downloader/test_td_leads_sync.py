@@ -681,7 +681,8 @@ def test_td_leads_summary_html_renders_business_sections_and_footer_refs() -> No
     assert "Lead details by store" in summary_html
     assert "New Leads created" in summary_html
     assert "Leads Marked as Cancelled" in summary_html
-    assert "Pending Leads" not in summary_html
+    assert "Pending Leads (1)" in summary_html
+    assert "Open leads with high age" not in summary_html
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
@@ -3887,6 +3888,15 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
                         "customer_type": "New",
                     },
                     {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-OPEN-2",
+                        "customer_name": "Fresh Open Lead",
+                        "mobile": "9000000008",
+                        "pickup_created_at": "2026-04-24 08:00:00",
+                        "source": "Meta",
+                        "customer_type": "New",
+                    },
+                    {
                         "status_bucket": "completed",
                         "pickup_no": "A817-COMP-1",
                         "customer_name": "Matched Lead",
@@ -3943,7 +3953,7 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
     daily_reporting = td_leads_main._build_td_daily_reporting(summary)
 
     assert daily_reporting["open_leads_high_age_threshold_days"] == 2
-    assert daily_reporting["open_leads_high_age"][0].keys() == {
+    assert daily_reporting["pending_leads"][0].keys() == {
         "store_code",
         "pickup_no",
         "customer_name",
@@ -3954,14 +3964,18 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
         "customer_type",
         "last_seen_status",
     }
-    assert daily_reporting["open_leads_high_age"][0]["lead_age_days"] == 2
+    assert [row["pickup_no"] for row in daily_reporting["pending_leads"]] == ["A817-OPEN-1", "A817-OPEN-2"]
+    assert daily_reporting["pending_leads"][0]["lead_age_days"] == 2
+    assert daily_reporting["pending_leads"][1]["lead_age_days"] == 0
 
     assert len(daily_reporting["completed_leads_without_order_match"]) == 1
     assert daily_reporting["completed_leads_without_order_match"][0]["pickup_no"] == "A817-COMP-2"
 
     action_required_html = td_leads_main._build_td_action_required_html(daily_reporting=daily_reporting)
     assert "Action Required" in action_required_html
-    assert "Open leads with high age (2+ days) (1)" in action_required_html
+    assert "Pending Leads (2)" in action_required_html
+    assert "Open leads with high age" not in action_required_html
+    assert "Lead Age Days" in action_required_html
     assert "Completed leads without order match (1)" in action_required_html
     assert "21 Apr 2026 03:03:39 PM IST" in action_required_html
     assert "24 Apr 2026 12:30:00 PM IST" in action_required_html
@@ -4120,6 +4134,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                 (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
                 VALUES
                 ('L_OPEN', 'A100', 'A100-O1', 'Open Lead', '900 000 0001', '2026-04-28 10:00:00+00:00', NULL, NULL, 'Meta', 'New', 'pending'),
+                ('L_OPEN_FRESH', 'A100', 'A100-O2', 'Fresh Open Lead', '9000000004', '2026-05-01 10:00:00+00:00', NULL, NULL, 'Meta', 'New', 'pending'),
                 ('L_DONE_MATCH', 'A100', 'A100-D1', 'Done Match', '9000000002', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed'),
                 ('L_DONE_NOMATCH', 'A100', 'A100-D2', 'Done No Match', '9000000999', '2026-05-01 07:30:00+00:00', NULL, NULL, 'Walk-in', 'New', 'completed'),
                 ('L_DONE_MULTI', 'A100', 'A100-D3', 'Done Multi', '+91 90000 00003', '2026-04-30 08:00:00+00:00', NULL, NULL, 'Meta', 'Existing', 'completed'),
@@ -4165,8 +4180,9 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     ]
     assert payload["warning"] is None
 
-    assert [row["pickup_no"] for row in payload["open_leads"]] == ["A100-O1"]
+    assert [row["pickup_no"] for row in payload["open_leads"]] == ["A100-O1", "A100-O2"]
     assert payload["open_leads"][0]["lead_age_days"] == 3
+    assert payload["open_leads"][1]["lead_age_days"] == 0
 
     assert [row["pickup_no"] for row in payload["cancelled_leads_today"]] == ["A100-C1"]
     cancelled_row = payload["cancelled_leads_today"][0]
@@ -4213,9 +4229,10 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     ]
 
     action_required = payload["action_required"]
-    assert list(action_required.keys()) == ["open_leads_high_age_threshold_days", "open_leads_high_age", "completed_without_order_match"]
+    assert list(action_required.keys()) == ["open_leads_high_age_threshold_days", "pending_leads", "completed_without_order_match"]
     assert action_required["open_leads_high_age_threshold_days"] == 3
-    assert [row["pickup_no"] for row in action_required["open_leads_high_age"]] == ["A100-O1"]
+    assert [row["pickup_no"] for row in action_required["pending_leads"]] == ["A100-O1", "A100-O2"]
+    assert [row["lead_age_days"] for row in action_required["pending_leads"]] == [3, 0]
     assert [row["pickup_no"] for row in action_required["completed_without_order_match"]] == ["A100-D2", "A100-X1"]
     assert action_required["completed_without_order_match"][0]["source"] == "Walk-in"
     assert action_required["completed_without_order_match"][0]["customer_type"] == "New"
@@ -4321,13 +4338,13 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
 
     action_required_html = td_leads_main._build_td_action_required_html(daily_reporting={
         "open_leads_high_age_threshold_days": 0,
-        "open_leads_high_age": payload["action_required"]["open_leads_high_age"],
+        "pending_leads": payload["action_required"]["pending_leads"],
         "completed_leads_without_order_match": payload["action_required"]["completed_without_order_match"],
     })
     assert "Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th><th align='left'>Average Order Value</th><th align='left'>Last Order Date</th><th align='left'>Last Order No</th><th align='left'>Last Payment Date</th><th align='left'>Last Services</th><th align='left'>Created Date/Time" in action_required_html
-    assert "Lead Age (Days)" not in action_required_html
-    assert "Last Seen Status" not in action_required_html.split("Open leads with high age", 1)[1].split("Completed leads without order match", 1)[0]
-    assert "Source" not in action_required_html.split("Open leads with high age", 1)[1].split("Completed leads without order match", 1)[0]
+    assert "Lead Age Days" in action_required_html
+    assert "Last Seen Status" not in action_required_html.split("Pending Leads", 1)[1].split("Completed leads without order match", 1)[0]
+    assert "Source" not in action_required_html.split("Pending Leads", 1)[1].split("Completed leads without order match", 1)[0]
     assert "A200-HIST</td>" in action_required_html
     assert "₹1,234.50" in action_required_html
     new_row_fragment = action_required_html.split("A200-NO", 1)[1].split("</tr>", 1)[0]
@@ -4817,7 +4834,7 @@ def test_td_leads_run_summary_record_includes_frozen_daily_reporting_for_reporti
             "cancelled_leads_today": [{"pickup_no": "A100-C1"}],
             "action_required": {
                 "open_leads_high_age_threshold_days": 3,
-                "open_leads_high_age": [],
+                "pending_leads": [],
                 "completed_without_order_match": [],
             },
         },
@@ -4827,7 +4844,7 @@ def test_td_leads_run_summary_record_includes_frozen_daily_reporting_for_reporti
     assert frozen["reporting_mode"] == mode
     assert frozen["daily_reporting"] is not None
     assert list(frozen["daily_reporting"].keys()) == [
-        "open_leads_high_age_threshold_days", "open_leads_high_age", "cancelled_leads_today", "existing_customer_cancelled_current_state", "completed_leads_without_order_match"
+        "open_leads_high_age_threshold_days", "pending_leads", "cancelled_leads_today", "existing_customer_cancelled_current_state", "completed_leads_without_order_match"
     ]
     assert "action_required" in frozen and isinstance(frozen["action_required"], str)
 
@@ -4903,7 +4920,7 @@ def test_build_td_leads_summary_html_places_existing_cancelled_current_state_fir
         'existing_customer_cancelled_current_state': [
             {'store_code':'A001','pickup_no':'A001-EC1','customer_name':'Existing','mobile':'9000000001','cancel_reason':'Customer dropped','cancelled_flag':'customer','customer_type':'Existing','lead_created_at':'2020-01-01 00:00:00+00:00','previous_number_of_orders':0,'average_order_amount':None}
         ],
-        'action_required': {'open_leads_high_age_threshold_days':2,'open_leads_high_age':[],'completed_without_order_match':[]}
+        'action_required': {'open_leads_high_age_threshold_days':2,'pending_leads':[],'completed_without_order_match':[]}
     }
 
     for mode in ('meeting','day_end'):
