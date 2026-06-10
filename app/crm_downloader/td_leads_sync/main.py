@@ -1740,32 +1740,6 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             )
             cancelled_row_styles.append("color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(matching_row) else None)
 
-        pending_rows = _td_leads_bucket_rows(result, "pending")
-        pending_detail_rows: list[list[str]] = []
-        for row in pending_rows:
-            customer_type = _format_td_customer_type_for_email(row)
-            is_new_customer = _is_td_new_customer(row)
-            previous_number_of_orders = (
-                "" if is_new_customer else str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
-            )
-            average_order_amount = "" if is_new_customer else _format_td_average_order_amount(row.get("average_order_amount"))
-            pending_detail_rows.append(
-                [
-                    str(row.get("store_code") or result.store_code or "None"),
-                    str(row.get("pickup_no") or "None"),
-                    str(row.get("customer_name") or "None"),
-                    str(row.get("mobile") or "None"),
-                    customer_type,
-                    previous_number_of_orders,
-                    average_order_amount,
-                    _td_existing_customer_value(row, "last_order_date"),
-                    _td_existing_customer_value(row, "last_order_number"),
-                    _td_existing_customer_value(row, "last_payment_date"),
-                    _td_existing_customer_value(row, "last_service_names"),
-                    _format_pickup_created_display(row),
-                ]
-            )
-
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"New Leads created ({len(created_rows)})",
@@ -1783,13 +1757,6 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 rows=cancelled_detail_rows,
                 rich_html_columns=None,
                 row_styles=cancelled_row_styles,
-            )
-        )
-        blocks.append(
-            _build_td_leads_section_table_html(
-                section_label=f"Pending Leads ({len(pending_rows)})",
-                headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Last Order Date", "Last Order No", "Last Payment Date", "Last Services", "Created Date/Time"),
-                rows=pending_detail_rows,
             )
         )
     blocks.append("</div>")
