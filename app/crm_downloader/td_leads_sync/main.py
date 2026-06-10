@@ -700,6 +700,95 @@ def _set_td_order_history_diagnostics(
     row["order_history_matched_rows_for_mobile"] = matched_rows_for_mobile
 
 
+async def _fetch_td_customer_last_order_facts(
+    *,
+    session: Any,
+    cost_center: Any,
+    mobile_number: Any,
+) -> dict[str, Any]:
+    default_facts: dict[str, Any] = {
+        "last_order_date": None,
+        "last_order_number": None,
+        "last_payment_date": None,
+        "last_service_names": "",
+    }
+    scoped_cost_center = str(cost_center or "").strip()
+    normalized_mobile = _normalize_mobile_number(mobile_number)
+    if not scoped_cost_center or not normalized_mobile:
+        return default_facts
+
+    vw_orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("mobile_number"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+    )
+    order_rows = (
+        await session.execute(
+            sa.select(vw_orders.c.order_number, vw_orders.c.order_date, vw_orders.c.mobile_number)
+            .where(vw_orders.c.cost_center == scoped_cost_center)
+            .order_by(vw_orders.c.order_date.desc(), vw_orders.c.order_number.desc())
+        )
+    ).mappings().all()
+    latest_order = next(
+        (
+            order_row
+            for order_row in order_rows
+            if _normalize_mobile_number(order_row.get("mobile_number")) == normalized_mobile
+        ),
+        None,
+    )
+    if latest_order is None:
+        return default_facts
+
+    last_order_number = str(latest_order.get("order_number") or "").strip() or None
+    facts = {
+        **default_facts,
+        "last_order_date": latest_order.get("order_date"),
+        "last_order_number": last_order_number,
+    }
+    if last_order_number is None:
+        return facts
+
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_date"),
+    )
+    payment_row = (
+        await session.execute(
+            sa.select(sales.c.payment_date)
+            .where(sales.c.cost_center == scoped_cost_center)
+            .where(sales.c.order_number == last_order_number)
+            .order_by(sales.c.payment_date.desc())
+            .limit(1)
+        )
+    ).mappings().first()
+    facts["last_payment_date"] = payment_row.get("payment_date") if payment_row else None
+
+    order_line_items = sa.table(
+        "order_line_items",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("service_name"),
+    )
+    service_expr = sa.func.trim(order_line_items.c.service_name)
+    service_rows = (
+        await session.execute(
+            sa.select(service_expr.label("service_name"))
+            .distinct()
+            .where(order_line_items.c.cost_center == scoped_cost_center)
+            .where(order_line_items.c.order_number == last_order_number)
+            .where(sa.func.trim(sa.func.coalesce(order_line_items.c.service_name, "")) != "")
+            .order_by(service_expr.asc())
+        )
+    ).mappings().all()
+    facts["last_service_names"] = ", ".join(str(row.get("service_name") or "").strip() for row in service_rows)
+    return facts
+
+
 async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not database_url or not rows:
         return rows
