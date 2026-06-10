@@ -681,7 +681,7 @@ def test_td_leads_summary_html_renders_business_sections_and_footer_refs() -> No
     assert "Lead details by store" in summary_html
     assert "New Leads created" in summary_html
     assert "Leads Marked as Cancelled" in summary_html
-    assert "Pending Leads" in summary_html
+    assert "Pending Leads" not in summary_html
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
@@ -785,7 +785,7 @@ def test_td_leads_run_summary_record_marks_has_new_leads_true_when_created_event
     assert record["metrics_json"]["has_new_leads"] is True
 
 
-def test_td_leads_tables_html_renders_three_business_sections_per_store() -> None:
+def test_td_leads_tables_html_renders_new_and_cancelled_sections_per_store() -> None:
     pending_rows = [
         {
             "status_bucket": "pending",
@@ -849,21 +849,15 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "Store A817" in tables_html
     assert "<h5 style='margin:10px 0 6px 0;'>New Leads created (1)</h5>" in tables_html
     assert "<h5 style='margin:10px 0 6px 0;'>Leads Marked as Cancelled (1 transitions this run)</h5>" in tables_html
-    assert "<h5 style='margin:10px 0 6px 0;'>Pending Leads (52)</h5>" in tables_html
+    assert "Pending Leads" not in tables_html
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
-    assert "Pending 52" in tables_html
+    assert "Pending 52" not in tables_html
     assert "<th align='left'>Lead Details</th>" in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" not in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th>" in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" not in tables_html
-    assert (
-        "<th align='left'>Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th>"
-        "<th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th>"
-        "<th align='left'>Average Order Value</th><th align='left'>Last Order Date</th>"
-        "<th align='left'>Last Order No</th><th align='left'>Last Payment Date</th>"
-        "<th align='left'>Last Services</th><th align='left'>Created Date/Time</th>"
-    ) in tables_html
+    assert "<th align='left'>Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th>" not in tables_html
 
     new_lead_payload = "A817, Pending 1, 9000000000, None, Retail, None"
     cancelled_lead_payload = "A817, Raj, 9111111111, No inventory, 2026-04-22 09:00"
@@ -1704,7 +1698,7 @@ def test_td_leads_tables_html_escapes_untrusted_payload_values_without_copy_cont
     assert "href='javascript:void(0)'" not in tables_html
 
 
-def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_datetime_desc() -> None:
+def test_td_leads_tables_html_sorts_cancelled_rows_by_created_datetime_desc() -> None:
     summary = LeadsRunSummary(
         run_id="run-html-sort",
         run_env="local",
@@ -1784,15 +1778,17 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert tables_html.index("Most Recent") < tables_html.index("Recent")
-    assert tables_html.index("Recent") < tables_html.index("Legacy One")
-    assert tables_html.index("Legacy One") < tables_html.index("Legacy Two")
+    assert "Pending Leads" not in tables_html
+    assert "Most Recent" not in tables_html
+    assert "Recent" not in tables_html
+    assert "Legacy One" not in tables_html
+    assert "Legacy Two" not in tables_html
     assert tables_html.index("Cancelled Latest") < tables_html.index("Cancelled Earlier")
 
 
 
 
-def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_back_to_effective_created() -> None:
+def test_td_leads_tables_html_omits_pending_section_created_date_display() -> None:
     summary = LeadsRunSummary(
         run_id="run-pending-display",
         run_env="local",
@@ -1841,12 +1837,14 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert tables_html.count("21 Apr 2026 03:03:39 PM IST") == 4
+    assert "Pending Leads" not in tables_html
+    assert "Text First" in tables_html
+    assert "Datetime Fallback" in tables_html
+    assert "Pickup Date Fallback" in tables_html
     assert "UTC" not in tables_html
-    assert "22 Apr 2026" in tables_html
 
 
-def test_td_leads_tables_html_pending_renders_enriched_fields_and_customer_metrics_behavior() -> None:
+def test_td_leads_tables_html_omits_pending_section_enriched_fields() -> None:
     summary = LeadsRunSummary(
         run_id="run-pending-enriched-fields",
         run_env="local",
@@ -1896,12 +1894,14 @@ def test_td_leads_tables_html_pending_renders_enriched_fields_and_customer_metri
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
+    assert "Pending Leads" not in tables_html
     assert "Last Order Date" in tables_html
     assert "Last Order No" in tables_html
     assert "Last Payment Date" in tables_html
     assert "Last Services" in tables_html
-    assert "A817</td><td>A817-EXISTING</td><td>Existing Customer</td><td>9000000002</td><td>Existing | Orders: 3 | Avg. Value: ₹1,234.50 | Last Order Date: 2026-04-20 10:30:00+00:00 | Last Order No: TD-LAST-1 | Last Payment Date: 2026-04-20 11:30:00+00:00 | Last Services: Dry Clean, Steam Iron</td><td>3</td><td>₹1,234.50</td><td>2026-04-20 10:30:00+00:00</td><td>TD-LAST-1</td><td>2026-04-20 11:30:00+00:00</td><td>Dry Clean, Steam Iron</td><td>21 Apr 2026 03:03:39 PM IST" in tables_html
-    assert "A817</td><td>A817-NEW</td><td>New Customer</td><td>9000000001</td><td>New</td><td></td><td></td><td></td><td></td><td></td><td></td><td>21 Apr 2026 3:03:39 PM" in tables_html
+    assert "<th align='left'>Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th>" not in tables_html
+    assert "A817</td><td>A817-EXISTING</td><td>Existing Customer" not in tables_html
+    assert "A817</td><td>A817-NEW</td><td>New Customer" not in tables_html
 
 
 def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
