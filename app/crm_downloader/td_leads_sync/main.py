@@ -322,7 +322,7 @@ TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT = 1
 TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT = 1
 TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER = "existing_customer_zero_order_history"
 
-ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
+PENDING_LEADS_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
     "customer_name",
@@ -362,17 +362,11 @@ ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
 
 def _validate_td_reporting_payload_schema(payload: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
-    required_sections: dict[str, tuple[str, ...]] = {
-        "open_leads": OPEN_LEADS_OUTPUT_COLUMNS,
-        "cancelled_leads_today": BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS,
-        "completed_leads_today": COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS,
-    }
 
-    for section_name, required_columns in required_sections.items():
-        section = payload.get(section_name)
+    def _validate_rows(*, section_name: str, section: Any, required_columns: tuple[str, ...]) -> None:
         if not isinstance(section, list):
             errors.append(f"missing_or_invalid_section:{section_name}")
-            continue
+            return
         for idx, row in enumerate(section):
             if not isinstance(row, Mapping):
                 errors.append(f"invalid_row_type:{section_name}[{idx}]")
@@ -380,26 +374,32 @@ def _validate_td_reporting_payload_schema(payload: Mapping[str, Any]) -> list[st
             missing = [column for column in required_columns if column not in row]
             if missing:
                 errors.append(f"missing_columns:{section_name}[{idx}]:{','.join(missing)}")
+                continue
+            if "lead_age_days" in required_columns:
+                lead_age_days = row.get("lead_age_days")
+                if not isinstance(lead_age_days, int) or isinstance(lead_age_days, bool):
+                    errors.append(f"invalid_lead_age_days:{section_name}[{idx}]")
+                elif lead_age_days < 0:
+                    errors.append(f"invalid_lead_age_days:{section_name}[{idx}]")
+
+    required_sections: dict[str, tuple[str, ...]] = {
+        "open_leads": OPEN_LEADS_OUTPUT_COLUMNS,
+        "cancelled_leads_today": BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS,
+        "completed_leads_today": COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS,
+    }
+
+    for section_name, required_columns in required_sections.items():
+        _validate_rows(section_name=section_name, section=payload.get(section_name), required_columns=required_columns)
 
     action_required = payload.get("action_required")
     if not isinstance(action_required, Mapping):
         errors.append("missing_or_invalid_section:action_required")
     else:
         for key, columns in (
-            ("pending_leads", ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS),
+            ("pending_leads", PENDING_LEADS_OUTPUT_COLUMNS),
             ("completed_without_order_match", ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS),
         ):
-            section = action_required.get(key)
-            if not isinstance(section, list):
-                errors.append(f"missing_or_invalid_section:action_required.{key}")
-                continue
-            for idx, row in enumerate(section):
-                if not isinstance(row, Mapping):
-                    errors.append(f"invalid_row_type:action_required.{key}[{idx}]")
-                    continue
-                missing = [column for column in columns if column not in row]
-                if missing:
-                    errors.append(f"missing_columns:action_required.{key}[{idx}]:{','.join(missing)}")
+            _validate_rows(section_name=f"action_required.{key}", section=action_required.get(key), required_columns=columns)
     return errors
 
 

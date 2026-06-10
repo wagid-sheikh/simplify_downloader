@@ -3966,7 +3966,9 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
     }
     assert [row["pickup_no"] for row in daily_reporting["pending_leads"]] == ["A817-OPEN-1", "A817-OPEN-2"]
     assert daily_reporting["pending_leads"][0]["lead_age_days"] == 2
+    assert isinstance(daily_reporting["pending_leads"][0]["lead_age_days"], int)
     assert daily_reporting["pending_leads"][1]["lead_age_days"] == 0
+    assert isinstance(daily_reporting["pending_leads"][1]["lead_age_days"], int)
 
     assert len(daily_reporting["completed_leads_without_order_match"]) == 1
     assert daily_reporting["completed_leads_without_order_match"][0]["pickup_no"] == "A817-COMP-2"
@@ -4182,7 +4184,9 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
 
     assert [row["pickup_no"] for row in payload["open_leads"]] == ["A100-O1", "A100-O2"]
     assert payload["open_leads"][0]["lead_age_days"] == 3
+    assert isinstance(payload["open_leads"][0]["lead_age_days"], int)
     assert payload["open_leads"][1]["lead_age_days"] == 0
+    assert isinstance(payload["open_leads"][1]["lead_age_days"], int)
 
     assert [row["pickup_no"] for row in payload["cancelled_leads_today"]] == ["A100-C1"]
     cancelled_row = payload["cancelled_leads_today"][0]
@@ -4233,11 +4237,59 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert action_required["open_leads_high_age_threshold_days"] == 3
     assert [row["pickup_no"] for row in action_required["pending_leads"]] == ["A100-O1", "A100-O2"]
     assert [row["lead_age_days"] for row in action_required["pending_leads"]] == [3, 0]
+    assert all(isinstance(row["lead_age_days"], int) for row in action_required["pending_leads"])
     assert [row["pickup_no"] for row in action_required["completed_without_order_match"]] == ["A100-D2", "A100-X1"]
     assert action_required["completed_without_order_match"][0]["source"] == "Walk-in"
     assert action_required["completed_without_order_match"][0]["customer_type"] == "New"
     assert action_required["completed_without_order_match"][0]["last_seen_status"] == "completed"
     assert td_leads_main._validate_td_reporting_payload_schema(payload) == []
+
+
+def test_validate_td_reporting_payload_schema_enforces_pending_leads_age_contract() -> None:
+    valid_pending_row = {
+        "store_code": "A100",
+        "pickup_no": "A100-O1",
+        "customer_name": "Open Lead",
+        "mobile": "9000000001",
+        "lead_created_at": "2026-05-01 10:00:00+00:00",
+        "lead_age_days": 0,
+        "source": "Meta",
+        "customer_type": "New",
+        "last_seen_status": "pending",
+    }
+    payload = {
+        "open_leads": [valid_pending_row],
+        "cancelled_leads_today": [],
+        "completed_leads_today": [],
+        "action_required": {
+            "pending_leads": [valid_pending_row],
+            "completed_without_order_match": [],
+        },
+    }
+
+    assert td_leads_main._validate_td_reporting_payload_schema(payload) == []
+
+    missing_age_payload = {
+        **payload,
+        "action_required": {
+            **payload["action_required"],
+            "pending_leads": [{key: value for key, value in valid_pending_row.items() if key != "lead_age_days"}],
+        },
+    }
+    assert td_leads_main._validate_td_reporting_payload_schema(missing_age_payload) == [
+        "missing_columns:action_required.pending_leads[0]:lead_age_days"
+    ]
+
+    invalid_age_payload = {
+        **payload,
+        "action_required": {
+            **payload["action_required"],
+            "pending_leads": [{**valid_pending_row, "lead_age_days": "0"}],
+        },
+    }
+    assert td_leads_main._validate_td_reporting_payload_schema(invalid_age_payload) == [
+        "invalid_lead_age_days:action_required.pending_leads[0]"
+    ]
 
 
 @pytest.mark.asyncio
