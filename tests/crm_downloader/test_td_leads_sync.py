@@ -1099,21 +1099,40 @@ async def _build_enriched_td_lead_summary_html(
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(
+                sa.text("INSERT INTO store_master (store_code, cost_center) VALUES (:store_code, :cost_center)"),
+                [
+                    {"store_code": store_code, "cost_center": store_code}
+                    for store_code in sorted({store_code for store_code, _, _ in orders})
+                ],
+            )
             await connection.execute(
                 sa.text("""
-                    INSERT INTO vw_orders (store_code, mobile_number, order_amount)
-                    VALUES (:store_code, :mobile_number, :order_amount)
+                    INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount)
+                    VALUES (:store_code, :store_code, :mobile_number, :order_number, :order_date, :order_amount)
                 """),
                 [
-                    {"store_code": store_code, "mobile_number": mobile_number, "order_amount": order_amount}
-                    for store_code, mobile_number, order_amount in orders
+                    {
+                        "store_code": store_code,
+                        "mobile_number": mobile_number,
+                        "order_number": f"SO-{idx}",
+                        "order_date": f"2026-05-{idx:02d} 10:00:00+00:00",
+                        "order_amount": order_amount,
+                    }
+                    for idx, (store_code, mobile_number, order_amount) in enumerate(orders, start=1)
                 ],
             )
 
@@ -1172,16 +1191,23 @@ async def test_normal_run_summary_html_has_order_history_metrics_before_render(t
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'A200')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount)
-                VALUES ('A200', '9000000003', 1234.5)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount)
+                VALUES ('A200', 'A200', '9000000003', 'SO-1', '2026-05-01 10:00:00+00:00', 1234.5)
             """))
 
         store_result = StoreLeadResult(
@@ -1239,16 +1265,23 @@ async def test_run_store_enriches_rows_with_order_history_before_returning(monke
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'A200')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount)
-                VALUES ('A200', '9000000003', 1234.5)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount)
+                VALUES ('A200', 'A200', '9000000003', 'SO-1', '2026-05-01 10:00:00+00:00', 1234.5)
             """))
 
         class _FakeContext:
@@ -4329,19 +4362,26 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'CC200'), ('A999', 'CC999')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
-                ('A200', '+91 98765 43210', 1000.00),
-                ('A200', '9876543210', 1500.00),
-                ('A200', '9000000009', 999.00),
-                ('A999', '9876543210', 99999.00)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('CC200', 'A200', '+91 98765 43210', 'SO-1', '2026-05-01 10:00:00+00:00', 1000.00),
+                ('CC200', 'A200', '9876543210', 'SO-2', '2026-05-02 10:00:00+00:00', 1500.00),
+                ('CC200', 'A200', '9000000009', 'SO-3', '2026-05-03 10:00:00+00:00', 999.00),
+                ('CC999', 'A999', '9876543210', 'SO-4', '2026-05-04 10:00:00+00:00', 99999.00)
             """))
 
         rows = [
@@ -4371,6 +4411,11 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
     assert matched_row["order_history_lookup_normalized_mobile_last4"] == "3210"
     assert matched_row["order_history_candidate_rows_for_store"] == 3
     assert matched_row["order_history_matched_rows_for_mobile"] == 2
+    assert matched_row["cost_center"] == "CC200"
+    assert matched_row["last_order_date"] == "2026-05-02 10:00:00+00:00"
+    assert matched_row["last_order_number"] == "SO-2"
+    assert matched_row["last_payment_date"] is None
+    assert matched_row["last_service_names"] == ""
 
     assert zero_row["customer_type"] == "Existing"
     assert zero_row["previous_number_of_orders"] == 0
@@ -4379,6 +4424,10 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
     assert "Orders: 0" not in _build_td_new_lead_payload(store_code="A200", row=zero_row)
     assert zero_row["order_history_candidate_rows_for_store"] == 3
     assert zero_row["order_history_matched_rows_for_mobile"] == 0
+    assert zero_row["last_order_date"] is None
+    assert zero_row["last_order_number"] is None
+    assert zero_row["last_payment_date"] is None
+    assert zero_row["last_service_names"] == ""
 
     diagnostic_fields = [
         "order_history_lookup_store_code",
@@ -4425,16 +4474,23 @@ async def test_td_leads_order_history_enrichment_keeps_null_customer_zero_matche
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'CC200')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
-                ('A200', '9000000009', 999.00)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('CC200', 'A200', '9000000009', 'SO-1', '2026-05-01 10:00:00+00:00', 999.00)
             """))
 
         rows = [
@@ -4464,16 +4520,23 @@ async def test_td_leads_order_history_enrichment_counts_zero_value_match_without
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'CC200')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
-                ('A200', '+91 98765 43210', 0.00)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('CC200', 'A200', '+91 98765 43210', 'SO-1', '2026-05-01 10:00:00+00:00', 0.00)
             """))
 
         rows = [
@@ -4500,6 +4563,14 @@ async def test_td_leads_order_history_enrichment_counts_zero_value_match_without
 @pytest.mark.asyncio
 async def test_td_leads_order_history_enrichment_raises_when_vw_orders_missing(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_missing_vw_orders.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'CC200')"))
+    finally:
+        await engine.dispose()
+
     row = {
         "store_code": "A200",
         "pickup_no": "A200-MISSING-VW",
@@ -4521,17 +4592,20 @@ async def test_td_leads_order_history_enrichment_raises_when_order_amount_missin
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
                     order_number TEXT,
                     order_date TEXT
                 )
             """))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A200', 'CC200')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date) VALUES
-                ('A200', '9000000001', 'SO-1', '2026-05-01 10:30:00+00:00')
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date) VALUES
+                ('CC200', 'A200', '9000000001', 'SO-1', '2026-05-01 10:30:00+00:00')
             """))
 
         row = {
@@ -4771,22 +4845,30 @@ async def test_fetch_existing_customer_cancelled_current_state_td_leads_filters_
                     status_bucket TEXT
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE store_master (store_code TEXT, cost_center TEXT)"))
             await connection.execute(sa.text("""
                 CREATE TABLE vw_orders (
+                    cost_center TEXT,
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
+            await connection.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TEXT)"))
+            await connection.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT)"))
             await connection.execute(sa.text("""
                 INSERT INTO crm_leads_current (store_code,pickup_no,customer_name,mobile,pickup_created_at,reason,cancelled_flag,customer_type,status_bucket) VALUES
                 ('A001','A001-X1','Existing Cancelled','9000000001','2020-01-01 00:00:00+00:00','Customer dropped',NULL,'Existing','cancelled'),
                 ('A001','A001-X2','New Cancelled','9000000002','2026-05-01 00:00:00+00:00','x',NULL,'New','cancelled'),
                 ('A001','A001-X3','Existing Open','9000000003','2026-05-01 00:00:00+00:00','x',NULL,'Existing','pending')
             """))
+            await connection.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('A001', 'A001')"))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code,mobile_number,order_amount) VALUES
-                ('A001','9000000001',100),('A001','9000000001',200)
+                INSERT INTO vw_orders (cost_center, store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('A001','A001','9000000001','SO-1','2026-05-01 10:00:00+00:00',100),
+                ('A001','A001','9000000001','SO-2','2026-05-02 10:00:00+00:00',200)
             """))
 
         rows = await td_leads_main.fetch_existing_customer_cancelled_current_state_td_leads(database_url=database_url)

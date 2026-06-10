@@ -341,6 +341,12 @@ TD_ORDER_HISTORY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
     "order_history_matched_rows_for_mobile",
     "order_history_warning_marker",
 )
+TD_LAST_ORDER_FIELDS: tuple[str, ...] = (
+    "last_order_date",
+    "last_order_number",
+    "last_payment_date",
+    "last_service_names",
+)
 
 ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
@@ -634,6 +640,8 @@ def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
     if "previous_number_of_orders" not in row or "average_order_amount" not in row:
         return ""
     previous_number_of_orders = int(row.get("previous_number_of_orders") or 0)
+    if previous_number_of_orders == 0:
+        return ""
     average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
     return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
 
@@ -789,37 +797,87 @@ async def _fetch_td_customer_last_order_facts(
     return facts
 
 
+async def _resolve_td_lead_cost_centers(
+    *,
+    session: Any,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], bool]:
+    store_codes = {str(row.get("store_code") or "").strip().upper() for row in rows if row.get("store_code")}
+    if not store_codes:
+        return {}, False
+
+    store_master = sa.table(
+        "store_master",
+        sa.column("store_code"),
+        sa.column("cost_center"),
+    )
+    try:
+        result = await session.execute(
+            sa.select(store_master.c.store_code, store_master.c.cost_center).where(
+                sa.func.upper(sa.func.trim(store_master.c.store_code)).in_(store_codes)
+            )
+        )
+    except sa.exc.SQLAlchemyError:
+        return {store_code: store_code for store_code in store_codes}, True
+    mapping: dict[str, str] = {}
+    for row in result.mappings():
+        store_code = str(row.get("store_code") or "").strip().upper()
+        cost_center = str(row.get("cost_center") or "").strip()
+        if store_code and cost_center:
+            mapping[store_code] = cost_center
+    return mapping, False
+
+
+def _td_empty_last_order_facts() -> dict[str, Any]:
+    return {
+        "last_order_date": None,
+        "last_order_number": None,
+        "last_payment_date": None,
+        "last_service_names": "",
+    }
+
+
 async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not database_url or not rows:
         return rows
 
-    mobiles_by_store: dict[str, set[str]] = defaultdict(set)
-    for row in rows:
-        store_code = str(row.get("store_code") or "").strip()
-        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
-        if store_code and normalized_mobile:
-            mobiles_by_store[store_code].add(normalized_mobile)
+    metrics_by_cost_center_mobile: dict[tuple[str, str], dict[str, Any]] = {}
+    candidate_rows_by_cost_center: dict[str, int] = defaultdict(int)
+    matched_rows_by_cost_center_mobile: dict[tuple[str, str], int] = defaultdict(int)
+    cost_center_by_row_id: dict[int, str] = {}
+    last_order_facts_by_cost_center_mobile: dict[tuple[str, str], dict[str, Any]] = {}
 
-    metrics_by_store_mobile: dict[tuple[str, str], dict[str, Any]] = {}
-    candidate_rows_by_store: dict[str, int] = defaultdict(int)
-    matched_rows_by_store_mobile: dict[tuple[str, str], int] = defaultdict(int)
-    if mobiles_by_store:
-        vw_orders = sa.table(
-            "vw_orders",
-            sa.column("store_code"),
-            sa.column("mobile_number"),
-            sa.column("order_amount"),
-        )
-        async with session_scope(database_url) as session:
-            for store_code, normalized_mobiles in mobiles_by_store.items():
+    async with session_scope(database_url) as session:
+        cost_center_by_store_code, use_store_code_lookup = await _resolve_td_lead_cost_centers(session=session, rows=rows)
+        mobiles_by_cost_center: dict[str, set[str]] = defaultdict(set)
+        for row in rows:
+            store_code = str(row.get("store_code") or "").strip().upper()
+            cost_center = str(row.get("cost_center") or "").strip() or cost_center_by_store_code.get(store_code, "")
+            if cost_center:
+                row["cost_center"] = cost_center
+                cost_center_by_row_id[id(row)] = cost_center
+            normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+            if cost_center and normalized_mobile:
+                mobiles_by_cost_center[cost_center].add(normalized_mobile)
+
+        if mobiles_by_cost_center:
+            vw_orders = sa.table(
+                "vw_orders",
+                sa.column("cost_center"),
+                sa.column("store_code"),
+                sa.column("mobile_number"),
+                sa.column("order_amount"),
+            )
+            lookup_column = vw_orders.c.store_code if use_store_code_lookup else vw_orders.c.cost_center
+            for cost_center, normalized_mobiles in mobiles_by_cost_center.items():
                 order_rows = (
                     await session.execute(
                         sa.select(vw_orders.c.mobile_number, vw_orders.c.order_amount).where(
-                            vw_orders.c.store_code == store_code
+                            lookup_column == cost_center
                         )
                     )
                 ).mappings().all()
-                candidate_rows_by_store[store_code] = len(order_rows)
+                candidate_rows_by_cost_center[cost_center] = len(order_rows)
                 amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
                 counts_by_mobile: dict[str, int] = defaultdict(int)
                 for order_row in order_rows:
@@ -834,35 +892,51 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
                 for normalized_mobile in normalized_mobiles:
                     order_count = counts_by_mobile.get(normalized_mobile, 0)
                     amounts = amounts_by_mobile.get(normalized_mobile, [])
-                    matched_rows_by_store_mobile[(store_code, normalized_mobile)] = order_count
-                    metrics_by_store_mobile[(store_code, normalized_mobile)] = {
+                    lookup_key = (cost_center, normalized_mobile)
+                    matched_rows_by_cost_center_mobile[lookup_key] = order_count
+                    metrics_by_cost_center_mobile[lookup_key] = {
                         "previous_number_of_orders": order_count,
                         "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
                     }
 
-    for row in rows:
-        store_code = str(row.get("store_code") or "").strip()
-        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
-        metrics = metrics_by_store_mobile.get((store_code, normalized_mobile or ""), {})
-        previous_number_of_orders = int(metrics.get("previous_number_of_orders") or 0)
-        row["previous_number_of_orders"] = previous_number_of_orders
-        row["average_order_amount"] = metrics.get("average_order_amount")
-        row["customer_type"] = _resolve_td_customer_type_display(
-            source_customer_type=row.get("customer_type"),
-            previous_number_of_orders=previous_number_of_orders,
-        )
-        _set_td_order_history_diagnostics(
-            row=row,
-            lookup_store_code=store_code,
-            lookup_mobile=row.get("mobile"),
-            normalized_mobile=normalized_mobile,
-            candidate_rows_for_store=candidate_rows_by_store.get(store_code, 0),
-            matched_rows_for_mobile=matched_rows_by_store_mobile.get((store_code, normalized_mobile or ""), 0),
-        )
-        if str(row.get("customer_type") or "").strip().lower() == "existing" and previous_number_of_orders == 0:
-            row["order_history_warning_marker"] = TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
-        else:
-            row.pop("order_history_warning_marker", None)
+        for row in rows:
+            store_code = str(row.get("store_code") or "").strip()
+            cost_center = cost_center_by_row_id.get(id(row), "")
+            normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+            lookup_key = (cost_center, normalized_mobile or "")
+            metrics = metrics_by_cost_center_mobile.get(lookup_key, {})
+            previous_number_of_orders = int(metrics.get("previous_number_of_orders") or 0)
+            row["previous_number_of_orders"] = previous_number_of_orders
+            row["average_order_amount"] = metrics.get("average_order_amount")
+            row["customer_type"] = _resolve_td_customer_type_display(
+                source_customer_type=row.get("customer_type"),
+                previous_number_of_orders=previous_number_of_orders,
+            )
+            is_existing_customer = str(row.get("customer_type") or "").strip().lower() == "existing"
+            if is_existing_customer and cost_center and normalized_mobile and not use_store_code_lookup:
+                facts_key = (cost_center, normalized_mobile)
+                if facts_key not in last_order_facts_by_cost_center_mobile:
+                    last_order_facts_by_cost_center_mobile[facts_key] = await _fetch_td_customer_last_order_facts(
+                        session=session,
+                        cost_center=cost_center,
+                        mobile_number=normalized_mobile,
+                    )
+                row.update(last_order_facts_by_cost_center_mobile[facts_key])
+            else:
+                for fact_key, fact_value in _td_empty_last_order_facts().items():
+                    row.setdefault(fact_key, fact_value)
+            _set_td_order_history_diagnostics(
+                row=row,
+                lookup_store_code=store_code,
+                lookup_mobile=row.get("mobile"),
+                normalized_mobile=normalized_mobile,
+                candidate_rows_for_store=candidate_rows_by_cost_center.get(cost_center, 0),
+                matched_rows_for_mobile=matched_rows_by_cost_center_mobile.get(lookup_key, 0),
+            )
+            if is_existing_customer and previous_number_of_orders == 0:
+                row["order_history_warning_marker"] = TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
+            else:
+                row.pop("order_history_warning_marker", None)
     return rows
 
 
@@ -1547,10 +1621,12 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 )
                 payload_row = dict(matching_row if matching_row_found else created_row)
                 if matching_row_found:
-                    previous_number_of_orders = _present_mapping_value(matching_row, "previous_number_of_orders")
-                    average_order_amount = _present_mapping_value(matching_row, "average_order_amount")
-                    payload_row["previous_number_of_orders"] = previous_number_of_orders
-                    payload_row["average_order_amount"] = average_order_amount
+                    for order_history_key in (
+                        "previous_number_of_orders",
+                        "average_order_amount",
+                        *TD_LAST_ORDER_FIELDS,
+                    ):
+                        payload_row[order_history_key] = _present_mapping_value(matching_row, order_history_key)
                 resolved_customer_type = str(payload_row.get("customer_type") or "").strip().lower()
                 if resolved_customer_type == "existing" and (
                     not matching_row_found
@@ -1744,6 +1820,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                     for order_history_key in (
                         "previous_number_of_orders",
                         "average_order_amount",
+                        *TD_LAST_ORDER_FIELDS,
                         "order_history_warning_marker",
                     ):
                         if order_history_key in row:
@@ -1764,6 +1841,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                     for order_history_key in (
                         "previous_number_of_orders",
                         "average_order_amount",
+                        *TD_LAST_ORDER_FIELDS,
                         "order_history_warning_marker",
                     ):
                         if order_history_key in row:
@@ -3042,6 +3120,10 @@ async def _run_store(
         for status_bucket, status_value, grid_selector in STATUS_CONFIG:
             try:
                 status_rows, status_warnings = await _run_bounded_phase(_collect_status_rows(page, store_code=store.store_code, status_bucket=status_bucket, status_value=status_value, grid_selector=grid_selector, logger=logger), logger=logger, run_id=run_id, store_code=store.store_code, phase_name=f"scrape_status_{status_bucket}", timeout_seconds=operation_timeout)
+                store_cost_center = str(getattr(store, "cost_center", None) or "").strip()
+                if store_cost_center:
+                    for status_row in status_rows:
+                        status_row["cost_center"] = store_cost_center
                 all_rows.extend(status_rows)
                 warnings.extend(status_warnings)
                 status_counts[status_bucket] += len(status_rows)
