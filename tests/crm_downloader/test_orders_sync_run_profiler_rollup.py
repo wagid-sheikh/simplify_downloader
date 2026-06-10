@@ -1656,3 +1656,115 @@ def test_extract_uc_warning_details_from_summary_categorizes_warning_rows() -> N
         "amount_mismatch": 1,
     }
     assert details["warning_rows"][0]["store_code"] == "UC01"
+
+
+def test_summary_status_promotes_warning_windows_before_success() -> None:
+    status_counts = _init_status_counts()
+    status_counts["success"] = 3
+    status_counts["success_with_warnings"] = 1
+
+    assert _select_summary_overall_status(status_counts, uc_warning_count=0) == "success_with_warnings"
+
+
+def test_summary_status_promotes_uc_row_warnings_when_windows_succeed() -> None:
+    status_counts = _init_status_counts()
+    status_counts["success"] = 2
+
+    assert _select_summary_overall_status(status_counts, uc_warning_count=4) == "success_with_warnings"
+
+
+def test_summary_status_uc_row_warnings_do_not_override_failures_or_partials() -> None:
+    failed_counts = _init_status_counts()
+    failed_counts["success"] = 1
+    failed_counts["failed"] = 1
+    partial_counts = _init_status_counts()
+    partial_counts["success"] = 1
+    partial_counts["partial"] = 1
+
+    assert _select_summary_overall_status(failed_counts, uc_warning_count=4) == "failed"
+    assert _select_summary_overall_status(partial_counts, uc_warning_count=4) == "partial"
+
+
+@pytest.mark.asyncio
+async def test_profiler_uc_row_warnings_promote_top_level_status_after_aggregation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted_summaries: list[dict] = []
+
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+    monkeypatch.setattr(
+        profiler,
+        "get_logger",
+        lambda **kwargs: profiler.JsonLogger(run_id=kwargs.get("run_id"), log_file_path=None),
+    )
+
+    async def fake_fetch_pipeline_id(**_kwargs: object) -> int:
+        return 202
+
+    async def fake_load_store_profiles(**_kwargs: object) -> list[StoreProfile]:
+        return [
+            StoreProfile(
+                store_code="UC01",
+                store_name="UC 01",
+                cost_center="CC-UC01",
+                sync_config={},
+                start_date=None,
+            )
+        ]
+
+    async def fake_process_store(**_kwargs: object) -> StoreRunResult:
+        status_counts = profiler._init_status_counts()
+        status_counts["success"] = 1
+        return StoreRunResult(
+            store_code="UC01",
+            pipeline_group="UC",
+            pipeline_name="uc_orders_sync",
+            cost_center="CC-UC01",
+            overall_status="success",
+            window_count=1,
+            windows=[(date(2024, 2, 1), date(2024, 2, 2))],
+            status_counts=status_counts,
+            window_audit=[
+                {
+                    "store_code": "UC01",
+                    "from_date": "2024-02-01",
+                    "to_date": "2024-02-02",
+                    "status": "success",
+                    "warning_count": 2,
+                    "warning_categories": {"Customer GSTIN missing": 2},
+                }
+            ],
+            ingestion_totals=profiler._init_ingestion_totals(),
+            row_facts=_init_row_facts(),
+        )
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        persisted_summaries.append(summary_record)
+
+    async def fake_persist_missing_windows_log_rows(**_kwargs: object) -> None:
+        return None
+
+    async def fake_send_notifications_for_run(_pipeline_name: str, _run_id: str) -> dict:
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    monkeypatch.setattr(profiler, "_fetch_pipeline_id", fake_fetch_pipeline_id)
+    monkeypatch.setattr(profiler, "_load_store_profiles", fake_load_store_profiles)
+    monkeypatch.setattr(profiler, "_process_store", fake_process_store)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(profiler, "_persist_missing_windows_log_rows", fake_persist_missing_windows_log_rows)
+    monkeypatch.setattr(profiler, "send_notifications_for_run", fake_send_notifications_for_run)
+
+    await profiler.main(sync_group="UC", max_workers=1, run_env="test", run_id="profiler-uc-warning-run")
+
+    summary = persisted_summaries[0]
+    assert summary["overall_status"] == "success_with_warnings"
+    assert summary["metrics_json"]["uc_warning_count"] == 2
+    assert any(
+        warning.startswith("UC_STORE_WARNINGS: 2 row-level warning(s)")
+        for warning in summary["metrics_json"]["notification_payload"]["warnings"]
+    )
+    assert "Policy: warning windows and UC row-level warnings are non-fatal" in summary["summary_text"]

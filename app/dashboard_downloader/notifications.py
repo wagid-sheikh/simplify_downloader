@@ -216,6 +216,7 @@ PROFILER_HTML_TEMPLATE = """
                   <tr>
                     <td style="padding:10px 12px; border:1px solid #f2c2c2; background-color:#fff2f2; color:#8a1f1f; font-size:13px;">
                       <div style="font-weight:bold; margin-bottom:6px;">Warnings</div>
+                      {% if warning_policy %}<div style="margin-bottom:6px;">Policy: {{ warning_policy }}</div>{% endif %}
                       <ul style="margin:0; padding-left:18px;">
                         {% for warning in warnings %}
                         <li style="margin:0 0 4px 0;">{{ warning }}</li>
@@ -1270,7 +1271,8 @@ def _append_uc_suppressed_warning_explanation(
     )
     replacement = (
         f"UC_STORE_WARNINGS: {total} row-level warning(s); "
-        f"{displayed_warning_rows} displayed in row table"
+        f"{displayed_warning_rows} displayed in row table; "
+        "policy=non-fatal but promotes overall_status to success_with_warnings when no failures/partials exist"
     )
     if category_text:
         replacement = f"{replacement}; {category_text}"
@@ -1288,8 +1290,10 @@ def _append_uc_suppressed_warning_explanation(
     return updated
 
 
-def _replace_profiler_warnings_section(summary_text: str, warnings: Sequence[str]) -> str:
-    if not summary_text or not warnings:
+def _replace_profiler_warnings_section(
+    summary_text: str, warnings: Sequence[str], *, warning_policy: str | None = None
+) -> str:
+    if not summary_text or (not warnings and not warning_policy):
         return summary_text
     lines = summary_text.splitlines()
     try:
@@ -1297,6 +1301,8 @@ def _replace_profiler_warnings_section(summary_text: str, warnings: Sequence[str
     except ValueError:
         return summary_text
     updated = lines[: warnings_index + 1]
+    if warning_policy:
+        updated.append(f"Policy: {warning_policy}")
     updated.extend(f"- {warning}" for warning in warnings)
     return "\n".join(updated)
 
@@ -2931,8 +2937,14 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         edited_rows=edited_fact_rows,
         error_rows=error_fact_rows,
     )
+    warning_policy = payload.get("warning_policy") or (
+        "Warning windows and UC row-level warnings are non-fatal, but they promote "
+        "an otherwise successful profiler run to success_with_warnings; failures and partial windows still take precedence."
+    )
     summary_text = run_data.get("summary_text") or ""
-    summary_text = _replace_profiler_warnings_section(summary_text, warnings)
+    summary_text = _replace_profiler_warnings_section(
+        summary_text, warnings, warning_policy=warning_policy
+    )
     summary_text = _append_fact_sections(summary_text, fact_sections_text)
     _log_profiler_fact_sections(fact_sections)
     overall_status = payload.get("overall_status") or run_data.get("overall_status")
@@ -2958,6 +2970,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
         "warnings": warnings,
         "warnings_text": "\n".join(str(entry) for entry in warnings) if warnings else "",
+        "warning_policy": warning_policy,
         "td_garment_warning_count": len(td_garment_warning_details),
         "td_garment_warning_details": td_garment_warning_details,
         "warnings_count": len(warnings),

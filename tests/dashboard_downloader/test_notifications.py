@@ -1599,6 +1599,8 @@ def test_profiler_context_explains_uc_warnings_when_gstin_rows_are_suppressed() 
     assert context["warning_fact_rows"] == []
     assert context["warnings"] == [
         "UC_STORE_WARNINGS: 2 row-level warning(s); 0 displayed in row table; "
+        "policy=non-fatal but promotes overall_status to success_with_warnings when no failures/partials exist; "
         "2 Customer GSTIN missing suppressed from row table"
     ]
+    assert "Policy: Warning windows and UC row-level warnings are non-fatal" in context["summary_text"]
     assert "2 Customer GSTIN missing suppressed from row table" in context["summary_text"]

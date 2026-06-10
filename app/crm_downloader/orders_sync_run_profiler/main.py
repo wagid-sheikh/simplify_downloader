@@ -1763,14 +1763,22 @@ def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
     return "success"
 
 
-def _select_summary_overall_status(status_counts: Mapping[str, int]) -> str:
+def _select_summary_overall_status(
+    status_counts: Mapping[str, int], *, uc_warning_count: int = 0
+) -> str:
     """Return the top-level run status used in profiler summary + alerting.
 
     Policy: promote the summary status to ``success_with_warnings`` when any
-    window lands in warning-class outcomes but no partial/failed window exists.
+    window lands in warning-class outcomes or UC reports row-level warnings,
+    unless a partial/failed window already takes precedence. UC row warnings are
+    non-fatal because clean rows are still ingested, but they still indicate
+    suppressed/degraded row data operators must review.
     """
 
-    return _rollup_overall_status(status_counts)
+    overall_status = _rollup_overall_status(status_counts)
+    if overall_status == "success" and uc_warning_count > 0:
+        return "success_with_warnings"
+    return overall_status
 
 
 COUNT_METRIC_FIELDS = (
@@ -2063,6 +2071,10 @@ def _build_profiler_summary_text(
             )
     lines.append("")
     lines.append("Warnings:")
+    lines.append(
+        "Policy: warning windows and UC row-level warnings are non-fatal, but they promote "
+        "an otherwise successful profiler run to success_with_warnings; failures and partial windows still take precedence."
+    )
     if warnings:
         lines.extend(f"- {warning}" for warning in warnings)
     else:
@@ -2091,6 +2103,10 @@ def _build_profiler_notification_payload(
         "stores": list(store_entries),
         "window_summary": dict(window_summary),
         "warnings": list(warnings),
+        "warning_policy": (
+            "Warning windows and UC row-level warnings are non-fatal, but they promote "
+            "an otherwise successful profiler run to success_with_warnings; failures and partial windows still take precedence."
+        ),
         "orchestration_failure": dict(orchestration_failure or {}),
         "row_facts": dict(row_facts),
         "started_at": started_at.isoformat(),
@@ -3038,7 +3054,9 @@ async def main(
                 int(window.get("warning_count", 0) or 0)
                 for window in result.window_audit
             )
-    overall_status = _select_summary_overall_status(total_status_counts)
+    overall_status = _select_summary_overall_status(
+        total_status_counts, uc_warning_count=uc_warning_count_total
+    )
     if orchestration_failure:
         overall_status = "failed"
         orchestration_warning = (
@@ -3068,7 +3086,8 @@ async def main(
         entry.startswith("UC_STORE_WARNINGS:") for entry in warning_messages
     ):
         warning_messages.append(
-            f"UC_STORE_WARNINGS: {uc_warning_count_total} row-level warning(s) reported by UC ingest"
+            f"UC_STORE_WARNINGS: {uc_warning_count_total} row-level warning(s) reported by UC ingest; "
+            "policy=non-fatal but promotes overall_status to success_with_warnings when no failures/partials exist"
         )
     if row_facts["warning_rows"] and not any(
         entry.startswith("ROW_WARNINGS:") for entry in warning_messages
