@@ -1909,6 +1909,158 @@ def _profiler_message_has_error_semantics(message: str | None) -> bool:
     return any(token in text for token in error_tokens)
 
 
+TD_BENIGN_API_PRIMARY_MESSAGE_TOKENS = (
+    "sales sourced from api and ingested",
+    "orders sourced from api and ingested",
+    "api primary path executed",
+)
+TD_DATA_RISK_MESSAGE_TOKENS = (
+    "data risk",
+    "incomplete fetch",
+    "partial_unavailable",
+    "partial unavailable",
+    "retry exhausted",
+    "retries exhausted",
+    "fallback",
+    "wall_time_budget_exhausted",
+    "timeout",
+    "timed out",
+    "navigation failed",
+    "failed",
+    "failure",
+    "error",
+)
+
+
+def _td_message_contains_data_risk(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(token in text for token in TD_DATA_RISK_MESSAGE_TOKENS)
+
+
+def _td_benign_api_primary_message(message: str | None) -> str | None:
+    if not message:
+        return None
+    clean_message = _sanitize_profiler_window_text(message, max_length=500)
+    if not clean_message or _td_message_contains_data_risk(clean_message):
+        return None
+    parts = [part.strip().lower() for part in clean_message.replace("\n", ";").split(";") if part.strip()]
+    if not parts:
+        return None
+    saw_api_primary_success = False
+    for part in parts:
+        if part in {"warning_count=0", "warning count=0", "warnings=0"}:
+            continue
+        if any(token in part for token in TD_BENIGN_API_PRIMARY_MESSAGE_TOKENS):
+            saw_api_primary_success = True
+            continue
+        return None
+    return clean_message if saw_api_primary_success else None
+
+
+def _td_summary_has_data_risk_signal(
+    summary: Mapping[str, Any] | None, *, store_code: str, window_context: Mapping[str, Any] | None
+) -> bool:
+    if not summary:
+        return False
+    normalized_code = store_code.upper()
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    stores_to_check: list[Mapping[str, Any]] = []
+    for section_name in ("orders", "sales", "stores_summary"):
+        section = _coerce_dict(metrics.get(section_name))
+        stores = _coerce_dict(section.get("stores"))
+        store_payload = _coerce_dict(stores.get(normalized_code))
+        if store_payload:
+            stores_to_check.append(store_payload)
+    payload = _coerce_dict(metrics.get("notification_payload"))
+    for store_payload in payload.get("stores") or []:
+        if not isinstance(store_payload, Mapping):
+            continue
+        if str(store_payload.get("store_code") or "").upper() == normalized_code:
+            stores_to_check.append(store_payload)
+            stores_to_check.append(_coerce_dict(store_payload.get("orders")))
+            stores_to_check.append(_coerce_dict(store_payload.get("sales")))
+
+    for payload_item in stores_to_check:
+        if not payload_item:
+            continue
+        warning_count = _coerce_int(payload_item.get("warning_count"))
+        if warning_count and warning_count > 0:
+            return True
+        for rows_key in ("warning_rows", "error_rows", "dropped_rows"):
+            rows = payload_item.get(rows_key)
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes, Mapping)) and len(rows) > 0:
+                return True
+        for warnings_key in ("warnings", "observability_warnings"):
+            warnings = payload_item.get(warnings_key)
+            if isinstance(warnings, Sequence) and not isinstance(warnings, (str, bytes, Mapping)):
+                if any(_td_message_contains_data_risk(warning) for warning in warnings):
+                    return True
+        for message_key in ("status_note", "error_message", "warning_reason"):
+            if _td_message_contains_data_risk(payload_item.get(message_key)):
+                return True
+
+    context = _coerce_dict(window_context)
+    for message_key in ("status_note", "error_message", "warning_reason"):
+        if _td_message_contains_data_risk(context.get(message_key)):
+            return True
+    return False
+
+
+def _normalize_benign_td_success_with_warnings(
+    *,
+    pipeline_name: str,
+    raw_status: str | None,
+    summary_overall_status: str | None,
+    status: str,
+    warning_count: int,
+    td_garment_warning: Mapping[str, Any] | None,
+    status_conflict: bool,
+    status_note: str | None,
+    status_message: str | None,
+    warning_reason: str | None,
+    error_message: str | None,
+    summary: Mapping[str, Any] | None,
+    store_code: str,
+    summary_window_context: Mapping[str, Any] | None,
+) -> tuple[str, str | None, str | None, str | None, str | None, dict[str, Any] | None]:
+    if pipeline_name != "td_orders_sync" or _normalize_rollup_status(status) != "success_with_warnings":
+        return status, status_note, status_message, warning_reason, error_message, None
+    if not (
+        _normalize_rollup_status(raw_status) == "success_with_warnings"
+        or _normalize_rollup_status(summary_overall_status) == "success_with_warnings"
+    ):
+        return status, status_note, status_message, warning_reason, error_message, None
+    if warning_count != 0 or status_conflict:
+        return status, status_note, status_message, warning_reason, error_message, None
+    if td_garment_warning and td_garment_warning.get("is_incomplete"):
+        return status, status_note, status_message, warning_reason, error_message, None
+    if warning_reason or _td_message_contains_data_risk(status_note) or _td_message_contains_data_risk(error_message):
+        return status, status_note, status_message, warning_reason, error_message, None
+    if _td_summary_has_data_risk_signal(
+        summary, store_code=store_code, window_context=summary_window_context
+    ):
+        return status, status_note, status_message, warning_reason, error_message, None
+
+    informational_message = _td_benign_api_primary_message(status_message or error_message)
+    if not informational_message:
+        return status, status_note, status_message, warning_reason, error_message, None
+
+    return (
+        "success",
+        None,
+        informational_message,
+        None,
+        None,
+        {
+            "normalized_from_status": status,
+            "message": informational_message,
+            "reason": "benign_td_api_primary_success_with_zero_warnings",
+        },
+    )
+
+
 def _split_profiler_window_message(
     *, status: str | None, message: str | None, status_note: str | None = None
 ) -> dict[str, str | None]:
@@ -2369,6 +2521,7 @@ async def _run_store_windows(
         uc_warning_categories: dict[str, int] = {}
         td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
+        td_benign_warning_info: dict[str, Any] | None = None
         attempts = 0
         attempt_run_id = window_run_id
         attempt_audit: list[dict[str, Any]] = []
@@ -2440,11 +2593,13 @@ async def _run_store_windows(
                 status = fetched_status.lower()
             if status not in {"success", "success_with_warnings", "partial", "failed", "skipped"}:
                 status = "failed"
+            raw_status_for_benign_check = status
             if fetched_status:
                 status, mapped_note = _normalize_window_status(
                     pipeline_name=pipeline_name, status=status, error_message=error_message
                 )
                 status_note += mapped_note
+                raw_status_for_benign_check = status
             summary_overall_status = None
             summary_window_context: dict[str, Any] = {}
             if isinstance(summary, Mapping):
@@ -2560,12 +2715,36 @@ async def _run_store_windows(
             error_message = message_fields["error_message"]
             status_message = message_fields["status_message"]
             warning_reason = message_fields["warning_reason"]
+            td_window_warning_count = 1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0
             if td_garment_warning and td_garment_warning.get("is_incomplete") and not warning_reason:
                 warning_reason = (
                     f"{TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX}: "
                     f"{(td_garment_warning.get('garments_incomplete_reason') or {}).get('message', 'unknown')}"
                 )
-            note_for_attempt = status_note
+            (
+                status,
+                status_note,
+                status_message,
+                warning_reason,
+                error_message,
+                td_benign_warning_info,
+            ) = _normalize_benign_td_success_with_warnings(
+                pipeline_name=pipeline_name,
+                raw_status=raw_status_for_benign_check,
+                summary_overall_status=summary_overall_status,
+                status=status,
+                warning_count=td_window_warning_count,
+                td_garment_warning=td_garment_warning,
+                status_conflict=status_conflict,
+                status_note=status_note or summary_status_note,
+                status_message=status_message,
+                warning_reason=warning_reason,
+                error_message=error_message,
+                summary=summary if isinstance(summary, Mapping) else None,
+                store_code=store.store_code,
+                summary_window_context=summary_window_context,
+            )
+            note_for_attempt = status_note or ""
             if attempt > 0:
                 note_for_attempt += " (after retry)"
             attempt_audit.append(
@@ -2582,7 +2761,8 @@ async def _run_store_windows(
                     "ingestion_counts": ingestion_counts,
                     "orders_sync_log_id": log_row.get("id") if log_row else None,
                     "td_garment_warning": td_garment_warning,
-                    "warning_count": 1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0,
+                    "td_benign_warning_info": td_benign_warning_info,
+                    "warning_count": td_window_warning_count,
                     "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
                 }
             )
@@ -2604,6 +2784,7 @@ async def _run_store_windows(
             if attempt_row_facts:
                 _merge_row_facts(row_facts, attempt_row_facts)
             if attempt > 0:
+                status_note = status_note or ""
                 recovered_navigation_failure = any(
                     _has_timeout_navigation_failure(
                         str(previous_attempt.get("error_message") or ""),
@@ -2661,10 +2842,11 @@ async def _run_store_windows(
                 "orders_sync_log_id": log_row.get("id") if log_row else None,
                 "attempts": attempt_audit,
                 "td_garment_warning": td_garment_warning,
+                "td_benign_warning_info": td_benign_warning_info,
                 "warning_count": (
                     uc_payload["warning_count"]
                     if pipeline_name == "uc_orders_sync" and uc_payload
-                    else (1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0)
+                    else td_window_warning_count
                 ),
                 "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
             }
