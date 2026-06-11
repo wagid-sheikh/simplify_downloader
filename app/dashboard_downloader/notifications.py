@@ -172,7 +172,9 @@ PROFILER_HTML_TEMPLATE = """
                           <li style="margin:0 0 4px 0;">
                             WARNING: {{ window.from_date|e }} to {{ window.to_date|e }}:
                             status={{ window.status|e }}
+                            {% if window.warning_reason %}; warning_reason={{ window.warning_reason|e }}{% endif %}
                             {% if window.status_note %}; status_note={{ window.status_note|e }}{% endif %}
+                            {% if window.status_message %}; status_message={{ window.status_message|e }}{% endif %}
                             {% if window.error_message %}; error_message={{ window.error_message|e }}{% endif %}
                             {% if window.attempt_no is not none %}; attempt_no={{ window.attempt_no|e }}{% endif %}
                             {% if window.warning_count is not none %}; warning_count={{ window.warning_count|e }}{% endif %}
@@ -2729,6 +2731,54 @@ def _sanitize_profiler_window_text(value: Any, *, max_length: int = 240) -> str:
     return text[: max_length - 1].rstrip() + "…"
 
 
+def _profiler_message_is_normal_status(message: str | None) -> bool:
+    if not message:
+        return False
+    text = str(message).lower()
+    normal_tokens = (
+        "sourced from api",
+        "api primary path executed",
+        "ingested",
+        "sync skipped by flag",
+    )
+    return any(token in text for token in normal_tokens)
+
+
+def _profiler_message_has_error_semantics(message: Any) -> bool:
+    if not message:
+        return False
+    text = str(message).lower()
+    error_tokens = (
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "traceback",
+        "timeout",
+        "timed out",
+        "navigation failed",
+        "did not complete",
+        "did not run",
+        "missing orders_sync_log",
+    )
+    return any(token in text for token in error_tokens)
+
+
+def _split_profiler_window_message_for_rendering(
+    *, status: Any, message: Any, status_note: Any = None
+) -> dict[str, str | None]:
+    normalized_status = _normalize_uc_status(status)
+    clean_message = str(message).strip() if message else None
+    if not clean_message:
+        return {"error_message": None, "status_message": None, "warning_reason": None}
+    has_error_semantics = _profiler_message_has_error_semantics(clean_message)
+    if normalized_status in {"failed", "partial"} or has_error_semantics:
+        return {"error_message": clean_message, "status_message": None, "warning_reason": None}
+    if normalized_status == "success_with_warnings" and not _profiler_message_is_normal_status(clean_message):
+        return {"error_message": None, "status_message": None, "warning_reason": clean_message}
+    return {"error_message": None, "status_message": clean_message, "warning_reason": None}
+
+
 def _profiler_failed_windows_from_payload(store: Mapping[str, Any]) -> list[dict[str, str]]:
     existing = store.get("failed_windows")
     candidates = existing if isinstance(existing, list) else store.get("window_audit")
@@ -2747,6 +2797,8 @@ def _profiler_failed_windows_from_payload(store: Mapping[str, Any]) -> list[dict
                 "status": status,
                 "status_note": _sanitize_profiler_window_text(window.get("status_note")),
                 "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+                "status_message": _sanitize_profiler_window_text(window.get("status_message")),
+                "warning_reason": _sanitize_profiler_window_text(window.get("warning_reason")),
             }
         )
     return failed_windows
@@ -2762,6 +2814,11 @@ def _profiler_warning_windows_from_payload(store: Mapping[str, Any]) -> list[dic
         status = _sanitize_profiler_window_text(window.get("status"))
         if status.lower() != "success_with_warnings":
             continue
+        message_fields = _split_profiler_window_message_for_rendering(
+            status=status,
+            message=window.get("error_message"),
+            status_note=window.get("status_note"),
+        )
         warning_windows.append(
             {
                 "store_code": _sanitize_profiler_window_text(window.get("store_code") or store.get("store_code")),
@@ -2769,7 +2826,15 @@ def _profiler_warning_windows_from_payload(store: Mapping[str, Any]) -> list[dic
                 "to_date": _sanitize_profiler_window_text(window.get("to_date")),
                 "status": status,
                 "status_note": _sanitize_profiler_window_text(window.get("status_note")),
-                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+                "status_message": _sanitize_profiler_window_text(
+                    window.get("status_message") or message_fields.get("status_message")
+                ),
+                "warning_reason": _sanitize_profiler_window_text(
+                    window.get("warning_reason") or message_fields.get("warning_reason")
+                ),
+                "error_message": _sanitize_profiler_window_text(
+                    window.get("error_message") if message_fields.get("error_message") else None
+                ),
                 "attempt_no": _coerce_int(window.get("attempt_no")),
                 "warning_count": _coerce_int(window.get("warning_count")),
             }

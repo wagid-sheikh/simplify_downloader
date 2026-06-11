@@ -188,10 +188,49 @@ def test_profiler_summary_includes_success_with_warnings_window_details() -> Non
     )
 
     assert "  warning_windows:" in summary
+    assert "warning_reason=non-fatal validation warnings" in summary
     assert "status_note=GSTIN missing for 2 row(s)" in summary
-    assert "error_message=non-fatal validation warnings" in summary
+    assert "error_message=non-fatal validation warnings" not in summary
     assert "attempt_no=2" in summary
     assert "warning_count=2" in summary
+
+
+def test_profiler_summary_renders_td_api_info_as_status_message_not_error() -> None:
+    summary = _build_profiler_summary_text(
+        run_id="profiler-td-info-run",
+        run_env="test",
+        started_at=datetime(2024, 2, 1, 5, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2024, 2, 1, 5, 1, tzinfo=timezone.utc),
+        overall_status="success_with_warnings",
+        store_entries=[
+            {
+                "store_code": "TD01",
+                "pipeline_name": "td_orders_sync",
+                "status": "success_with_warnings",
+                "window_count": 1,
+                "primary_metrics": {},
+                "secondary_metrics": {},
+                "window_audit": [
+                    {
+                        "store_code": "TD01",
+                        "from_date": "2024-02-01",
+                        "to_date": "2024-02-02",
+                        "status": "success_with_warnings",
+                        "status_note": "summary overall_status=success_with_warnings",
+                        "status_message": "Sales sourced from API and ingested; API primary path executed",
+                        "error_message": None,
+                        "attempt_no": 1,
+                        "warning_count": 1,
+                    }
+                ],
+            }
+        ],
+        window_summary={"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+        warnings=[],
+    )
+
+    assert "status_message=Sales sourced from API and ingested; API primary path executed" in summary
+    assert "error_message=Sales sourced from API and ingested; API primary path executed" not in summary
 
 def test_window_status_prefers_summary_success_with_warnings() -> None:
     status, note = _resolve_window_outcome_status(
@@ -769,10 +808,318 @@ async def test_td_profiler_keeps_valid_empty_orders_window_success(
     assert status_counts["success_with_warnings"] == 0
     assert window_audit[0]["status"] == "success"
     assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["status_message"] is None
+    assert window_audit[0]["error_message"] is None
     assert window_audit[0]["warning_count"] == 0
     assert window_audit[0]["ingestion_counts"]["primary"]["rows_ingested"] == 0
     assert window_audit[0]["ingestion_counts"]["secondary"]["rows_ingested"] == 1
     assert inserted_summaries[0]["overall_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_td_profiler_rolls_up_api_primary_sales_ingest_as_clean_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "orders": {
+                    "overall_status": "success",
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "Orders sourced from API and ingested",
+                            "source_mode": "api_primary",
+                            "rows_downloaded": 1,
+                            "rows_ingested": 1,
+                            "final_rows": 1,
+                            "warnings": [],
+                            "warning_rows": [],
+                            "garments_fetch_completeness": "complete",
+                            "garments_final_row_count": 1,
+                            "garments_budget_state": "within_budget",
+                        }
+                    },
+                },
+                "sales": {
+                    "overall_status": "success",
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "Sales sourced from API and ingested",
+                            "source_mode": "api_primary",
+                            "rows_downloaded": 1,
+                            "rows_ingested": 1,
+                            "final_rows": 1,
+                            "warnings": [],
+                            "warning_rows": [],
+                        }
+                    },
+                },
+                "notification_payload": {
+                    "overall_status": "success",
+                    "orders_status": "success",
+                    "sales_status": "success",
+                    "stores": [
+                        {
+                            "store_code": "TD01",
+                            "status": "ok",
+                            "message": "API primary path executed",
+                            "observability_warnings": [],
+                            "orders": {
+                                "status": "ok",
+                                "message": "Orders sourced from API and ingested",
+                                "warning_rows": [],
+                                "warnings": [],
+                            },
+                            "sales": {
+                                "status": "ok",
+                                "message": "Sales sourced from API and ingested",
+                                "warning_rows": [],
+                                "warnings": [],
+                            },
+                        }
+                    ],
+                },
+                "stores_summary": {
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "API primary path executed",
+                            "data_ingest_status": "success",
+                            "observability_warnings": [],
+                        }
+                    }
+                },
+            },
+        }
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {
+            "id": 1,
+            "status": "success",
+            "error_message": "Sales sourced from API and ingested; API primary path executed",
+            "primary_rows_downloaded": 1,
+            "primary_rows_ingested": 1,
+            "primary_final_rows": 1,
+            "secondary_rows_downloaded": 1,
+            "secondary_rows_ingested": 1,
+            "secondary_final_rows": 1,
+        }
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    (
+        overall_status,
+        _windows,
+        _details,
+        status_counts,
+        window_audit,
+        _totals,
+        row_facts,
+    ) = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert status_counts["success_with_warnings"] == 0
+    assert window_audit[0]["status"] == "success"
+    assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["status_message"] == "Sales sourced from API and ingested; API primary path executed"
+    assert window_audit[0]["error_message"] is None
+    assert window_audit[0]["warning_count"] == 0
+    assert row_facts["warning_rows"] == []
+    assert inserted_summaries[0]["overall_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_td_profiler_normalizes_benign_api_primary_success_with_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success_with_warnings",
+            "metrics_json": {
+                "orders": {
+                    "overall_status": "success",
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "Orders sourced from API and ingested",
+                            "warning_count": 0,
+                            "warnings": [],
+                            "warning_rows": [],
+                            "error_rows": [],
+                            "dropped_rows": [],
+                            "garments_fetch_completeness": "complete",
+                        }
+                    },
+                },
+                "sales": {
+                    "overall_status": "success",
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "Sales sourced from API and ingested",
+                            "warning_count": 0,
+                            "warnings": [],
+                            "warning_rows": [],
+                            "error_rows": [],
+                            "dropped_rows": [],
+                        }
+                    },
+                },
+                "notification_payload": {
+                    "overall_status": "success_with_warnings",
+                    "stores": [
+                        {
+                            "store_code": "TD01",
+                            "status": "ok",
+                            "message": "API primary path executed",
+                            "warning_count": 0,
+                            "observability_warnings": [],
+                            "orders": {
+                                "status": "ok",
+                                "message": "Orders sourced from API and ingested",
+                                "warning_count": 0,
+                                "warnings": [],
+                                "warning_rows": [],
+                            },
+                            "sales": {
+                                "status": "ok",
+                                "message": "Sales sourced from API and ingested",
+                                "warning_count": 0,
+                                "warnings": [],
+                                "warning_rows": [],
+                            },
+                        }
+                    ],
+                },
+                "stores_summary": {
+                    "stores": {
+                        "TD01": {
+                            "status": "ok",
+                            "message": "API primary path executed",
+                            "warning_count": 0,
+                            "observability_warnings": [],
+                        }
+                    }
+                },
+            },
+        }
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {
+            "id": 1,
+            "status": "success_with_warnings",
+            "error_message": "Sales sourced from API and ingested; API primary path executed; warning_count=0",
+            "primary_rows_downloaded": 1,
+            "primary_rows_ingested": 1,
+            "primary_final_rows": 1,
+            "secondary_rows_downloaded": 1,
+            "secondary_rows_ingested": 1,
+            "secondary_final_rows": 1,
+        }
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert status_counts["success_with_warnings"] == 0
+    assert window_audit[0]["status"] == "success"
+    assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["status_message"] == (
+        "Sales sourced from API and ingested; API primary path executed; warning_count=0"
+    )
+    assert window_audit[0]["error_message"] is None
+    assert window_audit[0]["warning_count"] == 0
+    assert window_audit[0]["td_benign_warning_info"] == {
+        "normalized_from_status": "success_with_warnings",
+        "message": "Sales sourced from API and ingested; API primary path executed; warning_count=0",
+        "reason": "benign_td_api_primary_success_with_zero_warnings",
+    }
+    assert inserted_summaries[0]["overall_status"] == "success"
+
 
 @pytest.mark.asyncio
 async def test_td_garment_incomplete_degrades_success_without_retry(
@@ -1184,6 +1531,8 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
             "to_date": "2024-02-02",
             "status": "success_with_warnings",
             "status_note": "",
+            "status_message": "",
+            "warning_reason": "",
             "error_message": "",
             "attempt_no": None,
             "warning_count": 1,
