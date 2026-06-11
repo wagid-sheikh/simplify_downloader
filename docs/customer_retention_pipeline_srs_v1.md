@@ -1857,17 +1857,35 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` cap resolver.
-- [ ] `NOT_STARTED` 14-day workload freeze analytics.
-- [ ] `NOT_STARTED` workbook generator.
-- [ ] `NOT_STARTED` Excel validation/dropdown locking.
-- [ ] `NOT_STARTED` carry-forward and due-follow-up inclusion tests.
+- [ ] `NOT_STARTED` Create `app/customer_retention/caps.py` for active cap resolution from `customer_followup_cap_config`.
+- [ ] `NOT_STARTED` Implement cap selection by `lead_source_type`, `work_section`, `cost_center`, and `run_date`.
+- [ ] `NOT_STARTED` Prefer store-specific cap rows over global rows.
+- [ ] `NOT_STARTED` Select latest effective row only within same specificity.
+- [ ] `NOT_STARTED` Detect ambiguous overlapping active cap rows and return a warning or validation error.
+- [ ] `NOT_STARTED` Create `app/customer_retention/workload.py` for rolling 14-day incomplete workload analytics.
+- [ ] `NOT_STARTED` Ensure 14-day freeze logic excludes carry-forward leads older than 14 days.
+- [ ] `NOT_STARTED` Ensure freeze logic applies only to fresh RETENTION generation.
+- [ ] `NOT_STARTED` Create `app/customer_retention/workbook_generator.py` for two-sheet workbooks: `READ_ME` and `FOLLOWUP_LEADS`.
+- [ ] `NOT_STARTED` Generate one workbook per active `store_master.customer_retention_pipeline = true` store.
+- [ ] `NOT_STARTED` Include due follow-ups and pending carry-forward rows above and beyond caps.
+- [ ] `NOT_STARTED` Include TD leads uncapped.
+- [ ] `NOT_STARTED` Apply RETENTION cap only to fresh RETENTION rows.
+- [ ] `NOT_STARTED` Apply EXTERNAL cap only to eligible fresh EXTERNAL rows if configured.
+- [ ] `NOT_STARTED` Protect system-generated workbook columns.
+- [ ] `NOT_STARTED` Unlock only editable workbook columns from SRS Section 25.
+- [ ] `NOT_STARTED` Add strict dropdown validation for `Target Cost Center` from active `store_master` values.
+- [ ] `NOT_STARTED` Add tests for cap resolution, backlog freeze behavior, due-follow-up inclusion, carry-forward inclusion, and workbook validation rules.
+- [ ] `NOT_STARTED` Update Phase 4 tracker status and sign-off notes after workbook tests pass.
 
 Guard rails:
 
 - Scope is limited to cap allocation and workbook output behavior described in the SRS, building on signed-off Phase 1-3 contracts.
-- Preserve workbook-driven operation and strict validation/dropdown behavior; do not add out-of-scope automation.
-- Do not implement final management reporting, scheduled runners, or owner email delivery in Phase 4.
+- Caps must never restrict due follow-ups or pending carry-forward rows.
+- TD leads are uncapped.
+- `Target Cost Center` must be a strict dropdown, not free text.
+- Store lists must come from `store_master`, never hardcoded values.
+- Workbook output paths must use config or established repository path conventions.
+- Do not implement final management reporting, notification delivery, or scheduled runner integration in Phase 4.
 
 ## Phase 5: Aggregation Analytics & Management Reporting
 
