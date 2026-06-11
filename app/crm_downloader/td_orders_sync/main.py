@@ -105,6 +105,7 @@ ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE = "Overdue orders popup blocks Orders navig
 API_ONLY_NAVIGATION_WARNING_MESSAGE = (
     "API primary ingestion succeeded; UI Orders verification/navigation failed"
 )
+API_PRIMARY_PATH_EXECUTED_MESSAGE = "API primary path executed"
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
@@ -2981,7 +2982,12 @@ def _resolve_sync_log_status_note(
     if not run_garment_sync:
         _add("Garment sync skipped by flag")
 
-    if outcome and outcome.status in {"warning", "error"} and outcome.message:
+    if (
+        outcome
+        and outcome.status in {"warning", "error"}
+        and outcome.message
+        and outcome.message != API_PRIMARY_PATH_EXECUTED_MESSAGE
+    ):
         _add(outcome.message)
 
     if not notes:
@@ -8062,7 +8068,7 @@ async def _execute_api_primary_ingestion(
             if (run_sales and config.database_url)
             else ("Sales sourced from API" if run_sales else "Sales sync skipped by flag")
         ),
-        warning_rows=(api_sales_ingest_result.warning_rows if api_sales_ingest_result else list(api_fetch_result.sales_rows)),
+        warning_rows=(api_sales_ingest_result.warning_rows if api_sales_ingest_result else []),
         compare_rows_sales=(api_sales_ingest_result.parsed_rows if api_sales_ingest_result else list(api_fetch_result.sales_rows)),
         rows_downloaded=len(api_fetch_result.sales_rows),
         rows_ingested=(api_sales_ingest_result.final_rows if api_sales_ingest_result else len(api_fetch_result.sales_rows)),
@@ -8861,7 +8867,7 @@ async def _run_store_discovery(
                             warning_rows=(
                                 api_sales_ingest_result.warning_rows
                                 if api_sales_ingest_result
-                                else list(api_fetch_result.sales_rows)
+                                else []
                             ),
                             compare_rows_sales=(
                                 api_sales_ingest_result.parsed_rows
@@ -8914,7 +8920,7 @@ async def _run_store_discovery(
                         )
                         outcome = StoreOutcome(
                             status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
-                            message="API primary path executed",
+                            message=API_PRIMARY_PATH_EXECUTED_MESSAGE,
                             final_url=page.url,
                             verification_seen=verification_seen,
                             storage_state=stored_state_path,

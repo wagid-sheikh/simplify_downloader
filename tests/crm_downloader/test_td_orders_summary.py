@@ -252,6 +252,72 @@ def test_api_primary_decision_can_coexist_with_ingest_failure_stage() -> None:
     assert notification_store["ingest_status"] == "failed"
     assert notification_store["failure_stage"] == "ingest"
 
+def test_api_primary_ok_sales_ingest_is_clean_success() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-api-primary-clean",
+        run_env="test",
+        report_date=date(2024, 1, 8),
+        report_end_date=date(2024, 1, 8),
+    )
+    orders_report = StoreReport(
+        status="ok",
+        message="Orders sourced from API and ingested",
+        source_mode="api_primary",
+        rows_downloaded=1,
+        rows_ingested=1,
+        final_rows=1,
+        warnings=[],
+        warning_rows=[],
+        compare_rows_orders=[{"order_number": "TD-1"}],
+    )
+    sales_report = StoreReport(
+        status="ok",
+        message="Sales sourced from API and ingested",
+        source_mode="api_primary",
+        rows_downloaded=1,
+        rows_ingested=1,
+        final_rows=1,
+        warnings=[],
+        warning_rows=[],
+        compare_rows_sales=[{"order_number": "TD-1"}],
+    )
+    outcome = StoreOutcome(status="ok", message="API primary path executed")
+
+    summary.record_store("A1", outcome, orders_result=orders_report, sales_result=sales_report)
+    record = summary.build_record(finished_at=datetime(2024, 1, 8, tzinfo=timezone.utc))
+    notification_store = record["metrics_json"]["notification_payload"]["stores"][0]
+
+    assert summary.orders_overall_status() == "success"
+    assert summary.sales_overall_status() == "success"
+    assert record["overall_status"] == "success"
+    assert record["metrics_json"]["orders"]["overall_status"] == "success"
+    assert record["metrics_json"]["sales"]["overall_status"] == "success"
+    assert notification_store["observability_warnings"] == []
+    assert notification_store["orders"]["status"] == "ok"
+    assert notification_store["sales"]["status"] == "ok"
+    assert notification_store["sales"]["message"] == "Sales sourced from API and ingested"
+    assert notification_store["message"] == "API primary path executed"
+    assert _resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=True,
+        run_sales=True,
+        source_mode="api_primary",
+    ) == "success"
+
+
+def test_api_primary_outcome_message_is_not_warning_status_note() -> None:
+    status_note = _resolve_sync_log_status_note(
+        status="success_with_warnings",
+        orders_report=StoreReport(status="ok"),
+        sales_report=StoreReport(status="warning", message="Sales completed with ingest warnings"),
+        outcome=StoreOutcome(status="warning", message="API primary path executed"),
+        run_orders=True,
+        run_sales=True,
+    )
+
+    assert status_note == "Sales completed with ingest warnings"
+
 
 def test_compare_rows_use_transaction_rows_not_warning_rows() -> None:
     report = StoreReport(
