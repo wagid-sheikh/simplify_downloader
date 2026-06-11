@@ -1756,7 +1756,7 @@ This prompt is the controlling planning instruction that produced the five execu
 
 | Phase | Status | Owner/Agent | Started On | Completed On | Sign-off Notes |
 | --- | --- | --- | --- | --- | --- |
-| Phase 1: Database Schema & Migration Architecture | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 1: Database Schema & Migration Architecture | IN_PROGRESS | Codex | 2026-06-11 | TBD | Schema foundation started; no ingestion/runtime behavior in scope. |
 | Phase 2: Lead Ingestion, Normalization, & External Imports | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 3: Lifecycle Management, Suppression, & Recovery | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | NOT_STARTED | TBD | TBD | TBD | TBD |
@@ -1768,7 +1768,7 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 
 - [ ] `NOT_STARTED` Create `app/customer_retention/__init__.py` for the new independent pipeline package.
 - [ ] `NOT_STARTED` Create `app/customer_retention/constants.py` with canonical constants for lead source types, lead statuses, lifecycle buckets, suppression states, cap work sections, and workbook outcome labels.
-- [ ] `NOT_STARTED` Create `app/customer_retention/db_tables.py` using the repository's existing SQLAlchemy `sa.Table` style, not a new DB framework.
+- [ ] `IN_PROGRESS` Create `app/customer_retention/db_tables.py` using the repository's existing SQLAlchemy `sa.Table` style, not a new DB framework.
 - [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_leads` from [Section 17.2](#172-unified-lead-table).
 - [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_history` from [Section 17.3](#173-lead-history-table).
 - [ ] `NOT_STARTED` Define table contract for `trx_customer_suppression` from [Section 17.4](#174-suppression-table), including approval-state fields required by staff-entered permanent suppression rules.
