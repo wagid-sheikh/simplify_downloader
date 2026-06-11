@@ -1731,67 +1731,19 @@ Accepted on: 2026-06-11.
 
 This roadmap is derived strictly from `docs/customer_retention_pipeline_srs_v1.md`; implementation agents must link decisions back to the SRS rather than inventing behavior. High-signal source sections include [Section 17](#17-recommended-database-additions), [Section 18](#18-external-lead-import), [Section 19](#19-td-lead-integration), [Section 28](#28-ingestion-requirements), [Section 29](#29-input-normalization), [Section 31](#31-recovery-detection), [Section 34](#34-email-summary-requirements), and [Section 38](#38-suggested-indexes).
 
-Originating roadmap request:
+Originating implementation prompt:
 
 ```text
-Update `docs/customer_retention_pipeline_srs_v1.md`.
+You are a senior principal backend engineer and systems architect. We are ready to develop the complete Customer Retention & Multi-Source Lead Management Pipeline module from start to finish based strictly on the document "customer_retention_pipeline_srs_v1.md".
 
-Append a new top-level section near the end, before or after the existing “Critical Instruction to Codex” section, titled:
+Treat the SRS as the authoritative implementation contract. Do not weaken or reinterpret its data-integrity rules, lifecycle rules, suppression/recovery rules, workbook rules, cap rules, notification rules, phase boundaries, or guard rails.
 
-`# Implementation Roadmap & Phase-Gate Progress Tracker`
+Before implementation, inspect the existing repository structure and reuse the current configuration, database session, logging, Alembic, notification, and pipeline runner conventions. Do not create parallel infrastructure, hardcode operational data, or modify unrelated working pipelines.
 
-Inside it, add these subsections:
-
-1. `## Originating Implementation Prompt`
-
-   * Store the user’s initial roadmap request verbatim or as a fenced block.
-   * Include the date the prompt was accepted.
-   * State that the roadmap is derived strictly from `customer_retention_pipeline_srs_v1.md`.
-
-2. `## Phase-Gate Operating Rules`
-
-   * State that no phase may begin until the prior phase is complete, reviewed, and signed off.
-   * State that all work must obey the phase guard rails.
-   * State that task completion must update this tracker.
-
-3. `## Phase Status Summary`
-
-   * Add a compact table with columns: Phase, Status, Owner/Agent, Started On, Completed On, Sign-off Notes.
-   * Initialize all five phases as `NOT_STARTED`.
-
-4. `## Phase 1: Database Schema & Migration Architecture`
-
-   * Add checklist task stubs for SQLAlchemy table contracts, indexes/constraints, Alembic migration, default cap seed row, and schema tests/static validation.
-   * Include the Phase 1 guard rails.
-
-5. `## Phase 2: Lead Ingestion, Normalization, & External Imports`
-
-   * Add checklist task stubs for external lead discovery, TD lead adapter, normalization service, workbook ingestion, and idempotency verification.
-   * Include the Phase 2 guard rails.
-
-6. `## Phase 3: Lifecycle Management, Suppression, & Recovery`
-
-   * Add checklist task stubs for retention snapshot manager, lifecycle bucket classifier, suppression approval workflow, recovery detection, and recovery/suppression tests.
-   * Include the Phase 3 guard rails.
-
-7. `## Phase 4: Cap Allocation & Dynamic Workbook Generation`
-
-   * Add checklist task stubs for cap resolver, 14-day workload freeze analytics, workbook generator, Excel validation/dropdown locking, and carry-forward and due-follow-up inclusion tests.
-   * Include the Phase 4 guard rails.
-
-8. `## Phase 5: Aggregation Analytics & Management Reporting`
-
-   * Add checklist task stubs for analytics matrix, staff productivity aggregation, `UNSPECIFIED` handled-by bucket, notification/email wiring, CLI/scheduled runner, and final sign-off checklist.
-   * Include the Phase 5 guard rails.
-
-9. `## Progress Update Protocol`
-
-   * Require every implementation PR to update the relevant phase task status.
-   * Suggested statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
-   * Require blockers and deviations to be recorded inline in the relevant phase section.
-
-Keep the roadmap concise enough to remain maintainable. Do not duplicate the full SRS requirements in the roadmap; link back to existing SRS sections such as Sections 17, 18, 19, 28, 29, 31, 34, and 38.
+Plan the work as strict execution phases with phase gates so that no phase begins until the prior phase is complete, reviewed, and signed off. Track implementation progress directly in this SRS and require every implementation PR to update the relevant phase status, blockers, deviations, and sign-off notes.
 ```
+
+This prompt is the controlling planning instruction that produced the five execution phases below. Later progress updates may refine task wording but must not weaken SRS data-integrity rules or phase guard rails.
 
 ## Phase-Gate Operating Rules
 
