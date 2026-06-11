@@ -475,10 +475,62 @@ def test_profiler_context_and_html_include_warning_window_status_note() -> None:
     assert context["stores"][0]["warning_windows"][0]["status_note"] == "Customer GSTIN missing for 2 row(s)"
     assert context["stores"][0]["warning_windows"][0]["warning_count"] == 2
     assert "WARNING: 2024-02-01 to 2024-02-02" in body_html
+    assert "warning_reason=non-fatal UC validation warning" in body_html
     assert "status_note=Customer GSTIN missing for 2 row(s)" in body_html
-    assert "error_message=non-fatal UC validation warning" in body_html
+    assert "error_message=non-fatal UC validation warning" not in body_html
     assert "attempt_no=1" in body_html
     assert "warning_count=2" in body_html
+
+
+def test_profiler_context_and_html_render_td_api_info_as_status_message_not_error() -> None:
+    run_data = {
+        "run_id": "profiler-run-td-info",
+        "run_env": "test",
+        "report_date": "2024-02-03",
+        "overall_status": "success_with_warnings",
+        "summary_text": "Orders Sync Profiler Run Summary",
+        "started_at": "2024-02-03T05:00:00+00:00",
+        "finished_at": "2024-02-03T05:01:00+00:00",
+        "metrics_json": {
+            "notification_payload": {
+                "overall_status": "success_with_warnings",
+                "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+                "stores": [
+                    {
+                        "store_code": "TD01",
+                        "pipeline_name": "td_orders_sync",
+                        "status": "success_with_warnings",
+                        "window_count": 1,
+                        "primary_metrics": {},
+                        "secondary_metrics": {},
+                        "window_audit": [
+                            {
+                                "store_code": "TD01",
+                                "from_date": "2024-02-01",
+                                "to_date": "2024-02-02",
+                                "status": "success_with_warnings",
+                                "status_note": "summary overall_status=success_with_warnings",
+                                "error_message": "Sales sourced from API and ingested; API primary path executed",
+                                "attempt_no": 1,
+                                "warning_count": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+
+    context = _build_profiler_context(run_data)
+    html_context = dict(context)
+    html_context.update({"run_id": "profiler-run-td-info", "run_env": "test", "report_date": "2024-02-03"})
+    body_html = _render_template(PROFILER_HTML_TEMPLATE, html_context)
+
+    warning_window = context["stores"][0]["warning_windows"][0]
+    assert warning_window["status_message"] == "Sales sourced from API and ingested; API primary path executed"
+    assert warning_window["error_message"] == ""
+    assert "status_message=Sales sourced from API and ingested; API primary path executed" in body_html
+    assert "error_message=Sales sourced from API and ingested; API primary path executed" not in body_html
 
 def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
     run_data = {

@@ -188,10 +188,49 @@ def test_profiler_summary_includes_success_with_warnings_window_details() -> Non
     )
 
     assert "  warning_windows:" in summary
+    assert "warning_reason=non-fatal validation warnings" in summary
     assert "status_note=GSTIN missing for 2 row(s)" in summary
-    assert "error_message=non-fatal validation warnings" in summary
+    assert "error_message=non-fatal validation warnings" not in summary
     assert "attempt_no=2" in summary
     assert "warning_count=2" in summary
+
+
+def test_profiler_summary_renders_td_api_info_as_status_message_not_error() -> None:
+    summary = _build_profiler_summary_text(
+        run_id="profiler-td-info-run",
+        run_env="test",
+        started_at=datetime(2024, 2, 1, 5, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2024, 2, 1, 5, 1, tzinfo=timezone.utc),
+        overall_status="success_with_warnings",
+        store_entries=[
+            {
+                "store_code": "TD01",
+                "pipeline_name": "td_orders_sync",
+                "status": "success_with_warnings",
+                "window_count": 1,
+                "primary_metrics": {},
+                "secondary_metrics": {},
+                "window_audit": [
+                    {
+                        "store_code": "TD01",
+                        "from_date": "2024-02-01",
+                        "to_date": "2024-02-02",
+                        "status": "success_with_warnings",
+                        "status_note": "summary overall_status=success_with_warnings",
+                        "status_message": "Sales sourced from API and ingested; API primary path executed",
+                        "error_message": None,
+                        "attempt_no": 1,
+                        "warning_count": 1,
+                    }
+                ],
+            }
+        ],
+        window_summary={"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+        warnings=[],
+    )
+
+    assert "status_message=Sales sourced from API and ingested; API primary path executed" in summary
+    assert "error_message=Sales sourced from API and ingested; API primary path executed" not in summary
 
 def test_window_status_prefers_summary_success_with_warnings() -> None:
     status, note = _resolve_window_outcome_status(
@@ -769,6 +808,8 @@ async def test_td_profiler_keeps_valid_empty_orders_window_success(
     assert status_counts["success_with_warnings"] == 0
     assert window_audit[0]["status"] == "success"
     assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["status_message"] is None
+    assert window_audit[0]["error_message"] is None
     assert window_audit[0]["warning_count"] == 0
     assert window_audit[0]["ingestion_counts"]["primary"]["rows_ingested"] == 0
     assert window_audit[0]["ingestion_counts"]["secondary"]["rows_ingested"] == 1
@@ -870,7 +911,7 @@ async def test_td_profiler_rolls_up_api_primary_sales_ingest_as_clean_success(
         return {
             "id": 1,
             "status": "success",
-            "error_message": None,
+            "error_message": "Sales sourced from API and ingested; API primary path executed",
             "primary_rows_downloaded": 1,
             "primary_rows_ingested": 1,
             "primary_final_rows": 1,
@@ -923,6 +964,8 @@ async def test_td_profiler_rolls_up_api_primary_sales_ingest_as_clean_success(
     assert status_counts["success_with_warnings"] == 0
     assert window_audit[0]["status"] == "success"
     assert window_audit[0]["status_note"] is None
+    assert window_audit[0]["status_message"] == "Sales sourced from API and ingested; API primary path executed"
+    assert window_audit[0]["error_message"] is None
     assert window_audit[0]["warning_count"] == 0
     assert row_facts["warning_rows"] == []
     assert inserted_summaries[0]["overall_status"] == "success"
@@ -1338,6 +1381,8 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
             "to_date": "2024-02-02",
             "status": "success_with_warnings",
             "status_note": "",
+            "status_message": "",
+            "warning_reason": "",
             "error_message": "",
             "attempt_no": None,
             "warning_count": 1,
