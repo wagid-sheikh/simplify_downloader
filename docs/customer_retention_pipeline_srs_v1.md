@@ -1891,17 +1891,33 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` analytics matrix.
-- [ ] `NOT_STARTED` staff productivity aggregation.
-- [ ] `NOT_STARTED` `UNSPECIFIED` handled-by bucket.
-- [ ] `NOT_STARTED` notification/email wiring.
-- [ ] `NOT_STARTED` CLI/scheduled runner.
-- [ ] `NOT_STARTED` final sign-off checklist.
+- [ ] `NOT_STARTED` Create `app/customer_retention/analytics.py` for run-level and store-level aggregation.
+- [ ] `NOT_STARTED` Aggregate store-wise statistics by source type: RETENTION, TD, and EXTERNAL.
+- [ ] `NOT_STARTED` Aggregate staff productivity metrics from `Handled By`.
+- [ ] `NOT_STARTED` Group blank or missing `Handled By` values under explicit `UNSPECIFIED`.
+- [ ] `NOT_STARTED` Count `UNSPECIFIED` handled-by rows as operational warnings.
+- [ ] `NOT_STARTED` Aggregate aging carry-forward workloads and due follow-up counts.
+- [ ] `NOT_STARTED` Aggregate recovery counts and recovered revenue using `vw_orders.order_amount`.
+- [ ] `NOT_STARTED` Aggregate warning counts: invalid mobiles, normalized dropdowns, duplicate uploads, system-column edits, missing fields, target cost center errors, pending suppression approvals, and frozen stores.
+- [ ] `NOT_STARTED` Create `app/customer_retention/notifications.py` using existing DB-backed notification/email infrastructure.
+- [ ] `NOT_STARTED` Add notification profile/template seed migration if required by existing conventions.
+- [ ] `NOT_STARTED` Create `app/customer_retention/pipeline.py` as the orchestration entry point.
+- [ ] `NOT_STARTED` Wire CLI command into `app/__main__.py` following existing parser style.
+- [ ] `NOT_STARTED` Support manual run parameters such as `--run-date`, `--run-id`, `--env`, `--dry-run`, and `--skip-email`.
+- [ ] `NOT_STARTED` Update canonical docs and scripts only as needed for operator-facing behavior.
+- [ ] `NOT_STARTED` Add integration tests or orchestration tests for end-to-end dry-run behavior.
+- [ ] `NOT_STARTED` Mark all phases `SIGNED_OFF` only after Phase 1-5 tests and approved deviations are recorded.
+- [ ] `NOT_STARTED` Update final SRS tracker status and sign-off notes.
 
 Guard rails:
 
 - Scope is limited to aggregation, reporting, notification, and runner integration, including [Section 34](#34-email-summary-requirements).
-- Reuse existing notification/email/document persistence contracts and do not break existing pipelines.
+- Use existing notification/email/document persistence contracts.
+- Do not create a parallel email framework.
+- Financial summary values must use `vw_orders.order_amount`.
+- Missing `Handled By` values must never be dropped.
+- CLI behavior must follow `app/__main__.py` conventions.
+- Final sign-off must confirm existing pipelines are not broken.
 - Final sign-off must confirm all prior phase tasks are `SIGNED_OFF` or have explicitly approved deviations recorded inline.
 
 ## Progress Update Protocol
