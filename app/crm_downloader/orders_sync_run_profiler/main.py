@@ -2883,7 +2883,16 @@ async def _run_store_windows(
                 warning_categories=uc_warning_categories,
                 warning_rows=uc_warning_rows,
             )
-            uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warning")
+            uc_warning_count_for_log = int(uc_payload.get("warning_count", 0) or 0)
+            uc_status = (
+                "warning"
+                if uc_warning_count_for_log > 0
+                else (
+                    "ok"
+                    if uc_payload["ingest_success"]
+                    else ("error" if status == "failed" else "warning")
+                )
+            )
             log_event(
                 logger=logger,
                 phase="uc_window_log",

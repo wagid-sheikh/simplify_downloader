@@ -1651,6 +1651,134 @@ async def test_uc_timeout_skipped_window_retries_and_can_recover(
 
 
 @pytest.mark.asyncio
+async def test_uc_window_log_warns_on_row_warnings_without_failing_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "stores_summary": {
+                    "stores": {
+                        "UC01": {
+                            "status": "ok",
+                            "data_ingest_status": "success",
+                            "download_path": "/tmp/uc01.csv",
+                            "rows_downloaded": 3,
+                            "rows_ingested": 3,
+                            "staging_rows": 3,
+                            "final_rows": 3,
+                            "warning_count": 2,
+                            "warning_rows": [
+                                {
+                                    "store_code": "UC01",
+                                    "order_number": "U-1",
+                                    "ingest_remarks": "Customer GSTIN missing",
+                                    "customer_name": "Sensitive Name",
+                                },
+                                {
+                                    "store_code": "UC01",
+                                    "order_number": "U-2",
+                                    "reason_code": "amount_mismatch",
+                                    "mobile_number": "9999999999",
+                                },
+                            ],
+                        }
+                    }
+                }
+            },
+        }
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {
+            "id": 11,
+            "status": "success",
+            "error_message": None,
+            "primary_rows_downloaded": 3,
+            "primary_rows_ingested": 3,
+            "primary_staging_rows": 3,
+            "primary_final_rows": 3,
+        }
+
+    inserted_summaries: list[dict] = []
+    events: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(profiler, "log_event", lambda **kwargs: events.append(kwargs))
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="UC01",
+            store_name="UC Store",
+            cost_center="CC-UC01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="uc_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    uc_window_events = [event for event in events if event.get("phase") == "uc_window_log"]
+
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert status_counts["success_with_warnings"] == 0
+    assert window_audit[0]["status"] == "success"
+    assert window_audit[0]["warning_count"] == 2
+    assert window_audit[0]["warning_categories"] == {
+        "Customer GSTIN missing": 1,
+        "amount_mismatch": 1,
+    }
+    assert len(uc_window_events) == 1
+    uc_event = uc_window_events[0]
+    assert uc_event["status"] == "warning"
+    assert uc_event["ingest_success"] is True
+    assert uc_event["warning_count"] == 2
+    assert uc_event["warning_categories"] == {
+        "Customer GSTIN missing": 1,
+        "amount_mismatch": 1,
+    }
+    assert all(
+        "customer_name" not in row and "mobile_number" not in row
+        for row in uc_event["warning_rows"]
+    )
+    assert (
+        profiler._select_summary_overall_status(
+            status_counts, uc_warning_count=window_audit[0]["warning_count"]
+        )
+        == "success_with_warnings"
+    )
+    assert inserted_summaries[0]["overall_status"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_profiler_promotes_all_timeout_uc_windows_to_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
