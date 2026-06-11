@@ -1723,6 +1723,183 @@ Do not change existing dashboard/downloader ingestion behavior.
 
 ---
 
+# Implementation Roadmap & Phase-Gate Progress Tracker
+
+## Originating Implementation Prompt
+
+Accepted on: 2026-06-11.
+
+This roadmap is derived strictly from `docs/customer_retention_pipeline_srs_v1.md`; implementation agents must link decisions back to the SRS rather than inventing behavior. High-signal source sections include [Section 17](#17-recommended-database-additions), [Section 18](#18-external-lead-import), [Section 19](#19-td-lead-integration), [Section 28](#28-ingestion-requirements), [Section 29](#29-input-normalization), [Section 31](#31-recovery-detection), [Section 34](#34-email-summary-requirements), and [Section 38](#38-suggested-indexes).
+
+Originating roadmap request:
+
+```text
+Update `docs/customer_retention_pipeline_srs_v1.md`.
+
+Append a new top-level section near the end, before or after the existing “Critical Instruction to Codex” section, titled:
+
+`# Implementation Roadmap & Phase-Gate Progress Tracker`
+
+Inside it, add these subsections:
+
+1. `## Originating Implementation Prompt`
+
+   * Store the user’s initial roadmap request verbatim or as a fenced block.
+   * Include the date the prompt was accepted.
+   * State that the roadmap is derived strictly from `customer_retention_pipeline_srs_v1.md`.
+
+2. `## Phase-Gate Operating Rules`
+
+   * State that no phase may begin until the prior phase is complete, reviewed, and signed off.
+   * State that all work must obey the phase guard rails.
+   * State that task completion must update this tracker.
+
+3. `## Phase Status Summary`
+
+   * Add a compact table with columns: Phase, Status, Owner/Agent, Started On, Completed On, Sign-off Notes.
+   * Initialize all five phases as `NOT_STARTED`.
+
+4. `## Phase 1: Database Schema & Migration Architecture`
+
+   * Add checklist task stubs for SQLAlchemy table contracts, indexes/constraints, Alembic migration, default cap seed row, and schema tests/static validation.
+   * Include the Phase 1 guard rails.
+
+5. `## Phase 2: Lead Ingestion, Normalization, & External Imports`
+
+   * Add checklist task stubs for external lead discovery, TD lead adapter, normalization service, workbook ingestion, and idempotency verification.
+   * Include the Phase 2 guard rails.
+
+6. `## Phase 3: Lifecycle Management, Suppression, & Recovery`
+
+   * Add checklist task stubs for retention snapshot manager, lifecycle bucket classifier, suppression approval workflow, recovery detection, and recovery/suppression tests.
+   * Include the Phase 3 guard rails.
+
+7. `## Phase 4: Cap Allocation & Dynamic Workbook Generation`
+
+   * Add checklist task stubs for cap resolver, 14-day workload freeze analytics, workbook generator, Excel validation/dropdown locking, and carry-forward and due-follow-up inclusion tests.
+   * Include the Phase 4 guard rails.
+
+8. `## Phase 5: Aggregation Analytics & Management Reporting`
+
+   * Add checklist task stubs for analytics matrix, staff productivity aggregation, `UNSPECIFIED` handled-by bucket, notification/email wiring, CLI/scheduled runner, and final sign-off checklist.
+   * Include the Phase 5 guard rails.
+
+9. `## Progress Update Protocol`
+
+   * Require every implementation PR to update the relevant phase task status.
+   * Suggested statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+   * Require blockers and deviations to be recorded inline in the relevant phase section.
+
+Keep the roadmap concise enough to remain maintainable. Do not duplicate the full SRS requirements in the roadmap; link back to existing SRS sections such as Sections 17, 18, 19, 28, 29, 31, 34, and 38.
+```
+
+## Phase-Gate Operating Rules
+
+- No phase may begin until the prior phase is complete, reviewed, and signed off in this tracker.
+- All work must obey the phase guard rails and the authoritative SRS sections linked above.
+- Task completion must update this tracker in the same PR that implements or verifies the task.
+- Blockers, scope changes, and contract deviations must be recorded inline under the relevant phase before implementation proceeds.
+
+## Phase Status Summary
+
+| Phase | Status | Owner/Agent | Started On | Completed On | Sign-off Notes |
+| --- | --- | --- | --- | --- | --- |
+| Phase 1: Database Schema & Migration Architecture | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 2: Lead Ingestion, Normalization, & External Imports | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 3: Lifecycle Management, Suppression, & Recovery | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 4: Cap Allocation & Dynamic Workbook Generation | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 5: Aggregation Analytics & Management Reporting | NOT_STARTED | TBD | TBD | TBD | TBD |
+
+## Phase 1: Database Schema & Migration Architecture
+
+Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+
+- [ ] `NOT_STARTED` SQLAlchemy table contracts.
+- [ ] `NOT_STARTED` indexes/constraints.
+- [ ] `NOT_STARTED` Alembic migration.
+- [ ] `NOT_STARTED` default cap seed row.
+- [ ] `NOT_STARTED` schema tests/static validation.
+
+Guard rails:
+
+- Scope is limited to schema architecture required by [Section 17](#17-recommended-database-additions) and index guidance in [Section 38](#38-suggested-indexes).
+- Follow repository Alembic policy: new forward-only migration, verified `down_revision`, no historical migration edits, and short safe slug.
+- Do not implement ingestion, lifecycle, workbook, analytics, or notification behavior in Phase 1.
+
+## Phase 2: Lead Ingestion, Normalization, & External Imports
+
+Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+
+- [ ] `NOT_STARTED` external lead discovery.
+- [ ] `NOT_STARTED` TD lead adapter.
+- [ ] `NOT_STARTED` normalization service.
+- [ ] `NOT_STARTED` workbook ingestion.
+- [ ] `NOT_STARTED` idempotency verification.
+
+Guard rails:
+
+- Scope is limited to import and normalization contracts in [Sections 18](#18-external-lead-import), [19](#19-td-lead-integration), [28](#28-ingestion-requirements), and [29](#29-input-normalization).
+- Reuse existing config, DB session, logging, and TD lead patterns; do not create duplicate infrastructure.
+- Do not implement lifecycle decisions, cap allocation, workbook generation, or management reporting in Phase 2.
+
+## Phase 3: Lifecycle Management, Suppression, & Recovery
+
+Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+
+- [ ] `NOT_STARTED` retention snapshot manager.
+- [ ] `NOT_STARTED` lifecycle bucket classifier.
+- [ ] `NOT_STARTED` suppression approval workflow.
+- [ ] `NOT_STARTED` recovery detection.
+- [ ] `NOT_STARTED` recovery/suppression tests.
+
+Guard rails:
+
+- Scope is limited to lead lifecycle, suppression, stale/dead-end handling, and recovery contracts, especially [Section 31](#31-recovery-detection).
+- Recovery must be confirmed from `orders`; suppression identity and approval behavior must follow the SRS.
+- Do not implement cap allocation, workbook generation, analytics aggregation, or notification delivery in Phase 3.
+
+## Phase 4: Cap Allocation & Dynamic Workbook Generation
+
+Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+
+- [ ] `NOT_STARTED` cap resolver.
+- [ ] `NOT_STARTED` 14-day workload freeze analytics.
+- [ ] `NOT_STARTED` workbook generator.
+- [ ] `NOT_STARTED` Excel validation/dropdown locking.
+- [ ] `NOT_STARTED` carry-forward and due-follow-up inclusion tests.
+
+Guard rails:
+
+- Scope is limited to cap allocation and workbook output behavior described in the SRS, building on signed-off Phase 1-3 contracts.
+- Preserve workbook-driven operation and strict validation/dropdown behavior; do not add out-of-scope automation.
+- Do not implement final management reporting, scheduled runners, or owner email delivery in Phase 4.
+
+## Phase 5: Aggregation Analytics & Management Reporting
+
+Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
+
+- [ ] `NOT_STARTED` analytics matrix.
+- [ ] `NOT_STARTED` staff productivity aggregation.
+- [ ] `NOT_STARTED` `UNSPECIFIED` handled-by bucket.
+- [ ] `NOT_STARTED` notification/email wiring.
+- [ ] `NOT_STARTED` CLI/scheduled runner.
+- [ ] `NOT_STARTED` final sign-off checklist.
+
+Guard rails:
+
+- Scope is limited to aggregation, reporting, notification, and runner integration, including [Section 34](#34-email-summary-requirements).
+- Reuse existing notification/email/document persistence contracts and do not break existing pipelines.
+- Final sign-off must confirm all prior phase tasks are `SIGNED_OFF` or have explicitly approved deviations recorded inline.
+
+## Progress Update Protocol
+
+- Every implementation PR must update the relevant phase task status in this tracker.
+- Allowed task and phase statuses are `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, and `SIGNED_OFF`.
+- Record blockers and deviations inline in the relevant phase section with date, owner/agent, and resolution expectation.
+- Keep updates concise; do not duplicate full SRS requirements here. Link back to the relevant SRS section when detail is needed.
+
+---
+
 # 45. Out of Scope for v1.3
 
 The following are explicitly out of scope for this version:
