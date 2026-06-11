@@ -1766,17 +1766,33 @@ This prompt is the controlling planning instruction that produced the five execu
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` SQLAlchemy table contracts.
-- [ ] `NOT_STARTED` indexes/constraints.
-- [ ] `NOT_STARTED` Alembic migration.
-- [ ] `NOT_STARTED` default cap seed row.
-- [ ] `NOT_STARTED` schema tests/static validation.
+- [ ] `NOT_STARTED` Create `app/customer_retention/__init__.py` for the new independent pipeline package.
+- [ ] `NOT_STARTED` Create `app/customer_retention/constants.py` with canonical constants for lead source types, lead statuses, lifecycle buckets, suppression states, cap work sections, and workbook outcome labels.
+- [ ] `NOT_STARTED` Create `app/customer_retention/db_tables.py` using the repository's existing SQLAlchemy `sa.Table` style, not a new DB framework.
+- [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_leads` from [Section 17.2](#172-unified-lead-table).
+- [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_history` from [Section 17.3](#173-lead-history-table).
+- [ ] `NOT_STARTED` Define table contract for `trx_customer_suppression` from [Section 17.4](#174-suppression-table), including approval-state fields required by staff-entered permanent suppression rules.
+- [ ] `NOT_STARTED` Define table contract for `trx_external_leads` from [Section 17.5](#175-external-leads-intake-table).
+- [ ] `NOT_STARTED` Define table contract for `customer_followup_cap_config` from [Section 17.6](#176-customer-follow-up-cap-configuration-table).
+- [ ] `NOT_STARTED` Add `store_master.customer_retention_pipeline BOOLEAN NOT NULL DEFAULT false` in a new forward-only Alembic migration.
+- [ ] `NOT_STARTED` Add indexes from [Section 38](#38-suggested-indexes), adapted to actual repository naming conventions.
+- [ ] `NOT_STARTED` Add source-idempotency uniqueness for TD, EXTERNAL, and RETENTION lead creation.
+- [ ] `NOT_STARTED` Add cap configuration constraints so `daily_cap` is required when `is_uncapped = false`.
+- [ ] `NOT_STARTED` Add constraint/check behavior preventing capped TD rows unless explicitly represented as uncapped.
+- [ ] `NOT_STARTED` Seed default global RETENTION/FRESH_RETENTION cap row with `daily_cap = 13`.
+- [ ] `NOT_STARTED` Add schema-level tests or migration tests following existing test patterns.
+- [ ] `NOT_STARTED` Update Phase 1 tracker status and sign-off notes after migration/test review.
 
 Guard rails:
 
 - Scope is limited to schema architecture required by [Section 17](#17-recommended-database-additions) and index guidance in [Section 38](#38-suggested-indexes).
-- Follow repository Alembic policy: new forward-only migration, verified `down_revision`, no historical migration edits, and short safe slug.
-- Do not implement ingestion, lifecycle, workbook, analytics, or notification behavior in Phase 1.
+- Do not edit historical Alembic migration files.
+- Do not insert a migration between existing revisions.
+- Verify the current Alembic head before creating the new migration.
+- Do not implement ingestion, workbook processing, recovery, notifications, or runner commands in Phase 1.
+- Do not create duplicate DB session handling.
+- Do not hardcode store lists.
+- Do not use raw order amount columns for financial reporting contracts; financial schema comments and future logic must point to `vw_orders.order_amount`.
 
 ## Phase 2: Lead Ingestion, Normalization, & External Imports
 
