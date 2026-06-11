@@ -1814,17 +1814,29 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` retention snapshot manager.
-- [ ] `NOT_STARTED` lifecycle bucket classifier.
-- [ ] `NOT_STARTED` suppression approval workflow.
-- [ ] `NOT_STARTED` recovery detection.
-- [ ] `NOT_STARTED` recovery/suppression tests.
+- [ ] `NOT_STARTED` Create `app/customer_retention/snapshot.py` to build the customer retention snapshot from actual order history.
+- [ ] `NOT_STARTED` Ensure snapshot financial fields use `vw_orders.order_amount` and never direct raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment`.
+- [ ] `NOT_STARTED` Implement lifecycle bucket classification from SRS [Section 10](#10-customer-lifecycle-buckets).
+- [ ] `NOT_STARTED` Implement priority scoring and recommended strategy assignment from SRS [Section 15](#15-priority-scoring) and [Section 27](#27-recommended-strategy-column).
+- [ ] `NOT_STARTED` Create `app/customer_retention/suppression.py` for suppression lookup and suppression write behavior by `(cost_center, normalized_mobile_number)`.
+- [ ] `NOT_STARTED` Implement time-bound suppression for `Not Interested` and `Lead Stale`.
+- [ ] `NOT_STARTED` Implement `PENDING_APPROVAL` handling for staff-entered permanent dead-end outcomes including `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`.
+- [ ] `NOT_STARTED` Prevent store staff workbook ingestion from directly creating active permanent suppressions.
+- [ ] `NOT_STARTED` Create `app/customer_retention/recovery_detection.py` for transactional recovery matching against orders.
+- [ ] `NOT_STARTED` On recovery, close pending leads for the same `(cost_center, normalized_mobile_number)` identity only.
+- [ ] `NOT_STARTED` Ensure Store A recovery never lifts or bypasses Store B suppressions.
+- [ ] `NOT_STARTED` Record recovery and suppression changes in `trx_customer_followup_history`.
+- [ ] `NOT_STARTED` Add tests for lifecycle classification, suppression expiry, pending approval, recovery closure, and cross-store suppression isolation.
+- [ ] `NOT_STARTED` Update Phase 3 tracker status and sign-off notes after lifecycle/recovery tests pass.
 
 Guard rails:
 
 - Scope is limited to lead lifecycle, suppression, stale/dead-end handling, and recovery contracts, especially [Section 31](#31-recovery-detection).
-- Recovery must be confirmed from `orders`; suppression identity and approval behavior must follow the SRS.
-- Do not implement cap allocation, workbook generation, analytics aggregation, or notification delivery in Phase 3.
+- No financial calculation may use raw order amount columns.
+- Suppression identity is always `(cost_center, normalized_mobile_number)`.
+- Permanent suppression requires manager/owner approval.
+- Recovery requires actual order evidence; `Pickup Requested` is not recovery.
+- Do not implement cap allocation, workbook output, owner email, or scheduled runner behavior in Phase 3.
 
 ## Phase 4: Cap Allocation & Dynamic Workbook Generation
 
