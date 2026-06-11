@@ -79,6 +79,7 @@ WINDOW_STATE_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS"
 DEFAULT_STORE_LOCK_TIMEOUT_SECONDS = 30.0
 DEFAULT_WINDOW_STATE_TIMEOUT_SECONDS = 30.0
 STORE_LOCK_RETRY_INTERVAL_SECONDS = 0.1
+UC_WARNING_ROW_SAMPLE_LIMIT = 5
 
 
 def _resolve_pool_settings() -> PoolSettings:
@@ -1136,6 +1137,8 @@ def _build_uc_window_log(
     ingestion_counts: Mapping[str, Any],
     error_message: str | None,
     warning_count: int = 0,
+    warning_categories: Mapping[str, int] | None = None,
+    warning_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     path_payload = _coerce_dict(download_paths.get("gst"))
     if not path_payload:
@@ -1166,6 +1169,12 @@ def _build_uc_window_log(
         "staging_rows": staging_rows,
         "final_rows": final_rows,
         "warning_count": max(0, warning_count),
+        "warning_categories": dict(warning_categories or {}),
+        "warning_rows": [
+            _sanitize_uc_warning_row(row, store_code=None)
+            for row in (warning_rows or [])
+            if isinstance(row, Mapping)
+        ][:UC_WARNING_ROW_SAMPLE_LIMIT],
         "ingest_success": ingest_success,
         "ingest_failure_reason": failure_reason,
     }
@@ -1384,8 +1393,10 @@ def _extract_uc_warning_details_from_summary(
         seen.add(key)
         unique_rows.append(row)
         categories[reason] = categories.get(reason, 0) + 1
-    details["warning_rows"] = unique_rows
+    details["warning_rows"] = unique_rows[:UC_WARNING_ROW_SAMPLE_LIMIT]
     details["warning_categories"] = categories
+    if details["warning_count"] <= 0 and unique_rows:
+        details["warning_count"] = len(unique_rows)
     return details
 
 
@@ -2519,6 +2530,7 @@ async def _run_store_windows(
         uc_payload: dict[str, Any] | None = None
         uc_warning_count = 0
         uc_warning_categories: dict[str, int] = {}
+        uc_warning_rows: list[dict[str, Any]] = []
         td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
         td_benign_warning_info: dict[str, Any] | None = None
@@ -2560,6 +2572,7 @@ async def _run_store_windows(
                 )
                 uc_warning_count = int(uc_warning_details.get("warning_count", 0) or 0)
                 uc_warning_categories = dict(uc_warning_details.get("warning_categories") or {})
+                uc_warning_rows = [dict(row) for row in (uc_warning_details.get("warning_rows") or [])]
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -2684,6 +2697,8 @@ async def _run_store_windows(
                     ingestion_counts=ingestion_counts,
                     error_message=error_message,
                     warning_count=uc_warning_count,
+                    warning_categories=uc_warning_categories,
+                    warning_rows=uc_warning_rows,
                 )
             summary_status_note = str(summary_window_context.get("status_note") or "") or None
             summary_skip_reason = str(summary_window_context.get("skip_reason") or "") or None
@@ -2762,8 +2777,11 @@ async def _run_store_windows(
                     "orders_sync_log_id": log_row.get("id") if log_row else None,
                     "td_garment_warning": td_garment_warning,
                     "td_benign_warning_info": td_benign_warning_info,
-                    "warning_count": td_window_warning_count,
+                    "warning_count": (
+                        uc_warning_count if pipeline_name == "uc_orders_sync" else td_window_warning_count
+                    ),
                     "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
+                    "warning_rows": uc_warning_rows if pipeline_name == "uc_orders_sync" else [],
                 }
             )
             if not fetched_status:
@@ -2849,6 +2867,11 @@ async def _run_store_windows(
                     else td_window_warning_count
                 ),
                 "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
+                "warning_rows": (
+                    uc_payload.get("warning_rows")
+                    if pipeline_name == "uc_orders_sync" and uc_payload
+                    else []
+                ),
             }
         )
         if pipeline_name == "uc_orders_sync":
@@ -2857,6 +2880,8 @@ async def _run_store_windows(
                 ingestion_counts=ingestion_counts,
                 error_message=error_message,
                 warning_count=uc_warning_count,
+                warning_categories=uc_warning_categories,
+                warning_rows=uc_warning_rows,
             )
             uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warning")
             log_event(
@@ -2876,6 +2901,8 @@ async def _run_store_windows(
                 staging_rows=uc_payload["staging_rows"],
                 final_rows=uc_payload["final_rows"],
                 warning_count=uc_payload["warning_count"],
+                warning_categories=uc_payload.get("warning_categories") or {},
+                warning_rows=uc_payload.get("warning_rows") or [],
                 ingest_success=uc_payload["ingest_success"],
                 ingest_failure_reason=uc_payload["ingest_failure_reason"],
                 attempt_no=attempts,
