@@ -1798,17 +1798,32 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` external lead discovery.
-- [ ] `NOT_STARTED` TD lead adapter.
-- [ ] `NOT_STARTED` normalization service.
-- [ ] `NOT_STARTED` workbook ingestion.
-- [ ] `NOT_STARTED` idempotency verification.
+- [ ] `NOT_STARTED` Create `app/customer_retention/mobile.py` with a single normalization helper that returns structured valid/invalid results.
+- [ ] `NOT_STARTED` Create `app/customer_retention/normalization.py` for configurable mapping of chaotic workbook/user inputs to canonical values from [Section 29](#29-input-normalization).
+- [ ] `NOT_STARTED` Create `app/customer_retention/input_discovery.py` for config-backed discovery of returned workbooks and external lead imports.
+- [ ] `NOT_STARTED` Create `app/customer_retention/source_adapters.py` with a TD adapter reading from actual `crm_leads_current` records created by `app/crm_downloader/td_leads_sync/ingest.py`.
+- [ ] `NOT_STARTED` Implement EXTERNAL import parser for CSV/XLSX files under `inputs/customer_followup/external_leads/`, using config-backed paths.
+- [ ] `NOT_STARTED` Persist raw external import rows to `trx_external_leads` before conversion to unified follow-up leads.
+- [ ] `NOT_STARTED` Convert valid TD rows into `trx_customer_followup_leads` with stable source idempotency keys.
+- [ ] `NOT_STARTED` Convert valid EXTERNAL rows into `trx_customer_followup_leads` with stable import-batch and row idempotency keys.
+- [ ] `NOT_STARTED` Skip invalid or unnormalizable mobile numbers before any lead instantiation.
+- [ ] `NOT_STARTED` Implement row-level warning collection for invalid mobile numbers, missing required fields, invalid target stores, duplicate rows, and protected-column edits.
+- [ ] `NOT_STARTED` Create `app/customer_retention/workbook_ingestor.py` for returned workbook ingestion from the `FOLLOWUP_LEADS` sheet.
+- [ ] `NOT_STARTED` Make workbook ingestion idempotent so repeated uploads do not duplicate history rows or state transitions.
+- [ ] `NOT_STARTED` Archive processed input files using deterministic archive behavior that cannot overwrite prior archived files silently.
+- [ ] `NOT_STARTED` Add tests for mobile normalization, value normalization, TD import idempotency, EXTERNAL import idempotency, and workbook duplicate upload handling.
+- [ ] `NOT_STARTED` Update Phase 2 tracker status and sign-off notes after ingestion tests pass.
 
 Guard rails:
 
 - Scope is limited to import and normalization contracts in [Sections 18](#18-external-lead-import), [19](#19-td-lead-integration), [28](#28-ingestion-requirements), and [29](#29-input-normalization).
 - Reuse existing config, DB session, logging, and TD lead patterns; do not create duplicate infrastructure.
-- Do not implement lifecycle decisions, cap allocation, workbook generation, or management reporting in Phase 2.
+- Mobile normalization must happen before model construction, insert, update, filter, suppression lookup, or recovery lookup.
+- Invalid mobile numbers must produce row-level warnings and no actionable lead.
+- TD leads remain uncapped in v1.3.
+- EXTERNAL leads must be assigned to exactly one store.
+- TD source tables remain source truth; unified leads are operational follow-up truth.
+- Do not implement lifecycle suppression decisions, cap allocation, workbook generation, analytics email, or CLI runner behavior in Phase 2.
 
 ## Phase 3: Lifecycle Management, Suppression, & Recovery
 
