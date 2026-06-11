@@ -2005,6 +2005,47 @@ def test_extract_uc_warning_details_from_summary_categorizes_warning_rows() -> N
         "amount_mismatch": 1,
     }
     assert details["warning_rows"][0]["store_code"] == "UC01"
+    assert details["warning_rows"][0] == {
+        "store_code": "UC01",
+        "order_number": "U-1",
+        "ingest_remarks": "Customer GSTIN missing",
+        "ingestion_remarks": "Customer GSTIN missing",
+        "remarks": "Customer GSTIN missing",
+    }
+    assert all("mobile_number" not in row and "customer_name" not in row for row in details["warning_rows"])
+
+
+def test_build_uc_window_log_carries_actionable_sanitized_warning_details() -> None:
+    payload = profiler._build_uc_window_log(
+        download_paths={"gst": {"download_path": "/tmp/uc.csv"}},
+        ingestion_counts={"primary": {"staging_rows": 3, "final_rows": 3}},
+        error_message=None,
+        warning_count=2,
+        warning_categories={"Customer GSTIN missing": 1, "amount_mismatch": 1},
+        warning_rows=[
+            {"store_code": "UC01", "order_number": "U-1", "ingest_remarks": "Customer GSTIN missing"},
+            {"store_code": "UC01", "order_number": "U-2", "ingest_remarks": "amount_mismatch"},
+        ],
+    )
+
+    assert payload["warning_count"] == 2
+    assert payload["warning_categories"] == {"Customer GSTIN missing": 1, "amount_mismatch": 1}
+    assert payload["warning_rows"] == [
+        {
+            "store_code": "UC01",
+            "order_number": "U-1",
+            "ingest_remarks": "Customer GSTIN missing",
+            "ingestion_remarks": "Customer GSTIN missing",
+            "remarks": "Customer GSTIN missing",
+        },
+        {
+            "store_code": "UC01",
+            "order_number": "U-2",
+            "ingest_remarks": "amount_mismatch",
+            "ingestion_remarks": "amount_mismatch",
+            "remarks": "amount_mismatch",
+        },
+    ]
 
 
 def test_summary_status_promotes_warning_windows_before_success() -> None:

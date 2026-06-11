@@ -1253,6 +1253,95 @@ def _uc_warning_count_from_profiler_payload(
     return total
 
 
+def _uc_warning_reason_from_row(row: Mapping[str, Any]) -> str:
+    value = _extract_row_value(
+        row, "ingest_remarks", "ingestion_remarks", "remarks", "reason_code", "reason"
+    )
+    return str(value).strip() if value not in (None, "") else "warning"
+
+
+def _uc_warning_row_identifier(row: Mapping[str, Any]) -> str:
+    store_code = _normalize_store_code(str(_extract_row_value(row, "store_code") or "").strip()) or "UNKNOWN"
+    identifier = _extract_row_value(
+        row,
+        "order_number",
+        "Order Number",
+        "Order No.",
+        "Booking ID",
+        "row_identifier",
+        "row_id",
+    )
+    identifier_text = str(identifier).strip() if identifier not in (None, "") else "<row_without_order_number>"
+    return f"{store_code} {identifier_text}"
+
+
+def _uc_warning_details_from_profiler_payload(stores: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    categories: dict[str, int] = {}
+    samples_by_category: dict[str, list[str]] = {}
+    total = 0
+
+    def add_category(reason: str, count: int) -> None:
+        nonlocal total
+        if count <= 0:
+            return
+        categories[reason] = categories.get(reason, 0) + count
+        total += count
+
+    for store in stores:
+        if store.get("pipeline_name") not in (None, "uc_orders_sync"):
+            continue
+        windows = store.get("window_audit") or []
+        if not isinstance(windows, Sequence) or isinstance(windows, (str, bytes, Mapping)):
+            windows = []
+        if not windows:
+            windows = [store]
+        for window in windows:
+            if not isinstance(window, Mapping):
+                continue
+            window_categories = window.get("warning_categories") or {}
+            has_category_counts = isinstance(window_categories, Mapping) and bool(window_categories)
+            if isinstance(window_categories, Mapping):
+                for reason, count in window_categories.items():
+                    add_category(str(reason), _coerce_int(count) or 0)
+            rows = _clean_uc_rows_for_reporting(window.get("warning_rows"), drop_empty=True)
+            for row in rows:
+                reason = _uc_warning_reason_from_row(row)
+                if not has_category_counts:
+                    add_category(reason, 1)
+                samples = samples_by_category.setdefault(reason, [])
+                sample = _uc_warning_row_identifier(row)
+                if sample not in samples and len(samples) < 5:
+                    samples.append(sample)
+
+    return {"total": total, "categories": categories, "samples_by_category": samples_by_category}
+
+
+def _append_uc_warning_category_details(warnings: list[str], *, stores: Sequence[Mapping[str, Any]]) -> list[str]:
+    details = _uc_warning_details_from_profiler_payload(stores)
+    categories = details["categories"]
+    if not categories:
+        return warnings
+    category_parts: list[str] = []
+    samples_by_category = details["samples_by_category"]
+    for reason, count in sorted(categories.items()):
+        samples = samples_by_category.get(reason) or []
+        sample_text = f"; samples={', '.join(samples)}" if samples else ""
+        category_parts.append(f"{reason}={count}{sample_text}")
+    detail_text = "categories: " + " | ".join(category_parts)
+    updated: list[str] = []
+    added = False
+    for warning in warnings:
+        warning_text = str(warning)
+        if warning_text.startswith("UC_STORE_WARNINGS:") and "categories:" not in warning_text:
+            updated.append(f"{warning_text}; {detail_text}")
+            added = True
+        else:
+            updated.append(warning_text)
+    if not added and details["total"] > 0:
+        updated.append(f"UC_STORE_WARNINGS: {details['total']} row-level warning(s); {detail_text}")
+    return updated
+
+
 def _append_uc_suppressed_warning_explanation(
     warnings: list[str],
     *,
@@ -1281,8 +1370,11 @@ def _append_uc_suppressed_warning_explanation(
     replaced = False
     updated: list[str] = []
     for warning in warnings:
-        if str(warning).startswith("UC_STORE_WARNINGS:"):
+        warning_text = str(warning)
+        if warning_text.startswith("UC_STORE_WARNINGS:"):
             if not replaced:
+                if "categories:" in warning_text and "categories:" not in replacement:
+                    replacement = f"{replacement}; categories:{warning_text.split('categories:', 1)[1]}"
                 updated.append(replacement)
                 replaced = True
             continue
@@ -2837,6 +2929,12 @@ def _profiler_warning_windows_from_payload(store: Mapping[str, Any]) -> list[dic
                 ),
                 "attempt_no": _coerce_int(window.get("attempt_no")),
                 "warning_count": _coerce_int(window.get("warning_count")),
+                "warning_categories": dict(window.get("warning_categories") or {}),
+                "warning_rows": _build_fact_rows(
+                    _clean_uc_rows_for_reporting(window.get("warning_rows"), drop_empty=True),
+                    include_remarks=True,
+                    store_code_fallback=str(window.get("store_code") or store.get("store_code") or ""),
+                ),
             }
         )
     return warning_windows
@@ -2990,6 +3088,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
             edited_rows=edited_fact_rows,
             error_rows=error_fact_rows,
         )
+    warnings = _append_uc_warning_category_details(warnings, stores=stores_payload)
     warnings = _append_uc_suppressed_warning_explanation(
         warnings,
         stores=stores_payload,

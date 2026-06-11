@@ -1656,3 +1656,71 @@ def test_profiler_context_explains_uc_warnings_when_gstin_rows_are_suppressed() 
     ]
     assert "Policy: Warning windows and UC row-level warnings are non-fatal" in context["summary_text"]
     assert "2 Customer GSTIN missing suppressed from row table" in context["summary_text"]
+
+
+def test_profiler_html_renders_uc_warning_category_breakdown_without_sensitive_fields() -> None:
+    run_data = {
+        "run_id": "profiler-run-uc-categories",
+        "run_env": "test",
+        "report_date": "2024-02-03",
+        "overall_status": "success_with_warnings",
+        "summary_text": "Orders Sync Profiler Run Summary\nWarnings:\n- UC_STORE_WARNINGS: 2 row-level warning(s) reported by UC ingest",
+        "started_at": "2024-02-03T05:00:00+00:00",
+        "finished_at": "2024-02-03T05:01:00+00:00",
+        "metrics_json": {
+            "notification_payload": {
+                "overall_status": "success_with_warnings",
+                "warnings": ["UC_STORE_WARNINGS: 2 row-level warning(s) reported by UC ingest"],
+                "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+                "stores": [
+                    {
+                        "store_code": "UC01",
+                        "pipeline_name": "uc_orders_sync",
+                        "status": "success_with_warnings",
+                        "window_count": 1,
+                        "primary_metrics": {},
+                        "secondary_metrics": {},
+                        "window_audit": [
+                            {
+                                "store_code": "UC01",
+                                "from_date": "2024-02-01",
+                                "to_date": "2024-02-02",
+                                "status": "success_with_warnings",
+                                "warning_count": 2,
+                                "warning_categories": {
+                                    "Customer GSTIN missing": 1,
+                                    "amount_mismatch": 1,
+                                },
+                                "warning_rows": [
+                                    {
+                                        "store_code": "UC01",
+                                        "order_number": "U-1",
+                                        "ingest_remarks": "Customer GSTIN missing",
+                                        "customer_name": "Sensitive Name",
+                                        "mobile_number": "9999999999",
+                                    },
+                                    {
+                                        "store_code": "UC01",
+                                        "order_number": "U-2",
+                                        "ingest_remarks": "amount_mismatch",
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "row_facts": {"warning_rows": []},
+            }
+        },
+    }
+
+    context = _build_profiler_context(run_data)
+    html = _render_template(PROFILER_HTML_TEMPLATE, context)
+
+    assert "UC_STORE_WARNINGS: 2 row-level warning(s) reported by UC ingest" in html
+    assert "categories:" in html
+    assert "Customer GSTIN missing=1" in html
+    assert "amount_mismatch=1" in html
+    assert "UC01 U-2" in html
+    assert "Sensitive Name" not in html
+    assert "9999999999" not in html
