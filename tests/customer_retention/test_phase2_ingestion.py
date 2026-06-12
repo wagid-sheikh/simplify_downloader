@@ -66,7 +66,7 @@ def _write_workbook(path: Path, rows: list[dict[str, object]]) -> None:
     readme.title = "READ_ME"
     readme.append(["Instructions"])
     ws = wb.create_sheet("FOLLOWUP_LEADS")
-    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "Contact Attempted", "Contact Mode", "Customer Response", "Order Expected", "Next Follow-up Date", "Complaint", "Do Not Contact", "Handled By", "Staff Remarks"]
+    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "generated_at", "Contact Attempted", "Contact Mode", "Customer Response", "Order Expected", "Next Follow-up Date", "Complaint", "Do Not Contact", "Handled By", "Staff Remarks"]
     ws.append(headers)
     for row in rows:
         ws.append([row.get(h) for h in headers])
@@ -404,8 +404,8 @@ async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_
     wb_path = tmp_path / "lifecycle_returned.xlsx"
     _write_workbook(wb_path, [
         {"lead_id": 1, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 1", "mobile_number": "9876543210", "Contact Attempted": "Yes", "Contact Mode": "Call", "Customer Response": "Pickup Requested", "Order Expected": "Yes", "Next Follow-up Date": "2026-06-20", "Complaint": "No", "Do Not Contact": "No", "Handled By": "Staff", "Staff Remarks": "Will order"},
-        {"lead_id": 2, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 2", "mobile_number": "9876543211", "Contact Attempted": "Yes", "Customer Response": "Not Interested", "Complaint": "No", "Do Not Contact": "No"},
-        {"lead_id": 3, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 3", "mobile_number": "9876543212", "Contact Attempted": "Yes", "Customer Response": "Do Not Contact", "Complaint": "No", "Do Not Contact": "Yes"},
+        {"lead_id": 2, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 2", "mobile_number": "9876543211", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": "Not Interested", "Complaint": "No", "Do Not Contact": "No"},
+        {"lead_id": 3, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 3", "mobile_number": "9876543212", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": "Do Not Contact", "Complaint": "No", "Do Not Contact": "Yes"},
         {"lead_id": 4, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 4", "mobile_number": "9876543213", "Contact Attempted": "", "Customer Response": "", "Complaint": "No", "Do Not Contact": "No"},
     ])
 
@@ -453,7 +453,7 @@ async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_
         assert suppressions[0].suppression_state == SUPPRESSION_STATE_ACTIVE
         assert suppressions[0].is_permanent is False
         assert suppressions[0].suppression_until is not None
-        assert (suppressions[0].suppression_until - date.today()).days == 90
+        assert suppressions[0].suppression_until == date(2026, 9, 8)
         assert suppressions[1].source_lead_id == 3
         assert suppressions[1].suppression_state == SUPPRESSION_STATE_PENDING_APPROVAL
         assert suppressions[1].is_permanent is True

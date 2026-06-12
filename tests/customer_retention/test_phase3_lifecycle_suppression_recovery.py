@@ -129,7 +129,7 @@ async def test_suppression_lookup_expiry_pending_approval_approval_rejection_and
         await _insert_lead(session, lead_id=2, cost_center="B200")
         active = await create_time_bound_suppression(session, cost_center="A100", normalized_mobile_number="9876543210", reason=WORKBOOK_OUTCOME_NOT_INTERESTED, start_date=date(2026, 6, 1), source_lead_id=1, pipeline_run_id="run1")
         duplicate = await create_time_bound_suppression(session, cost_center="A100", normalized_mobile_number="9876543210", reason=WORKBOOK_OUTCOME_NOT_INTERESTED, start_date=date(2026, 6, 1), source_lead_id=1, pipeline_run_id="run1")
-        pending = await create_pending_permanent_suppression(session, cost_center="A100", normalized_mobile_number="9876543210", reason=WORKBOOK_OUTCOME_WRONG_NUMBER, source_lead_id=1, pipeline_run_id="run1")
+        pending = await create_pending_permanent_suppression(session, cost_center="A100", normalized_mobile_number="9876543210", reason=WORKBOOK_OUTCOME_WRONG_NUMBER, start_date=date(2026, 6, 1), source_lead_id=1, pipeline_run_id="run1")
         await session.commit()
         assert duplicate.suppression_id == active.suppression_id
         assert pending.suppression_state == SUPPRESSION_STATE_PENDING_APPROVAL
@@ -147,7 +147,7 @@ async def test_suppression_lookup_expiry_pending_approval_approval_rejection_and
 
     async with session_scope(url) as session:
         await _insert_lead(session, lead_id=3, mobile="9876543211")
-        pending_reject = await create_pending_permanent_suppression(session, cost_center="A100", normalized_mobile_number="9876543211", reason=WORKBOOK_OUTCOME_DO_NOT_CONTACT, source_lead_id=3, pipeline_run_id="run3")
+        pending_reject = await create_pending_permanent_suppression(session, cost_center="A100", normalized_mobile_number="9876543211", reason=WORKBOOK_OUTCOME_DO_NOT_CONTACT, start_date=date(2026, 6, 1), source_lead_id=3, pipeline_run_id="run3")
         rejected = await reject_suppression(session, suppression_id=pending_reject.suppression_id or 0, rejected_by="manager", pipeline_run_id="run3")
         await session.commit()
         assert rejected.changed is True
@@ -159,13 +159,13 @@ async def test_lifecycle_transitions_history_idempotency_and_suppression_rules(t
     url = await _prepare_db(tmp_path)
     async with session_scope(url) as session:
         await _insert_lead(session, lead_id=1)
-        missing = await apply_lifecycle_transition(session, lead_id=1, customer_response=None, contact_attempted=None, pipeline_run_id="run1", event_key="row1")
-        worked = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_PICKUP_REQUESTED, contact_attempted=True, next_followup_date=date(2026, 6, 20), pipeline_run_id="run1", event_key="row2")
-        duplicate = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_PICKUP_REQUESTED, contact_attempted=True, next_followup_date=date(2026, 6, 20), pipeline_run_id="run1", event_key="row2")
+        missing = await apply_lifecycle_transition(session, lead_id=1, customer_response=None, contact_attempted=None, pipeline_run_id="run1", event_key="row1", suppression_start_date=date(2026, 6, 12))
+        worked = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_PICKUP_REQUESTED, contact_attempted=True, next_followup_date=date(2026, 6, 20), pipeline_run_id="run1", event_key="row2", suppression_start_date=date(2026, 6, 12))
+        duplicate = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_PICKUP_REQUESTED, contact_attempted=True, next_followup_date=date(2026, 6, 20), pipeline_run_id="run1", event_key="row2", suppression_start_date=date(2026, 6, 12))
         await _insert_lead(session, lead_id=2, mobile="9876543211")
-        stale = await apply_lifecycle_transition(session, lead_id=2, customer_response=WORKBOOK_OUTCOME_LEAD_STALE, contact_attempted=True, pipeline_run_id="run1", event_key="row3")
+        stale = await apply_lifecycle_transition(session, lead_id=2, customer_response=WORKBOOK_OUTCOME_LEAD_STALE, contact_attempted=True, pipeline_run_id="run1", event_key="row3", suppression_start_date=date(2026, 6, 12))
         await _insert_lead(session, lead_id=3, mobile="9876543212")
-        permanent = await apply_lifecycle_transition(session, lead_id=3, customer_response=WORKBOOK_OUTCOME_DO_NOT_CONTACT, contact_attempted=True, pipeline_run_id="run1", event_key="row4")
+        permanent = await apply_lifecycle_transition(session, lead_id=3, customer_response=WORKBOOK_OUTCOME_DO_NOT_CONTACT, contact_attempted=True, pipeline_run_id="run1", event_key="row4", suppression_start_date=date(2026, 6, 12))
         await session.commit()
         assert missing.warnings == ("required_fields_missing",)
         assert worked.new_status == LEAD_STATUS_DUE_FOLLOWUP
@@ -177,6 +177,50 @@ async def test_lifecycle_transitions_history_idempotency_and_suppression_rules(t
         assert active_permanent_count == 0
         lead3 = (await session.execute(sa.select(trx_customer_followup_leads.c.lead_status).where(trx_customer_followup_leads.c.lead_id == 3))).scalar_one()
         assert lead3 == LEAD_STATUS_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_duplicate_suppression_event_does_not_create_or_extend_window(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        await _insert_lead(session, lead_id=1, mobile="9876543211")
+
+        first = await apply_lifecycle_transition(
+            session,
+            lead_id=1,
+            customer_response=WORKBOOK_OUTCOME_LEAD_STALE,
+            contact_attempted=True,
+            pipeline_run_id="run-first",
+            event_key="same-workbook-event",
+            suppression_start_date=date(2026, 6, 1),
+        )
+        replay = await apply_lifecycle_transition(
+            session,
+            lead_id=1,
+            customer_response=WORKBOOK_OUTCOME_LEAD_STALE,
+            contact_attempted=True,
+            pipeline_run_id="run-replay",
+            event_key="same-workbook-event",
+            suppression_start_date=date(2026, 6, 15),
+        )
+        await session.commit()
+
+        suppressions = (
+            await session.execute(
+                sa.select(
+                    trx_customer_suppression.c.suppression_start_date,
+                    trx_customer_suppression.c.suppression_until,
+                ).order_by(trx_customer_suppression.c.suppression_id)
+            )
+        ).all()
+        history_count = (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history))).scalar_one()
+
+        assert first.history_inserted is True
+        assert first.suppression_id is not None
+        assert replay.history_inserted is False
+        assert replay.suppression_id is None
+        assert suppressions == [(date(2026, 6, 1), date(2026, 8, 30))]
+        assert history_count == 2
 
 
 @pytest.mark.asyncio
@@ -199,6 +243,7 @@ async def test_lifecycle_transition_rejects_unknown_customer_response_without_mu
             handled_by="agent1",
             pipeline_run_id="run-invalid",
             event_key="bad-response",
+            suppression_start_date=date(2026, 6, 12),
         )
         await session.commit()
 
@@ -321,7 +366,7 @@ async def test_lifecycle_suppression_and_recovery_changes_are_transactional(tmp_
         await session.commit()
 
     async with session_scope(url) as session:
-        stale = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_LEAD_STALE, contact_attempted=True, pipeline_run_id="run1", event_key="rollback-stale")
+        stale = await apply_lifecycle_transition(session, lead_id=1, customer_response=WORKBOOK_OUTCOME_LEAD_STALE, contact_attempted=True, pipeline_run_id="run1", event_key="rollback-stale", suppression_start_date=date(2026, 6, 12))
         assert stale.suppression_id is not None
         await session.rollback()
 

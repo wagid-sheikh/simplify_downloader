@@ -102,6 +102,16 @@ def _normalized_text(value: Any) -> str | None:
     return text or None
 
 
+def _suppression_start_date_from_row(row: dict[str, Any]) -> date:
+    generated_at = _normalized_date(row.get("generated_at"))
+    if generated_at is not None:
+        return generated_at
+    # Boundary fallback for legacy/manual workbooks that do not carry the
+    # generated_at business date. Suppression helpers deliberately do not use
+    # process dates internally so deterministic callers can pass an explicit date.
+    return date.today()
+
+
 async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_run_id: str, logger: JsonLogger | None = None, normalizer: ValueNormalizer | None = None) -> WorkbookIngestionResult:
     file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     result = WorkbookIngestionResult(source_file=path.name, file_identity=file_digest)
@@ -201,6 +211,7 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
                     handled_by=_normalized_text(row.get("handled_by")),
                     pipeline_run_id=pipeline_run_id,
                     event_key=event_suffix,
+                    suppression_start_date=_suppression_start_date_from_row(row),
                 )
                 inserted = transition.history_inserted
             if inserted:
