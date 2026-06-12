@@ -1759,7 +1759,7 @@ This prompt is the controlling planning instruction that produced the five execu
 | --- | --- | --- | --- | --- | --- |
 | Phase 1: Database Schema & Migration Architecture | TESTED | Codex | 2026-06-11 | 2026-06-12 | Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests implemented; pending human sign-off before Phase 2. |
 | Phase 2: Lead Ingestion, Normalization, & External Imports | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 2 ingestion/normalization modules, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and focused tests implemented. Phase 1 schema/idempotency constraints preserved; Phase 2 not signed off pending human review. |
-| Phase 3: Lifecycle Management, Suppression, & Recovery | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 3: Lifecycle Management, Suppression, & Recovery | IN_PROGRESS | Codex | 2026-06-12 | TBD | Phase 3 lifecycle, suppression, recovery code and tests implemented; awaiting human review/sign-off. |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 5: Aggregation Analytics & Management Reporting | NOT_STARTED | TBD | TBD | TBD | TBD |
 
@@ -1831,20 +1831,24 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` Create `app/customer_retention/snapshot.py` to build the customer retention snapshot from actual order history.
-- [ ] `NOT_STARTED` Ensure snapshot financial fields use `vw_orders.order_amount` and never direct raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment`.
-- [ ] `NOT_STARTED` Implement lifecycle bucket classification from SRS [Section 10](#10-customer-lifecycle-buckets).
-- [ ] `NOT_STARTED` Implement priority scoring and recommended strategy assignment from SRS [Section 15](#15-priority-scoring) and [Section 27](#27-recommended-strategy-column).
-- [ ] `NOT_STARTED` Create `app/customer_retention/suppression.py` for suppression lookup and suppression write behavior by `(cost_center, normalized_mobile_number)`.
-- [ ] `NOT_STARTED` Implement time-bound suppression for `Not Interested` and `Lead Stale`.
-- [ ] `NOT_STARTED` Implement `PENDING_APPROVAL` handling for staff-entered permanent dead-end outcomes including `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`.
-- [ ] `NOT_STARTED` Prevent store staff workbook ingestion from directly creating active permanent suppressions.
-- [ ] `NOT_STARTED` Create `app/customer_retention/recovery_detection.py` for transactional recovery matching against orders.
-- [ ] `NOT_STARTED` On recovery, close pending leads for the same `(cost_center, normalized_mobile_number)` identity only.
-- [ ] `NOT_STARTED` Ensure Store A recovery never lifts or bypasses Store B suppressions.
-- [ ] `NOT_STARTED` Record recovery and suppression changes in `trx_customer_followup_history`.
-- [ ] `NOT_STARTED` Add tests for lifecycle classification, suppression expiry, pending approval, recovery closure, and cross-store suppression isolation.
-- [ ] `NOT_STARTED` Update Phase 3 tracker status and sign-off notes after lifecycle/recovery tests pass.
+- [x] `TESTED` Create `app/customer_retention/snapshot.py` to build the customer retention snapshot from actual order history.
+- [x] `TESTED` Ensure snapshot financial fields use `vw_orders.order_amount` and never direct raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment`.
+- [x] `TESTED` Implement lifecycle bucket classification from SRS [Section 10](#10-customer-lifecycle-buckets).
+- [x] `TESTED` Implement priority scoring and recommended strategy assignment from SRS [Section 15](#15-priority-scoring) and [Section 27](#27-recommended-strategy-column).
+- [x] `TESTED` Create `app/customer_retention/suppression.py` for suppression lookup and suppression write behavior by `(cost_center, normalized_mobile_number)`.
+- [x] `TESTED` Implement time-bound suppression for `Not Interested` and `Lead Stale`.
+- [x] `TESTED` Implement `PENDING_APPROVAL` handling for staff-entered permanent dead-end outcomes including `Do Not Contact`, `Wrong Number`, `Invalid Number`, and `Shifted Location`.
+- [x] `TESTED` Prevent store staff workbook ingestion from directly creating active permanent suppressions.
+- [x] `TESTED` Create `app/customer_retention/recovery_detection.py` for transactional recovery matching against orders.
+- [x] `TESTED` On recovery, close pending leads for the same `(cost_center, normalized_mobile_number)` identity only.
+- [x] `TESTED` Ensure Store A recovery never lifts or bypasses Store B suppressions.
+- [x] `TESTED` Record recovery and suppression changes in `trx_customer_followup_history`.
+- [x] `TESTED` Add tests for lifecycle classification, suppression expiry, pending approval, recovery closure, and cross-store suppression isolation.
+- [x] `IMPLEMENTED` Update Phase 3 tracker status and sign-off notes after lifecycle/recovery tests pass.
+
+Phase 3 progress notes:
+
+- 2026-06-12 — Codex: Implemented and tested snapshot generation, lifecycle bucket classification, deterministic priority/strategy assignment, store-scoped suppression lookup/write paths, pending approval workflow for staff-entered permanent outcomes, time-bound suppression, lifecycle transitions, and `vw_orders.order_amount`-based recovery detection. No schema deviation was required; Phase 1 schema and Phase 2 ingestion/idempotency contracts were preserved. Human review/sign-off remains pending, so Phase 3 is not marked `SIGNED_OFF`.
 
 Guard rails:
 
