@@ -6,9 +6,17 @@ from io import StringIO
 import pytest
 import sqlalchemy as sa
 
-from app.common.dashboard_store import DASHBOARD_SUMMARY_COLUMNS, persist_dashboard_summary
+from app.common.dashboard_store import (
+    DASHBOARD_SUMMARY_COLUMNS,
+    persist_dashboard_summary,
+    store_master,
+)
 from app.common.db import _ensure_async_engine, session_scope
 from app.dashboard_downloader.json_logger import JsonLogger
+
+
+def test_store_master_schema_includes_customer_retention_pipeline_flag() -> None:
+    assert "customer_retention_pipeline" in store_master.c.keys()
 
 
 async def _create_tables(database_url: str) -> None:
