@@ -1760,7 +1760,7 @@ This prompt is the controlling planning instruction that produced the five execu
 | Phase 1: Database Schema & Migration Architecture | TESTED | Codex | 2026-06-11 | 2026-06-12 | Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests implemented; pending human sign-off before Phase 2. |
 | Phase 2: Lead Ingestion, Normalization, & External Imports | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 2 ingestion/normalization modules, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and focused tests implemented. Phase 1 schema/idempotency constraints preserved; Phase 2 not signed off pending human review. |
 | Phase 3: Lifecycle Management, Suppression, & Recovery | IN_PROGRESS | Codex | 2026-06-12 | TBD | Phase 3 lifecycle, suppression, recovery code and tests implemented; awaiting human review/sign-off. |
-| Phase 4: Cap Allocation & Dynamic Workbook Generation | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 4 cap resolution, 14-day workload freeze, workbook selection, workbook generation/protection/dropdowns, and focused tests implemented. Phase 1 schema, Phase 2 ingestion/idempotency, and Phase 3 lifecycle/suppression/recovery contracts preserved; pending human review/sign-off. |
+| Phase 4: Cap Allocation & Dynamic Workbook Generation | BLOCKED | Codex | 2026-06-12 | 2026-06-12 | Audit found Phase 4 implementation is not yet sign-off ready: workbook Target Cost Center validation must be robust for production store lists, Target Cost Center conditional editability/validation semantics need explicit implementation or documented limitation, phase-scoped selector/workload logging is incomplete, and the acceptance-test matrix needs coverage gaps closed. Phase 1 schema, Phase 2 ingestion/idempotency, and Phase 3 lifecycle/suppression/recovery contracts remain preserved. |
 | Phase 5: Aggregation Analytics & Management Reporting | NOT_STARTED | TBD | TBD | TBD | TBD |
 
 ## Phase 1: Database Schema & Migration Architecture
@@ -1883,8 +1883,17 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 - [x] `TESTED` Add tests for cap resolution, backlog freeze behavior, due-follow-up inclusion, carry-forward inclusion, and workbook validation rules.
 - [x] `IMPLEMENTED` Update Phase 4 tracker status and sign-off notes after workbook tests pass.
 
+
+Audit follow-up tasks before Phase 4 sign-off:
+
+- [ ] `BLOCKED` Harden `Target Cost Center` Excel validation for production-sized active store lists. Inline list validation is acceptable only below Excel's formula-length limits; otherwise implement a hidden/protected lookup range or named-range strategy while keeping only `READ_ME` and `FOLLOWUP_LEADS` user-visible.
+- [ ] `BLOCKED` Enforce or explicitly document the SRS Section 25 conditional `Target Cost Center` behavior: the column must only be usable for `Customer Response = Shifted Location`, with tests proving same-store/free-text/blank invalid targets remain warnings during ingestion.
+- [ ] `BLOCKED` Add Phase 4 pipeline-flow logging around store loading, due follow-up selection, pending carry-forward selection, TD generation, RETENTION generation/freeze, EXTERNAL cap decisions, and workbook output counts using the existing `JsonLogger`/`log_event` framework.
+- [ ] `BLOCKED` Expand the Phase 4 acceptance-test matrix so each SRS-required behavior has a dedicated assertion, including active/inactive store dropdown population, large store-list validation fallback, conditional Target Cost Center semantics, all controlled editable dropdowns, selection warnings for invalid normalized mobile identities, and generated workbook re-ingestion after protected identity metadata is present.
+
 Phase 4 progress notes:
 
+- 2026-06-12 — Codex audit: Phase 4 is not signed off. Targeted tests pass, but audit identified sign-off blockers in production-strength Target Cost Center validation, conditional Target Cost Center workbook semantics, phase-specific logging coverage, and acceptance-test granularity. The required follow-up tasks are listed above; no schema deviation is required at this time.
 - 2026-06-12 — Codex: Implemented and tested active DB-backed cap resolution, TD uncapped contract validation, rolling 14-day workload freeze that excludes older carry-forward rows, active-store workbook selection across due/pending/TD/EXTERNAL/fresh RETENTION categories, two-sheet workbook generation, protected/editable column behavior, strict dropdown validation, and Phase 2 ingestion compatibility for generated rows. No schema deviation was required; Phase 1 schema, Phase 2 ingestion/idempotency/mobile identity behavior, and Phase 3 lifecycle/suppression/recovery contracts were preserved. Human review/sign-off remains pending, so Phase 4 is not marked `SIGNED_OFF`.
 
 Guard rails:
