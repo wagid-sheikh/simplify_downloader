@@ -129,6 +129,49 @@ async def test_external_csv_import_idempotency_and_warnings(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_external_import_blank_required_values_warn_and_batch_continues(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    csv_path = tmp_path / "blank-required-values.csv"
+    _write_external_csv(csv_path, [
+        {"cost_center": "A100", "customer_name": "  ", "mobile_number": "9876543210", "lead_source": "", "campaign_name": "   ", "lead_date": "2026-06-01", "remarks": "  "},
+        {"cost_center": "A100", "customer_name": "Blank Mobile", "mobile_number": " ", "lead_source": "Meta", "campaign_name": "June", "lead_date": "2026-06-01", "remarks": "bad"},
+        {"cost_center": "A100", "customer_name": "Blank Date", "mobile_number": "9876543211", "lead_source": "Meta", "campaign_name": "June", "lead_date": " ", "remarks": "bad"},
+        {"cost_center": " ", "customer_name": "Blank Store", "mobile_number": "9876543212", "lead_source": "Meta", "campaign_name": "June", "lead_date": "2026-06-01", "remarks": "bad"},
+        {"cost_center": "A100", "customer_name": "Grace", "mobile_number": "9876543213", "lead_source": "Referral", "campaign_name": "June", "lead_date": "2026-06-02", "remarks": "ok"},
+    ])
+
+    result = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
+
+    assert result.rows_seen == 5
+    assert result.raw_rows_inserted == 2
+    assert result.leads_created == 2
+    assert result.rows_skipped == 3
+    warning_pairs = [(warning.code, warning.field_name, warning.row_number) for warning in result.warnings]
+    assert warning_pairs[:4] == [
+        ("missing_required_field", "customer_name", 2),
+        ("missing_required_field", "lead_source", 2),
+        ("missing_required_field", "campaign_name", 2),
+        ("missing_required_field", "remarks", 2),
+    ]
+    assert ("mobile_blank", "mobile_number", 3) in warning_pairs
+    assert ("invalid_lead_date", "lead_date", 4) in warning_pairs
+    assert ("invalid_cost_center", "cost_center", 5) in warning_pairs
+    async with session_scope(url) as session:
+        external_rows = (
+            await session.execute(
+                sa.select(
+                    trx_external_leads.c.customer_name,
+                    trx_external_leads.c.lead_source,
+                    trx_external_leads.c.campaign_name,
+                    trx_external_leads.c.remarks,
+                ).order_by(trx_external_leads.c.external_lead_id)
+            )
+        ).all()
+        assert external_rows == [(None, "", None, None), ("Grace", "Referral", "June", "ok")]
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 2
+
+
+@pytest.mark.asyncio
 async def test_td_pending_rows_same_store_and_mobile_share_unified_lead(tmp_path: Path) -> None:
     url = await _prepare_db(tmp_path)
     async with session_scope(url) as session:
