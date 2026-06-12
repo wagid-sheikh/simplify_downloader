@@ -143,6 +143,7 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 pipeline_run_id=pipeline_run_id,
                 lead_stage=str(row.get("campaign_name") or "").strip() or None,
                 assigned_store=cost_center,
+                dedupe_by_customer_identity=True,
             )
             if created:
                 result.leads_created += 1

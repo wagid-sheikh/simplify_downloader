@@ -85,6 +85,7 @@ async def import_td_leads(*, database_url: str, pipeline_run_id: str, logger: Js
                 pipeline_run_id=pipeline_run_id,
                 lead_stage=str(row.get("status_bucket") or "").strip() or None,
                 assigned_store=cost_center,
+                dedupe_by_customer_identity=True,
             )
             if created:
                 result.leads_created += 1
