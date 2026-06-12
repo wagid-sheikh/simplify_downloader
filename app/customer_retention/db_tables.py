@@ -82,6 +82,13 @@ trx_customer_followup_leads = sa.Table(
     sa.CheckConstraint(f"lead_source_type IN ({_LEAD_SOURCE_SQL})", name="ck_customer_followup_leads_source_type"),
     sa.CheckConstraint(f"lead_status IN ({_LEAD_STATUS_SQL})", name="ck_customer_followup_leads_status"),
     sa.CheckConstraint(
+        "lead_source_type NOT IN ('TD', 'EXTERNAL') OR "
+        "(source_system IS NOT NULL "
+        "AND source_table_name IS NOT NULL "
+        "AND source_record_id IS NOT NULL)",
+        name="ck_cfl_source_identity_required",
+    ),
+    sa.CheckConstraint(
         f"lifecycle_bucket IS NULL OR lifecycle_bucket IN ({_LIFECYCLE_BUCKET_SQL})",
         name="ck_customer_followup_leads_lifecycle_bucket",
     ),
