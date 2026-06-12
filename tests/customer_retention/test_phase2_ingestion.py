@@ -10,7 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.common.db import session_scope
-from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_external_leads
+from app.customer_retention.constants import SUPPRESSION_STATE_ACTIVE, SUPPRESSION_STATE_PENDING_APPROVAL
+from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
 from app.customer_retention.external_import import import_external_lead_file, parse_external_lead_file
 from app.customer_retention.input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks
 from app.customer_retention.persistence import get_or_create_followup_lead
@@ -65,7 +66,7 @@ def _write_workbook(path: Path, rows: list[dict[str, object]]) -> None:
     readme.title = "READ_ME"
     readme.append(["Instructions"])
     ws = wb.create_sheet("FOLLOWUP_LEADS")
-    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "Contact Attempted", "Customer Response", "Complaint", "Do Not Contact", "Handled By"]
+    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "Contact Attempted", "Contact Mode", "Customer Response", "Order Expected", "Next Follow-up Date", "Complaint", "Do Not Contact", "Handled By", "Staff Remarks"]
     ws.append(headers)
     for row in rows:
         ws.append([row.get(h) for h in headers])
@@ -355,7 +356,7 @@ async def test_workbook_duplicate_upload_protected_edits_invalid_mobile_and_requ
             )
         ).one()
         assert lead_row.customer_name == "Ada"
-        assert lead_row.lead_status == "OPEN"
+        assert lead_row.lead_status == "WORKED"
         assert lead_row.lead_stage is None
         assert lead_row.staff_remarks is None
         assert lead_row.is_closed is False
@@ -370,8 +371,112 @@ async def test_workbook_duplicate_upload_protected_edits_invalid_mobile_and_requ
                 ).where(trx_customer_followup_history.c.event_type.like("Pending_Not_Updated:%"))
             )
         ).one()
-        assert pending_event.previous_status is None
-        assert pending_event.new_status is None
+        assert pending_event.previous_status == "WORKED"
+        assert pending_event.new_status == "WORKED"
+
+
+@pytest.mark.asyncio
+async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        for lead_id, mobile in ((1, "9876543210"), (2, "9876543211"), (3, "9876543212"), (4, "9876543213")):
+            await session.execute(trx_customer_followup_leads.insert().values(
+                lead_id=lead_id,
+                lead_uuid=f"lead-{lead_id}",
+                lead_source_type="EXTERNAL",
+                source_system="test",
+                source_table_name="source",
+                source_record_id=str(lead_id),
+                cost_center="A100",
+                customer_name=f"Customer {lead_id}",
+                mobile_number=mobile,
+                normalized_mobile_number=mobile,
+                lead_date=date(2026, 6, 1),
+                lead_status="OPEN",
+                contact_attempted=False,
+                complaint_flag=False,
+                do_not_contact_flag=False,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            ))
+        await session.commit()
+
+    wb_path = tmp_path / "lifecycle_returned.xlsx"
+    _write_workbook(wb_path, [
+        {"lead_id": 1, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 1", "mobile_number": "9876543210", "Contact Attempted": "Yes", "Contact Mode": "Call", "Customer Response": "Pickup Requested", "Order Expected": "Yes", "Next Follow-up Date": "2026-06-20", "Complaint": "No", "Do Not Contact": "No", "Handled By": "Staff", "Staff Remarks": "Will order"},
+        {"lead_id": 2, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 2", "mobile_number": "9876543211", "Contact Attempted": "Yes", "Customer Response": "Not Interested", "Complaint": "No", "Do Not Contact": "No"},
+        {"lead_id": 3, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 3", "mobile_number": "9876543212", "Contact Attempted": "Yes", "Customer Response": "Do Not Contact", "Complaint": "No", "Do Not Contact": "Yes"},
+        {"lead_id": 4, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 4", "mobile_number": "9876543213", "Contact Attempted": "", "Customer Response": "", "Complaint": "No", "Do Not Contact": "No"},
+    ])
+
+    result = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-lifecycle")
+
+    assert result.history_inserted == 4
+    assert result.rows_pending_not_updated == 1
+    async with session_scope(url) as session:
+        leads = (
+            await session.execute(
+                sa.select(
+                    trx_customer_followup_leads.c.lead_id,
+                    trx_customer_followup_leads.c.lead_status,
+                    trx_customer_followup_leads.c.customer_response,
+                    trx_customer_followup_leads.c.next_followup_date,
+                    trx_customer_followup_leads.c.staff_remarks,
+                    trx_customer_followup_leads.c.is_closed,
+                ).order_by(trx_customer_followup_leads.c.lead_id)
+            )
+        ).all()
+        by_id = {row.lead_id: row for row in leads}
+        assert by_id[1].lead_status == "DUE_FOLLOWUP"
+        assert by_id[1].customer_response == "Pickup Requested"
+        assert by_id[1].next_followup_date == date(2026, 6, 20)
+        assert by_id[1].staff_remarks == "Will order"
+        assert by_id[2].lead_status == "CLOSED"
+        assert by_id[2].is_closed is True
+        assert by_id[3].lead_status == "CLOSED"
+        assert by_id[3].is_closed is True
+        assert by_id[4].lead_status == "OPEN"
+        assert by_id[4].customer_response is None
+
+        suppressions = (
+            await session.execute(
+                sa.select(
+                    trx_customer_suppression.c.source_lead_id,
+                    trx_customer_suppression.c.suppression_state,
+                    trx_customer_suppression.c.is_permanent,
+                    trx_customer_suppression.c.suppression_until,
+                ).order_by(trx_customer_suppression.c.source_lead_id)
+            )
+        ).all()
+        assert len(suppressions) == 2
+        assert suppressions[0].source_lead_id == 2
+        assert suppressions[0].suppression_state == SUPPRESSION_STATE_ACTIVE
+        assert suppressions[0].is_permanent is False
+        assert suppressions[0].suppression_until is not None
+        assert (suppressions[0].suppression_until - date.today()).days == 90
+        assert suppressions[1].source_lead_id == 3
+        assert suppressions[1].suppression_state == SUPPRESSION_STATE_PENDING_APPROVAL
+        assert suppressions[1].is_permanent is True
+        assert suppressions[1].suppression_until is None
+
+        assert (
+            await session.execute(
+                sa.select(sa.func.count()).select_from(trx_customer_suppression).where(
+                    trx_customer_suppression.c.is_permanent.is_(True),
+                    trx_customer_suppression.c.suppression_state == SUPPRESSION_STATE_ACTIVE,
+                )
+            )
+        ).scalar_one() == 0
+        pending_event = (
+            await session.execute(
+                sa.select(trx_customer_followup_history.c.previous_status, trx_customer_followup_history.c.new_status).where(
+                    trx_customer_followup_history.c.lead_id == 4,
+                    trx_customer_followup_history.c.event_type.like("Pending_Not_Updated:%"),
+                )
+            )
+        ).one()
+        assert pending_event.previous_status == "OPEN"
+        assert pending_event.new_status == "OPEN"
 
 
 def test_input_discovery_and_archive_are_deterministic(tmp_path: Path) -> None:
