@@ -259,6 +259,11 @@ def is_non_interactive() -> bool:
     return False
 
 
+
+def _clean_optional_path_config(value: str | None, *, default: str) -> str:
+    raw = str(value or "").strip()
+    return raw or default
+
 def _warn_non_interactive_override(
     original_etl_headless: bool, original_pdf_render_headless: bool
 ) -> None:
@@ -402,6 +407,9 @@ class Config:
     td_leads_store_worker_timeout_seconds: int
     td_leads_gather_timeout_seconds: int
     td_leads_cancellation_drain_timeout_seconds: int
+    customer_followup_input_dir: str
+    customer_followup_external_input_dir: str
+    customer_followup_archive_dir: str
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -535,6 +543,19 @@ class Config:
         td_store_dashboard_path = _clean_text(
             db_values["TD_STORE_DASHBOARD_PATH"], key="TD_STORE_DASHBOARD_PATH"
         )
+        reports_root = env_values["REPORTS_ROOT"]
+        customer_followup_input_dir = _clean_optional_path_config(
+            db_values.get("CUSTOMER_FOLLOWUP_INPUT_DIR"),
+            default=str(Path(reports_root) / "inputs" / "customer_followup"),
+        )
+        customer_followup_external_input_dir = _clean_optional_path_config(
+            db_values.get("CUSTOMER_FOLLOWUP_EXTERNAL_INPUT_DIR"),
+            default=str(Path(customer_followup_input_dir) / "external_leads"),
+        )
+        customer_followup_archive_dir = _clean_optional_path_config(
+            db_values.get("CUSTOMER_FOLLOWUP_ARCHIVE_DIR"),
+            default=str(Path(reports_root) / "archive" / "customer_followup"),
+        )
         td_storage_state_filename = _clean_text(
             db_values["TD_STORAGE_STATE_FILENAME"], key="TD_STORAGE_STATE_FILENAME"
         )
@@ -571,7 +592,6 @@ class Config:
             decrypted_values["REPORT_EMAIL_SMTP_PASSWORD"], key="REPORT_EMAIL_SMTP_PASSWORD"
         )
 
-        reports_root = env_values["REPORTS_ROOT"]
         json_log_file = env_values["JSON_LOG_FILE"]
 
         return cls(
@@ -616,6 +636,9 @@ class Config:
             td_leads_store_worker_timeout_seconds=td_leads_store_worker_timeout_seconds,
             td_leads_gather_timeout_seconds=td_leads_gather_timeout_seconds,
             td_leads_cancellation_drain_timeout_seconds=td_leads_cancellation_drain_timeout_seconds,
+            customer_followup_input_dir=customer_followup_input_dir,
+            customer_followup_external_input_dir=customer_followup_external_input_dir,
+            customer_followup_archive_dir=customer_followup_archive_dir,
         )
 
 

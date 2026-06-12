@@ -1757,7 +1757,7 @@ This prompt is the controlling planning instruction that produced the five execu
 | Phase | Status | Owner/Agent | Started On | Completed On | Sign-off Notes |
 | --- | --- | --- | --- | --- | --- |
 | Phase 1: Database Schema & Migration Architecture | TESTED | Codex | 2026-06-11 | 2026-06-12 | Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests implemented; pending human sign-off before Phase 2. |
-| Phase 2: Lead Ingestion, Normalization, & External Imports | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 2: Lead Ingestion, Normalization, & External Imports | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 2 ingestion/normalization modules, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and focused tests implemented. Phase 1 schema/idempotency constraints preserved; Phase 2 not signed off pending human review. |
 | Phase 3: Lifecycle Management, Suppression, & Recovery | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 5: Aggregation Analytics & Management Reporting | NOT_STARTED | TBD | TBD | TBD | TBD |
@@ -1798,21 +1798,21 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` Create `app/customer_retention/mobile.py` with a single normalization helper that returns structured valid/invalid results.
-- [ ] `NOT_STARTED` Create `app/customer_retention/normalization.py` for configurable mapping of chaotic workbook/user inputs to canonical values from [Section 29](#29-input-normalization).
-- [ ] `NOT_STARTED` Create `app/customer_retention/input_discovery.py` for config-backed discovery of returned workbooks and external lead imports.
-- [ ] `NOT_STARTED` Create `app/customer_retention/source_adapters.py` with a TD adapter reading from actual `crm_leads_current` records created by `app/crm_downloader/td_leads_sync/ingest.py`.
-- [ ] `NOT_STARTED` Implement EXTERNAL import parser for CSV/XLSX files under `inputs/customer_followup/external_leads/`, using config-backed paths.
-- [ ] `NOT_STARTED` Persist raw external import rows to `trx_external_leads` before conversion to unified follow-up leads.
-- [ ] `NOT_STARTED` Convert valid TD rows into `trx_customer_followup_leads` with stable source idempotency keys.
-- [ ] `NOT_STARTED` Convert valid EXTERNAL rows into `trx_customer_followup_leads` with stable import-batch and row idempotency keys.
-- [ ] `NOT_STARTED` Skip invalid or unnormalizable mobile numbers before any lead instantiation.
-- [ ] `NOT_STARTED` Implement row-level warning collection for invalid mobile numbers, missing required fields, invalid target stores, duplicate rows, and protected-column edits.
-- [ ] `NOT_STARTED` Create `app/customer_retention/workbook_ingestor.py` for returned workbook ingestion from the `FOLLOWUP_LEADS` sheet.
-- [ ] `NOT_STARTED` Make workbook ingestion idempotent so repeated uploads do not duplicate history rows or state transitions.
-- [ ] `NOT_STARTED` Archive processed input files using deterministic archive behavior that cannot overwrite prior archived files silently.
-- [ ] `NOT_STARTED` Add tests for mobile normalization, value normalization, TD import idempotency, EXTERNAL import idempotency, and workbook duplicate upload handling.
-- [ ] `NOT_STARTED` Update Phase 2 tracker status and sign-off notes after ingestion tests pass.
+- [x] `TESTED` Create `app/customer_retention/mobile.py` with a single normalization helper that returns structured valid/invalid results.
+- [x] `TESTED` Create `app/customer_retention/normalization.py` for configurable mapping of chaotic workbook/user inputs to canonical values from [Section 29](#29-input-normalization).
+- [x] `TESTED` Create `app/customer_retention/input_discovery.py` for config-backed discovery of returned workbooks and external lead imports.
+- [x] `TESTED` Create `app/customer_retention/source_adapters.py` with a TD adapter reading from actual `crm_leads_current` records created by `app/crm_downloader/td_leads_sync/ingest.py`.
+- [x] `TESTED` Implement EXTERNAL import parser for CSV/XLSX files under `inputs/customer_followup/external_leads/`, using config-backed paths.
+- [x] `TESTED` Persist raw external import rows to `trx_external_leads` before conversion to unified follow-up leads.
+- [x] `TESTED` Convert valid TD rows into `trx_customer_followup_leads` with stable source idempotency keys.
+- [x] `TESTED` Convert valid EXTERNAL rows into `trx_customer_followup_leads` with stable import-batch and row idempotency keys.
+- [x] `TESTED` Skip invalid or unnormalizable mobile numbers before any lead instantiation.
+- [x] `TESTED` Implement row-level warning collection for invalid mobile numbers, missing required fields, invalid target stores, duplicate rows, and protected-column edits.
+- [x] `TESTED` Create `app/customer_retention/workbook_ingestor.py` for returned workbook ingestion from the `FOLLOWUP_LEADS` sheet.
+- [x] `TESTED` Make workbook ingestion idempotent so repeated uploads do not duplicate history rows or state transitions.
+- [x] `TESTED` Archive processed input files using deterministic archive behavior that cannot overwrite prior archived files silently.
+- [x] `TESTED` Add tests for mobile normalization, value normalization, TD import idempotency, EXTERNAL import idempotency, and workbook duplicate upload handling.
+- [x] `TESTED` Update Phase 2 tracker status and sign-off notes after ingestion tests pass.
 
 Guard rails:
 
