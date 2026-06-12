@@ -9,7 +9,14 @@ from uuid import NAMESPACE_URL, uuid5
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .constants import LEAD_STATUS_OPEN
+from .constants import (
+    LEAD_SOURCE_EXTERNAL,
+    LEAD_SOURCE_TD,
+    LEAD_STATUS_DUE_FOLLOWUP,
+    LEAD_STATUS_OPEN,
+    LEAD_STATUS_PENDING,
+    LEAD_STATUS_WORKED,
+)
 from .db_tables import trx_customer_followup_history, trx_customer_followup_leads
 
 
@@ -44,6 +51,51 @@ async def fetch_active_cost_centers(session: AsyncSession) -> set[str]:
     return {str(row).strip().upper() for row in rows if str(row or "").strip()}
 
 
+CUSTOMER_IDENTITY_DEDUPE_SOURCE_TYPES = {LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL}
+CUSTOMER_IDENTITY_ACTIONABLE_STATUSES = {
+    LEAD_STATUS_OPEN,
+    LEAD_STATUS_PENDING,
+    LEAD_STATUS_DUE_FOLLOWUP,
+    LEAD_STATUS_WORKED,
+}
+
+
+async def find_existing_open_customer_lead(
+    session: AsyncSession,
+    *,
+    lead_source_type: str,
+    cost_center: str,
+    normalized_mobile_number: str,
+) -> int | None:
+    """Return an existing actionable customer lead for TD/EXTERNAL identity de-dupe.
+
+    Customer identity matching is intentionally cross-source for TD and EXTERNAL
+    leads: a customer should have one open operational follow-up lead per
+    cost center and normalized mobile number, regardless of whether the new
+    trigger came from TD or an external campaign file. Source-record
+    idempotency is handled before this lookup so exact reprocessing still
+    returns the source-matched lead first.
+    """
+
+    if lead_source_type not in CUSTOMER_IDENTITY_DEDUPE_SOURCE_TYPES or not normalized_mobile_number:
+        return None
+
+    existing = await session.execute(
+        sa.select(trx_customer_followup_leads.c.lead_id)
+        .where(
+            trx_customer_followup_leads.c.lead_source_type.in_(tuple(CUSTOMER_IDENTITY_DEDUPE_SOURCE_TYPES)),
+            trx_customer_followup_leads.c.cost_center == cost_center,
+            trx_customer_followup_leads.c.normalized_mobile_number == normalized_mobile_number,
+            trx_customer_followup_leads.c.lead_status.in_(tuple(CUSTOMER_IDENTITY_ACTIONABLE_STATUSES)),
+            trx_customer_followup_leads.c.is_closed.is_(False),
+        )
+        .order_by(trx_customer_followup_leads.c.lead_id.asc())
+        .limit(1)
+    )
+    existing_id = existing.scalar_one_or_none()
+    return int(existing_id) if existing_id is not None else None
+
+
 async def get_or_create_followup_lead(
     session: AsyncSession,
     *,
@@ -60,6 +112,7 @@ async def get_or_create_followup_lead(
     pipeline_run_id: str | None,
     lead_stage: str | None = None,
     assigned_store: str | None = None,
+    dedupe_by_customer_identity: bool = False,
 ) -> tuple[int, bool]:
     existing = await session.execute(
         sa.select(trx_customer_followup_leads.c.lead_id).where(
@@ -72,6 +125,15 @@ async def get_or_create_followup_lead(
     existing_id = existing.scalar_one_or_none()
     if existing_id is not None:
         return int(existing_id), False
+    if dedupe_by_customer_identity:
+        customer_lead_id = await find_existing_open_customer_lead(
+            session,
+            lead_source_type=lead_source_type,
+            cost_center=cost_center,
+            normalized_mobile_number=normalized_mobile_number,
+        )
+        if customer_lead_id is not None:
+            return customer_lead_id, False
     values: dict[str, Any] = {
         "lead_uuid": stable_uuid("followup", lead_source_type, source_system, source_table_name, source_record_id),
         "lead_source_type": lead_source_type,
