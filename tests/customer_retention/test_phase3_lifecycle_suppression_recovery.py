@@ -17,7 +17,6 @@ from app.customer_retention.constants import (
     LEAD_STATUS_DUE_FOLLOWUP,
     LEAD_STATUS_OPEN,
     LEAD_STATUS_RECOVERED,
-    LEAD_STATUS_WORKED,
     LIFECYCLE_BUCKET_COLD,
     LIFECYCLE_BUCKET_COOLING,
     LIFECYCLE_BUCKET_DORMANT,
@@ -25,7 +24,6 @@ from app.customer_retention.constants import (
     LIFECYCLE_BUCKET_WARM,
     SUPPRESSION_STATE_ACTIVE,
     SUPPRESSION_STATE_PENDING_APPROVAL,
-    SUPPRESSION_STATE_REJECTED,
     WORKBOOK_OUTCOME_DO_NOT_CONTACT,
     WORKBOOK_OUTCOME_LEAD_STALE,
     WORKBOOK_OUTCOME_NOT_INTERESTED,
@@ -179,6 +177,58 @@ async def test_lifecycle_transitions_history_idempotency_and_suppression_rules(t
         assert active_permanent_count == 0
         lead3 = (await session.execute(sa.select(trx_customer_followup_leads.c.lead_status).where(trx_customer_followup_leads.c.lead_id == 3))).scalar_one()
         assert lead3 == LEAD_STATUS_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_transition_rejects_unknown_customer_response_without_mutating_lead(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        await _insert_lead(session, lead_id=1)
+        before = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == 1))).mappings().one()
+
+        invalid = await apply_lifecycle_transition(
+            session,
+            lead_id=1,
+            customer_response="Do Not Contact Immediately",
+            contact_attempted=True,
+            contact_mode="Phone",
+            next_followup_date=date(2026, 6, 20),
+            complaint_flag=True,
+            do_not_contact_flag=True,
+            staff_remarks="Operator-entered response is not a workbook label.",
+            handled_by="agent1",
+            pipeline_run_id="run-invalid",
+            event_key="bad-response",
+        )
+        await session.commit()
+
+        after = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == 1))).mappings().one()
+        history_count = (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history))).scalar_one()
+        suppression_count = (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_suppression))).scalar_one()
+
+        assert invalid.new_status == LEAD_STATUS_OPEN
+        assert invalid.history_inserted is False
+        assert invalid.warnings == ("invalid_customer_response",)
+        assert history_count == 0
+        assert suppression_count == 0
+        for column in (
+            "lead_status",
+            "customer_response",
+            "contact_attempted",
+            "contact_mode",
+            "next_followup_date",
+            "complaint_flag",
+            "do_not_contact_flag",
+            "staff_remarks",
+            "handled_by",
+            "is_closed",
+            "closed_at",
+            "closed_reason",
+            "suppression_applied",
+            "suppression_until",
+            "updated_by_pipeline_run_id",
+        ):
+            assert after[column] == before[column]
 
 
 @pytest.mark.asyncio

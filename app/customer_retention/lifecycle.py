@@ -31,6 +31,7 @@ from .constants import (
     LIFECYCLE_BUCKET_WARM,
     PERMANENT_SUPPRESSION_WORKBOOK_OUTCOMES,
     TIME_BOUND_SUPPRESSION_WORKBOOK_OUTCOMES,
+    WORKBOOK_OUTCOME_LABELS,
     WORKBOOK_OUTCOME_ALREADY_GIVEN_ORDER,
     WORKBOOK_OUTCOME_INTERESTED,
     WORKBOOK_OUTCOME_NO_RESPONSE,
@@ -211,6 +212,8 @@ async def apply_lifecycle_transition(
             normalized_values={"customer_response": customer_response, "contact_attempted": contact_attempted},
         )
         return LifecycleTransitionResult(lead_id, previous_status, previous_status, history_inserted, warnings=("required_fields_missing",))
+    if customer_response not in WORKBOOK_OUTCOME_LABELS:
+        return LifecycleTransitionResult(lead_id, previous_status, previous_status, False, warnings=("invalid_customer_response",))
     if previous_status in {LEAD_STATUS_CLOSED, LEAD_STATUS_RECOVERED}:
         return LifecycleTransitionResult(lead_id, previous_status, previous_status, False, warnings=("lead_not_actionable",))
 
