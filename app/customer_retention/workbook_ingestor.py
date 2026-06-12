@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 from .constants import WORKBOOK_OUTCOME_LABELS
 from .db_tables import trx_customer_followup_leads
+from .lifecycle import apply_lifecycle_transition
 from .mobile import normalize_mobile
 from .normalization import ValueNormalizer
 from .persistence import insert_history_once
@@ -66,6 +68,40 @@ def _changed(a: Any, b: Any) -> bool:
     return str(a or "").strip() != str(b or "").strip()
 
 
+def _normalized_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text == "yes":
+        return True
+    if text == "no":
+        return False
+    return None
+
+
+def _normalized_date(value: Any) -> date | None:
+    if value is None or not str(value).strip():
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalized_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_run_id: str, logger: JsonLogger | None = None, normalizer: ValueNormalizer | None = None) -> WorkbookIngestionResult:
     file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     result = WorkbookIngestionResult(source_file=path.name, file_identity=file_digest)
@@ -83,6 +119,8 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
     async with session_scope(database_url) as session:
         for row_number, values in enumerate(rows_iter, start=2):
             row = _row_dict(headers, values)
+            if "next_follow_up_date" in row and "next_followup_date" not in row:
+                row["next_followup_date"] = row["next_follow_up_date"]
             if not any(value is not None and str(value).strip() for value in row.values()):
                 continue
             result.rows_seen += 1
@@ -129,20 +167,42 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
             if response.invalid and response.warning_code != "required_blank":
                 row_has_required_blank = True
                 result.warnings.append(RowWarning(response.warning_code or "invalid_response", response.warning_message or "Customer response is invalid", row_number, path.name, "customer_response", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            for field in ("contact_mode", "order_expected"):
+                normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field])
+                normalized_values[field] = normalized.normalized_value
             event_suffix = f"{file_digest[:16]}:{row_number}"
+            lead_id = int(lead_map["lead_id"])
             if row_has_required_blank:
                 result.rows_pending_not_updated += 1
-                event_type = f"Pending_Not_Updated:{event_suffix}"
+                inserted = await insert_history_once(
+                    session,
+                    lead_id=lead_id,
+                    pipeline_run_id=pipeline_run_id,
+                    event_type=f"Pending_Not_Updated:{event_suffix}",
+                    previous_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
+                    new_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
+                    raw_excel_value_json={key: (str(value) if value is not None else None) for key, value in row.items() if key in EDITABLE_COLUMNS or key in PROTECTED_COLUMNS},
+                    normalized_value_json=normalized_values,
+                )
             else:
-                event_type = f"WORKBOOK_ROW_INGESTED:{event_suffix}"
-            inserted = await insert_history_once(
-                session,
-                lead_id=int(lead_map["lead_id"]),
-                pipeline_run_id=pipeline_run_id,
-                event_type=event_type,
-                raw_excel_value_json={key: (str(value) if value is not None else None) for key, value in row.items() if key in EDITABLE_COLUMNS or key in PROTECTED_COLUMNS},
-                normalized_value_json=normalized_values,
-            )
+                # Successful rows must pass through the lifecycle engine so status,
+                # closure, suppression, and history contracts stay centralized.
+                transition = await apply_lifecycle_transition(
+                    session,
+                    lead_id=lead_id,
+                    customer_response=normalized_values.get("customer_response"),
+                    contact_attempted=_normalized_bool(normalized_values.get("contact_attempted")),
+                    contact_mode=_normalized_text(normalized_values.get("contact_mode")),
+                    order_expected=_normalized_text(normalized_values.get("order_expected")),
+                    next_followup_date=_normalized_date(row.get("next_followup_date")),
+                    complaint_flag=_normalized_bool(normalized_values.get("complaint")),
+                    do_not_contact_flag=_normalized_bool(normalized_values.get("do_not_contact")),
+                    staff_remarks=_normalized_text(row.get("staff_remarks")),
+                    handled_by=_normalized_text(row.get("handled_by")),
+                    pipeline_run_id=pipeline_run_id,
+                    event_key=event_suffix,
+                )
+                inserted = transition.history_inserted
             if inserted:
                 result.history_inserted += 1
             else:
