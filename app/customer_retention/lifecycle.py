@@ -38,7 +38,7 @@ from .constants import (
     WORKBOOK_OUTCOME_PICKUP_REQUESTED,
     WORKBOOK_OUTCOME_WILL_GIVE_ORDER_LATER,
 )
-from .db_tables import trx_customer_followup_leads
+from .db_tables import trx_customer_followup_history, trx_customer_followup_leads
 from .mobile import normalize_mobile
 from .persistence import insert_history_once
 
@@ -196,6 +196,7 @@ async def apply_lifecycle_transition(
     handled_by: str | None = None,
     pipeline_run_id: str | None = None,
     event_key: str | None = None,
+    suppression_start_date: date,
 ) -> LifecycleTransitionResult:
     lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == lead_id))).mappings().first()
     if lead is None:
@@ -214,6 +215,11 @@ async def apply_lifecycle_transition(
         return LifecycleTransitionResult(lead_id, previous_status, previous_status, history_inserted, warnings=("required_fields_missing",))
     if customer_response not in WORKBOOK_OUTCOME_LABELS:
         return LifecycleTransitionResult(lead_id, previous_status, previous_status, False, warnings=("invalid_customer_response",))
+
+    history_event = f"LIFECYCLE_TRANSITION:{event_key or lead_id}:{customer_response}"
+    if await _transition_history_exists(session, lead_id=lead_id, event_type=history_event):
+        return LifecycleTransitionResult(lead_id, previous_status, previous_status, False)
+
     if previous_status in {LEAD_STATUS_CLOSED, LEAD_STATUS_RECOVERED}:
         return LifecycleTransitionResult(lead_id, previous_status, previous_status, False, warnings=("lead_not_actionable",))
 
@@ -250,7 +256,7 @@ async def apply_lifecycle_transition(
             cost_center=str(lead["cost_center"]),
             normalized_mobile_number=str(lead["normalized_mobile_number"]),
             reason=customer_response,
-            start_date=date.today(),
+            start_date=suppression_start_date,
             source_lead_id=lead_id,
             pipeline_run_id=pipeline_run_id,
         )
@@ -264,6 +270,7 @@ async def apply_lifecycle_transition(
             cost_center=str(lead["cost_center"]),
             normalized_mobile_number=str(lead["normalized_mobile_number"]),
             reason=customer_response,
+            start_date=suppression_start_date,
             mobile_number=lead.get("mobile_number"),
             source_lead_id=lead_id,
             pipeline_run_id=pipeline_run_id,
@@ -274,7 +281,6 @@ async def apply_lifecycle_transition(
         update_values.update({"is_closed": True, "closed_at": now, "closed_reason": closed_reason})
     update_values["lead_status"] = new_status
 
-    history_event = f"LIFECYCLE_TRANSITION:{event_key or lead_id}:{customer_response}"
     history_inserted = await _write_transition_history(
         session,
         lead_id=lead_id,
@@ -296,6 +302,16 @@ async def apply_lifecycle_transition(
     if history_inserted:
         await session.execute(trx_customer_followup_leads.update().where(trx_customer_followup_leads.c.lead_id == lead_id).values(**update_values))
     return LifecycleTransitionResult(lead_id, previous_status, new_status if history_inserted else previous_status, history_inserted, suppression_id, pending_approval_id)
+
+
+async def _transition_history_exists(session: AsyncSession, *, lead_id: int, event_type: str) -> bool:
+    existing = await session.execute(
+        sa.select(trx_customer_followup_history.c.history_id).where(
+            trx_customer_followup_history.c.lead_id == lead_id,
+            trx_customer_followup_history.c.event_type == event_type,
+        )
+    )
+    return existing.scalar_one_or_none() is not None
 
 
 async def _write_transition_history(
