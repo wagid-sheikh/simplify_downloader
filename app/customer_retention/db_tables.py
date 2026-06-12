@@ -89,6 +89,11 @@ trx_customer_followup_leads = sa.Table(
         name="ck_cfl_source_identity_required",
     ),
     sa.CheckConstraint(
+        "lead_source_type <> 'RETENTION' OR "
+        "(lifecycle_bucket IS NOT NULL AND created_by_pipeline_run_id IS NOT NULL)",
+        name="ck_cfl_retention_identity_required",
+    ),
+    sa.CheckConstraint(
         f"lifecycle_bucket IS NULL OR lifecycle_bucket IN ({_LIFECYCLE_BUCKET_SQL})",
         name="ck_customer_followup_leads_lifecycle_bucket",
     ),
