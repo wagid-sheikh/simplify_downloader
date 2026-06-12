@@ -81,6 +81,10 @@ async def detect_recoveries(
     recovered = 0
     closed = 0
     history_count = 0
+    changed_lead_ids: set[int] = set()
+    # Candidate orders are already sorted by order date then order number. When
+    # multiple orders qualify for the same lead in one run, the first ordered
+    # order wins and the lead is excluded from later order matches below.
     for raw_order in order_rows:
         mobile_result = normalize_mobile(raw_order.get("mobile_number"))
         if not mobile_result.is_valid:
@@ -91,7 +95,13 @@ async def detect_recoveries(
         orders_seen += 1
         order_date = _as_date(raw_order["order_date"])
         order_datetime = _as_datetime(raw_order["order_date"])
-        candidates = [lead for lead in leads if (str(lead["cost_center"]), str(lead["normalized_mobile_number"])) == identity and _trigger_date(lead) < order_date]
+        candidates = [
+            lead
+            for lead in leads
+            if int(lead["lead_id"]) not in changed_lead_ids
+            and (str(lead["cost_center"]), str(lead["normalized_mobile_number"])) == identity
+            and _trigger_date(lead) < order_date
+        ]
         candidates = [lead for lead in candidates if not bool(lead["is_closed"]) and not bool(lead["is_recovered"])]
         if not candidates:
             continue
@@ -130,6 +140,7 @@ async def detect_recoveries(
         )
         recovered += 1
         history_count += 1
+        changed_lead_ids.add(int(winner["lead_id"]))
         amount = Decimal(str(raw_order.get("order_amount") or "0"))
         matches.append(RecoveryMatch(int(winner["lead_id"]), order_id, order_datetime, amount))
         other_ids = [int(lead["lead_id"]) for lead in candidates[1:]]
@@ -158,6 +169,7 @@ async def detect_recoveries(
                     normalized_value_json={"recovered_by_lead_id": int(winner["lead_id"]), "recovered_order_id": order_id},
                 )
                 history_count += int(inserted)
+            changed_lead_ids.update(other_ids)
             closed += len(other_ids)
     return RecoveryDetectionResult(recovered, closed, orders_seen, history_count, matches=tuple(matches))
 

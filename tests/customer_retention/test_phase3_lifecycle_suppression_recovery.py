@@ -213,6 +213,29 @@ async def test_recovery_detection_idempotent_store_scoped_and_uses_vw_order_amou
 
 
 @pytest.mark.asyncio
+async def test_recovery_detection_recovers_lead_once_when_multiple_orders_match(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        await _insert_lead(session, lead_id=1, cost_center="A100", mobile="9876543210", lead_date=date(2026, 6, 1))
+        await session.execute(sa.text("""
+            INSERT INTO vw_orders (cost_center, order_number, order_date, customer_name, mobile_number, order_amount) VALUES
+            ('A100', 'FIRST', '2026-06-05 10:00:00', 'A', '9876543210', 100.00),
+            ('A100', 'SECOND', '2026-06-06 10:00:00', 'A', '9876543210', 200.00)
+        """))
+
+        result = await detect_recoveries(session, as_of_date=date(2026, 6, 30), pipeline_run_id="run1")
+        await session.commit()
+
+        history_count = (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history))).scalar_one()
+        recovered_order_id = (await session.execute(sa.select(trx_customer_followup_leads.c.recovered_order_id).where(trx_customer_followup_leads.c.lead_id == 1))).scalar_one()
+        assert history_count == 1
+        assert result.leads_recovered == 1
+        assert len(result.matches) == 1
+        assert result.matches[0].recovered_order_id == "FIRST"
+        assert recovered_order_id == "FIRST"
+
+
+@pytest.mark.asyncio
 async def test_snapshot_excludes_suppressed_open_leads_and_invalid_mobile(tmp_path: Path) -> None:
     url = await _prepare_db(tmp_path)
     async with session_scope(url) as session:
