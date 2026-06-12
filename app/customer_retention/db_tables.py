@@ -175,6 +175,12 @@ trx_external_leads = sa.Table(
     sa.CheckConstraint(f"lead_status IN ({_LEAD_STATUS_SQL})", name="ck_external_leads_status"),
 )
 
+# Enabled cap config rows must not have overlapping inclusive effective date
+# ranges within the same scope. Migration 0130 enforces this at the database
+# level with PostgreSQL exclusion constraints (and SQLite test triggers):
+# global scope is (cost_center IS NULL, lead_source_type, work_section); store
+# scope is (cost_center, lead_source_type, work_section). NULL effective_until
+# is an unbounded upper range. Disabled rows are historical and may overlap.
 customer_followup_cap_config = sa.Table(
     "customer_followup_cap_config",
     metadata,
