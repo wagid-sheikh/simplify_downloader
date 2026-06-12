@@ -1226,7 +1226,8 @@ If returned workbook mobile numbers are invalid, unnormalizable, or conflict wit
 If required fields are blank:
 
 - keep lead pending
-- mark as `Pending_Not_Updated`
+- record `Pending_Not_Updated` as a `trx_customer_followup_history.event_type` audit event only
+- do not mutate `trx_customer_followup_leads.lead_status`, `lead_stage`, `staff_remarks`, closure fields, recovery fields, or suppression fields during Phase 2 workbook ingestion
 - include in summary email
 
 If same workbook is uploaded twice:
@@ -1810,6 +1811,7 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 - [x] `TESTED` Implement row-level warning collection for invalid mobile numbers, missing required fields, invalid target stores, duplicate rows, and protected-column edits.
 - [x] `TESTED` Create `app/customer_retention/workbook_ingestor.py` for returned workbook ingestion from the `FOLLOWUP_LEADS` sheet.
 - [x] `TESTED` Make workbook ingestion idempotent so repeated uploads do not duplicate history rows or state transitions.
+- [x] `TESTED` Represent blank required workbook editable fields as history-only `Pending_Not_Updated` events; Phase 2 does not mutate lead lifecycle/status fields or introduce Phase 3 closure, recovery, or suppression behavior.
 - [x] `TESTED` Archive processed input files using deterministic archive behavior that cannot overwrite prior archived files silently.
 - [x] `TESTED` Add tests for mobile normalization, value normalization, TD import idempotency, EXTERNAL import idempotency, and workbook duplicate upload handling.
 - [x] `TESTED` Update Phase 2 tracker status and sign-off notes after ingestion tests pass.

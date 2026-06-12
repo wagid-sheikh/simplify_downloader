@@ -341,8 +341,37 @@ async def test_workbook_duplicate_upload_protected_edits_invalid_mobile_and_requ
     assert second.history_existing == 2
     async with session_scope(url) as session:
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history))).scalar_one() == 2
-        name = (await session.execute(sa.select(trx_customer_followup_leads.c.customer_name).where(trx_customer_followup_leads.c.lead_id == 1))).scalar_one()
-        assert name == "Ada"
+        lead_row = (
+            await session.execute(
+                sa.select(
+                    trx_customer_followup_leads.c.customer_name,
+                    trx_customer_followup_leads.c.lead_status,
+                    trx_customer_followup_leads.c.lead_stage,
+                    trx_customer_followup_leads.c.staff_remarks,
+                    trx_customer_followup_leads.c.is_closed,
+                    trx_customer_followup_leads.c.is_recovered,
+                    trx_customer_followup_leads.c.suppression_applied,
+                ).where(trx_customer_followup_leads.c.lead_id == 1)
+            )
+        ).one()
+        assert lead_row.customer_name == "Ada"
+        assert lead_row.lead_status == "OPEN"
+        assert lead_row.lead_stage is None
+        assert lead_row.staff_remarks is None
+        assert lead_row.is_closed is False
+        assert lead_row.is_recovered is False
+        assert lead_row.suppression_applied is False
+        pending_event = (
+            await session.execute(
+                sa.select(
+                    trx_customer_followup_history.c.event_type,
+                    trx_customer_followup_history.c.previous_status,
+                    trx_customer_followup_history.c.new_status,
+                ).where(trx_customer_followup_history.c.event_type.like("Pending_Not_Updated:%"))
+            )
+        ).one()
+        assert pending_event.previous_status is None
+        assert pending_event.new_status is None
 
 
 def test_input_discovery_and_archive_are_deterministic(tmp_path: Path) -> None:
