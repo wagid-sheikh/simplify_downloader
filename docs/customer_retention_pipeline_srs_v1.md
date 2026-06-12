@@ -1756,7 +1756,7 @@ This prompt is the controlling planning instruction that produced the five execu
 
 | Phase | Status | Owner/Agent | Started On | Completed On | Sign-off Notes |
 | --- | --- | --- | --- | --- | --- |
-| Phase 1: Database Schema & Migration Architecture | IN_PROGRESS | Codex | 2026-06-11 | TBD | Schema foundation started; no ingestion/runtime behavior in scope. |
+| Phase 1: Database Schema & Migration Architecture | TESTED | Codex | 2026-06-11 | 2026-06-12 | Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests implemented; pending human sign-off before Phase 2. |
 | Phase 2: Lead Ingestion, Normalization, & External Imports | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 3: Lifecycle Management, Suppression, & Recovery | NOT_STARTED | TBD | TBD | TBD | TBD |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | NOT_STARTED | TBD | TBD | TBD | TBD |
@@ -1766,22 +1766,22 @@ This prompt is the controlling planning instruction that produced the five execu
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` Create `app/customer_retention/__init__.py` for the new independent pipeline package.
-- [ ] `NOT_STARTED` Create `app/customer_retention/constants.py` with canonical constants for lead source types, lead statuses, lifecycle buckets, suppression states, cap work sections, and workbook outcome labels.
-- [ ] `IN_PROGRESS` Create `app/customer_retention/db_tables.py` using the repository's existing SQLAlchemy `sa.Table` style, not a new DB framework.
-- [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_leads` from [Section 17.2](#172-unified-lead-table).
-- [ ] `NOT_STARTED` Define table contract for `trx_customer_followup_history` from [Section 17.3](#173-lead-history-table).
-- [ ] `NOT_STARTED` Define table contract for `trx_customer_suppression` from [Section 17.4](#174-suppression-table), including approval-state fields required by staff-entered permanent suppression rules.
-- [ ] `NOT_STARTED` Define table contract for `trx_external_leads` from [Section 17.5](#175-external-leads-intake-table).
-- [ ] `NOT_STARTED` Define table contract for `customer_followup_cap_config` from [Section 17.6](#176-customer-follow-up-cap-configuration-table).
-- [ ] `NOT_STARTED` Add `store_master.customer_retention_pipeline BOOLEAN NOT NULL DEFAULT false` in a new forward-only Alembic migration.
-- [ ] `NOT_STARTED` Add indexes from [Section 38](#38-suggested-indexes), adapted to actual repository naming conventions.
-- [ ] `NOT_STARTED` Add source-idempotency uniqueness for TD, EXTERNAL, and RETENTION lead creation.
-- [ ] `NOT_STARTED` Add cap configuration constraints so `daily_cap` is required when `is_uncapped = false`.
-- [ ] `NOT_STARTED` Add constraint/check behavior preventing capped TD rows unless explicitly represented as uncapped.
-- [ ] `NOT_STARTED` Seed default global RETENTION/FRESH_RETENTION cap row with `daily_cap = 13`.
-- [ ] `NOT_STARTED` Add schema-level tests or migration tests following existing test patterns.
-- [ ] `NOT_STARTED` Update Phase 1 tracker status and sign-off notes after migration/test review.
+- [x] `TESTED` Create `app/customer_retention/__init__.py` for the new independent pipeline package.
+- [x] `TESTED` Create `app/customer_retention/constants.py` with canonical constants for lead source types, lead statuses, lifecycle buckets, suppression states, cap work sections, and workbook outcome labels.
+- [x] `TESTED` Create `app/customer_retention/db_tables.py` using the repository's existing SQLAlchemy `sa.Table` style, not a new DB framework.
+- [x] `TESTED` Define table contract for `trx_customer_followup_leads` from [Section 17.2](#172-unified-lead-table).
+- [x] `TESTED` Define table contract for `trx_customer_followup_history` from [Section 17.3](#173-lead-history-table).
+- [x] `TESTED` Define table contract for `trx_customer_suppression` from [Section 17.4](#174-suppression-table), including approval-state fields required by staff-entered permanent suppression rules.
+- [x] `TESTED` Define table contract for `trx_external_leads` from [Section 17.5](#175-external-leads-intake-table).
+- [x] `TESTED` Define table contract for `customer_followup_cap_config` from [Section 17.6](#176-customer-follow-up-cap-configuration-table).
+- [x] `TESTED` Add `store_master.customer_retention_pipeline BOOLEAN NOT NULL DEFAULT false` in a new forward-only Alembic migration.
+- [x] `TESTED` Add indexes from [Section 38](#38-suggested-indexes), adapted to actual repository naming conventions.
+- [x] `TESTED` Add source-idempotency uniqueness for TD, EXTERNAL, and RETENTION lead creation.
+- [x] `TESTED` Add cap configuration constraints so `daily_cap` is required when `is_uncapped = false`.
+- [x] `TESTED` Add constraint/check behavior preventing capped TD rows unless explicitly represented as uncapped.
+- [x] `TESTED` Seed default global RETENTION/FRESH_RETENTION cap row with `daily_cap = 13`.
+- [x] `TESTED` Add schema-level tests or migration tests following existing test patterns.
+- [x] `TESTED` Update Phase 1 tracker status and sign-off notes after migration/test review.
 
 Guard rails:
 
