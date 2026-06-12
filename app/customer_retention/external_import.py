@@ -21,6 +21,8 @@ from .persistence import fetch_active_cost_centers, get_or_create_followup_lead,
 from .types import ImportBatchResult, RowWarning
 
 REQUIRED_EXTERNAL_COLUMNS = ("cost_center", "customer_name", "mobile_number", "lead_source", "campaign_name", "lead_date", "remarks")
+BLOCKING_REQUIRED_EXTERNAL_FIELDS = {"cost_center", "mobile_number", "lead_date"}
+WARNING_ONLY_REQUIRED_EXTERNAL_FIELDS = tuple(col for col in REQUIRED_EXTERNAL_COLUMNS if col not in BLOCKING_REQUIRED_EXTERNAL_FIELDS)
 
 
 def _header_key(value: Any) -> str:
@@ -82,6 +84,22 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 result.rows_skipped += 1
                 result.warnings.append(RowWarning("missing_required_columns", "External lead row is missing required columns", row_number, path.name))
                 continue
+            blank_required_fields = [col for col in REQUIRED_EXTERNAL_COLUMNS if not str(row.get(col) or "").strip()]
+            for field_name in blank_required_fields:
+                if field_name in WARNING_ONLY_REQUIRED_EXTERNAL_FIELDS:
+                    # SRS Section 18 only blocks rows that cannot be safely matched or actioned
+                    # (store, mobile identity, or lead date). Descriptive campaign/customer
+                    # context is still persisted from the raw import and converted with a
+                    # row-level warning so one weak field does not crash or hide the batch.
+                    result.warnings.append(
+                        RowWarning(
+                            "missing_required_field",
+                            "External lead row has a blank required field",
+                            row_number,
+                            path.name,
+                            field_name,
+                        )
+                    )
             cost_center = str(row.get("cost_center") or "").strip().upper()
             if not cost_center or (active_cost_centers and cost_center not in active_cost_centers):
                 result.rows_skipped += 1
