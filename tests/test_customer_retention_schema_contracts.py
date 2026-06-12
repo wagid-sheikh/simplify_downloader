@@ -40,6 +40,6 @@ def test_customer_retention_table_contracts_expose_required_columns() -> None:
     assert {"lead_source_type", "work_section", "daily_cap", "is_uncapped"}.issubset(
         customer_followup_cap_config.c.keys()
     )
-    assert "ck_cfl_source_identity_required" in {
-        constraint.name for constraint in trx_customer_followup_leads.constraints
-    }
+    lead_constraint_names = {constraint.name for constraint in trx_customer_followup_leads.constraints}
+    assert "ck_cfl_source_identity_required" in lead_constraint_names
+    assert "ck_cfl_retention_identity_required" in lead_constraint_names
