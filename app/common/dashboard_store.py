@@ -58,6 +58,12 @@ store_master = sa.Table(
     sa.Column("start_date", sa.Date),
     sa.Column("etl_flag", sa.Boolean, nullable=False, server_default=sa.text("false")),
     sa.Column("report_flag", sa.Boolean, nullable=False, server_default=sa.text("false")),
+    sa.Column(
+        "customer_retention_pipeline",
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.text("false"),
+    ),
     sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
     sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
