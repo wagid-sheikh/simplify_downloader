@@ -36,11 +36,12 @@ from .constants import (
     WORKBOOK_OUTCOME_INTERESTED,
     WORKBOOK_OUTCOME_NO_RESPONSE,
     WORKBOOK_OUTCOME_PICKUP_REQUESTED,
+    WORKBOOK_OUTCOME_SHIFTED_LOCATION,
     WORKBOOK_OUTCOME_WILL_GIVE_ORDER_LATER,
 )
 from .db_tables import trx_customer_followup_history, trx_customer_followup_leads
 from .mobile import normalize_mobile
-from .persistence import insert_history_once
+from .persistence import get_or_create_followup_lead, insert_history_once
 
 LIFECYCLE_DAY_RANGES: tuple[tuple[str, int, int | None], ...] = (
     (LIFECYCLE_BUCKET_ACTIVE, 0, 21),
@@ -197,6 +198,7 @@ async def apply_lifecycle_transition(
     pipeline_run_id: str | None = None,
     event_key: str | None = None,
     suppression_start_date: date,
+    target_cost_center: str | None = None,
 ) -> LifecycleTransitionResult:
     lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == lead_id))).mappings().first()
     if lead is None:
@@ -235,6 +237,7 @@ async def apply_lifecycle_transition(
         "complaint_flag": bool(complaint_flag) if complaint_flag is not None else False,
         "do_not_contact_flag": bool(do_not_contact_flag) if do_not_contact_flag is not None else False,
         "staff_remarks": staff_remarks,
+        "target_cost_center": target_cost_center,
         "handled_by": handled_by,
         "updated_at": now,
         "updated_by_pipeline_run_id": pipeline_run_id,
@@ -281,6 +284,34 @@ async def apply_lifecycle_transition(
         update_values.update({"is_closed": True, "closed_at": now, "closed_reason": closed_reason})
     update_values["lead_status"] = new_status
 
+    shifted_destination_lead_id: int | None = None
+    shifted_destination_created: bool | None = None
+    if customer_response == WORKBOOK_OUTCOME_SHIFTED_LOCATION and target_cost_center:
+        # A shifted-location handoff is a one-time, target-store EXTERNAL lead.
+        # The source store still receives its normal pending permanent suppression;
+        # idempotency is anchored to the source lead and target cost center so
+        # workbook replays cannot fan out duplicate destination leads.
+        shifted_destination_lead_id, shifted_destination_created = await get_or_create_followup_lead(
+            session,
+            lead_source_type=LEAD_SOURCE_EXTERNAL,
+            source_system="CUSTOMER_FOLLOWUP_SHIFTED_LOCATION",
+            source_table_name="trx_customer_followup_leads",
+            source_record_id=f"{lead_id}:{target_cost_center}",
+            source_reference=f"shifted_from_lead_id={lead_id}",
+            cost_center=target_cost_center,
+            customer_name=lead.get("customer_name"),
+            mobile_number=lead.get("mobile_number"),
+            normalized_mobile_number=str(lead["normalized_mobile_number"]),
+            lead_date=suppression_start_date,
+            pipeline_run_id=pipeline_run_id,
+            lead_stage=WORKBOOK_OUTCOME_SHIFTED_LOCATION,
+            assigned_store=target_cost_center,
+            dedupe_by_customer_identity=False,
+            target_cost_center=target_cost_center,
+            shifted_from_lead_id=lead_id,
+            shifted_from_cost_center=str(lead["cost_center"]),
+        )
+
     history_inserted = await _write_transition_history(
         session,
         lead_id=lead_id,
@@ -288,7 +319,14 @@ async def apply_lifecycle_transition(
         event_type=history_event,
         previous_status=previous_status,
         new_status=new_status,
-        normalized_values={"customer_response": customer_response, "suppression_id": suppression_id, "pending_approval_id": pending_approval_id},
+        normalized_values={
+            "customer_response": customer_response,
+            "suppression_id": suppression_id,
+            "pending_approval_id": pending_approval_id,
+            "target_cost_center": target_cost_center,
+            "shifted_destination_lead_id": shifted_destination_lead_id,
+            "shifted_destination_created": shifted_destination_created,
+        },
         handled_by=handled_by,
         contact_attempted=contact_attempted,
         contact_mode=contact_mode,
@@ -298,6 +336,7 @@ async def apply_lifecycle_transition(
         complaint_flag=complaint_flag,
         do_not_contact_flag=do_not_contact_flag,
         staff_remarks=staff_remarks,
+        target_cost_center=target_cost_center,
     )
     if history_inserted:
         await session.execute(trx_customer_followup_leads.update().where(trx_customer_followup_leads.c.lead_id == lead_id).values(**update_values))

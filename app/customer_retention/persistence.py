@@ -113,6 +113,9 @@ async def get_or_create_followup_lead(
     lead_stage: str | None = None,
     assigned_store: str | None = None,
     dedupe_by_customer_identity: bool = False,
+    target_cost_center: str | None = None,
+    shifted_from_lead_id: int | None = None,
+    shifted_from_cost_center: str | None = None,
 ) -> tuple[int, bool]:
     existing = await session.execute(
         sa.select(trx_customer_followup_leads.c.lead_id).where(
@@ -149,6 +152,9 @@ async def get_or_create_followup_lead(
         "lead_status": LEAD_STATUS_OPEN,
         "lead_stage": lead_stage,
         "assigned_store": assigned_store or cost_center,
+        "target_cost_center": target_cost_center,
+        "shifted_from_lead_id": shifted_from_lead_id,
+        "shifted_from_cost_center": shifted_from_cost_center,
         "created_by_pipeline_run_id": pipeline_run_id,
         "updated_by_pipeline_run_id": pipeline_run_id,
         "created_at": datetime.now(timezone.utc),

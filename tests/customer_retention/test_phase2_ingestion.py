@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.common.db import session_scope
-from app.customer_retention.constants import SUPPRESSION_STATE_ACTIVE, SUPPRESSION_STATE_PENDING_APPROVAL
+from app.customer_retention.constants import SUPPRESSION_STATE_ACTIVE, SUPPRESSION_STATE_PENDING_APPROVAL, WORKBOOK_OUTCOME_SHIFTED_LOCATION
 from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
 from app.customer_retention.external_import import import_external_lead_file, parse_external_lead_file
 from app.customer_retention.input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks
@@ -18,6 +18,7 @@ from app.customer_retention.persistence import get_or_create_followup_lead
 from app.customer_retention.mobile import MobileNormalizationStatus, normalize_mobile
 from app.customer_retention.normalization import ValueNormalizer, normalize_value
 from app.customer_retention.source_adapters import import_td_leads
+from app.customer_retention.suppression import approve_suppression, check_active_suppression
 from app.customer_retention.workbook_ingestor import ingest_returned_workbook
 
 
@@ -28,7 +29,7 @@ async def _prepare_db(tmp_path: Path) -> str:
     async with engine.begin() as conn:
         await conn.run_sync(metadata.create_all)
         await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
-        await conn.execute(sa.text("INSERT INTO store_master (cost_center, customer_retention_pipeline) VALUES ('A100', 1), ('B200', 0)"))
+        await conn.execute(sa.text("INSERT INTO store_master (cost_center, customer_retention_pipeline) VALUES ('A100', 1), ('B200', 0), ('C300', 1)"))
         await conn.execute(sa.text("""
             CREATE TABLE crm_leads_current (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,11 +67,47 @@ def _write_workbook(path: Path, rows: list[dict[str, object]]) -> None:
     readme.title = "READ_ME"
     readme.append(["Instructions"])
     ws = wb.create_sheet("FOLLOWUP_LEADS")
-    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "generated_at", "Contact Attempted", "Contact Mode", "Customer Response", "Order Expected", "Next Follow-up Date", "Complaint", "Do Not Contact", "Handled By", "Staff Remarks"]
+    headers = ["lead_id", "lead_source_type", "cost_center", "customer_name", "mobile_number", "generated_at", "Contact Attempted", "Contact Mode", "Customer Response", "Order Expected", "Next Follow-up Date", "Complaint", "Do Not Contact", "Handled By", "Staff Remarks", "Target Cost Center"]
     ws.append(headers)
     for row in rows:
         ws.append([row.get(h) for h in headers])
     wb.save(path)
+
+
+
+
+async def _insert_workbook_lead(
+    url: str,
+    *,
+    lead_id: int = 1,
+    cost_center: str = "A100",
+    mobile: str = "9876543210",
+    lead_status: str = "OPEN",
+) -> None:
+    async with session_scope(url) as session:
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=lead_id,
+            lead_uuid=f"lead-{lead_id}",
+            lead_source_type="EXTERNAL",
+            source_system="test",
+            source_table_name="source",
+            source_record_id=str(lead_id),
+            cost_center=cost_center,
+            customer_name=f"Customer {lead_id}",
+            mobile_number=mobile,
+            normalized_mobile_number=mobile,
+            lead_date=date(2026, 6, 1),
+            lead_status=lead_status,
+            contact_attempted=False,
+            complaint_flag=False,
+            do_not_contact_flag=False,
+            is_closed=lead_status == "CLOSED",
+            is_recovered=False,
+            suppression_applied=False,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
 
 
 def test_mobile_normalization_statuses_and_variants() -> None:
@@ -477,6 +514,113 @@ async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_
         ).one()
         assert pending_event.previous_status == "OPEN"
         assert pending_event.new_status == "OPEN"
+
+@pytest.mark.asyncio
+async def test_shifted_location_valid_target_creates_one_idempotent_external_destination(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url, lead_id=10, cost_center="A100", mobile="9876543210")
+    wb_path = tmp_path / "shifted_valid.xlsx"
+    _write_workbook(wb_path, [
+        {"lead_id": 10, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 10", "mobile_number": "9876543210", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": WORKBOOK_OUTCOME_SHIFTED_LOCATION, "Complaint": "No", "Do Not Contact": "No", "Target Cost Center": "c300"},
+    ])
+
+    first = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-shift-1")
+    replay = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-shift-2")
+
+    assert first.history_inserted == 1
+    assert replay.history_existing == 1
+    assert not first.warnings
+    async with session_scope(url) as session:
+        leads = (await session.execute(sa.select(trx_customer_followup_leads).order_by(trx_customer_followup_leads.c.lead_id))).mappings().all()
+        assert len(leads) == 2
+        source = next(row for row in leads if row["lead_id"] == 10)
+        destination = next(row for row in leads if row["lead_id"] != 10)
+        assert source["lead_status"] == "CLOSED"
+        assert source["is_closed"] is True
+        assert source["closed_reason"] == WORKBOOK_OUTCOME_SHIFTED_LOCATION
+        assert source["target_cost_center"] == "C300"
+        assert destination["lead_source_type"] == "EXTERNAL"
+        assert destination["cost_center"] == "C300"
+        assert destination["assigned_store"] == "C300"
+        assert destination["target_cost_center"] == "C300"
+        assert destination["shifted_from_lead_id"] == 10
+        assert destination["shifted_from_cost_center"] == "A100"
+        assert destination["source_system"] == "CUSTOMER_FOLLOWUP_SHIFTED_LOCATION"
+        assert destination["source_record_id"] == "10:C300"
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(trx_customer_followup_leads.c.shifted_from_lead_id == 10))).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_shifted_location_blank_target_no_destination_and_normal_pending_suppression(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url, lead_id=11, cost_center="A100", mobile="9876543211")
+    wb_path = tmp_path / "shifted_blank.xlsx"
+    _write_workbook(wb_path, [
+        {"lead_id": 11, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 11", "mobile_number": "9876543211", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": WORKBOOK_OUTCOME_SHIFTED_LOCATION, "Complaint": "No", "Do Not Contact": "No", "Target Cost Center": ""},
+    ])
+
+    result = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-shift-blank")
+
+    assert {warning.code for warning in result.warnings} == {"target_cost_center_blank"}
+    async with session_scope(url) as session:
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+        suppression = (await session.execute(sa.select(trx_customer_suppression).where(trx_customer_suppression.c.source_lead_id == 11))).mappings().one()
+        assert suppression["suppression_state"] == SUPPRESSION_STATE_PENDING_APPROVAL
+        assert suppression["is_permanent"] is True
+        source = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == 11))).mappings().one()
+        assert source["lead_status"] == "CLOSED"
+        assert source["target_cost_center"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_cost_center", "warning_code"),
+    [("B200", "target_cost_center_invalid"), ("A100", "target_cost_center_same_store")],
+)
+async def test_shifted_location_invalid_or_same_store_target_warns_and_creates_no_destination(tmp_path: Path, target_cost_center: str, warning_code: str) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url, lead_id=12, cost_center="A100", mobile="9876543212")
+    wb_path = tmp_path / f"shifted_{target_cost_center}.xlsx"
+    _write_workbook(wb_path, [
+        {"lead_id": 12, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 12", "mobile_number": "9876543212", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": WORKBOOK_OUTCOME_SHIFTED_LOCATION, "Complaint": "No", "Do Not Contact": "No", "Target Cost Center": target_cost_center},
+    ])
+
+    result = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id=f"run-shift-{target_cost_center}")
+
+    assert {warning.code for warning in result.warnings} == {warning_code}
+    async with session_scope(url) as session:
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(trx_customer_followup_leads.c.shifted_from_lead_id == 12))).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_shifted_location_source_suppression_records_remain_intact_and_target_identity_is_isolated(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url, lead_id=13, cost_center="A100", mobile="9876543213")
+    wb_path = tmp_path / "shifted_suppression_isolation.xlsx"
+    _write_workbook(wb_path, [
+        {"lead_id": 13, "lead_source_type": "EXTERNAL", "cost_center": "A100", "customer_name": "Customer 13", "mobile_number": "9876543213", "generated_at": "2026-06-10", "Contact Attempted": "Yes", "Customer Response": WORKBOOK_OUTCOME_SHIFTED_LOCATION, "Complaint": "No", "Do Not Contact": "No", "Target Cost Center": "C300"},
+    ])
+
+    await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-shift-isolation")
+
+    async with session_scope(url) as session:
+        suppression = (await session.execute(sa.select(trx_customer_suppression).where(trx_customer_suppression.c.source_lead_id == 13))).mappings().one()
+        assert suppression["cost_center"] == "A100"
+        assert suppression["suppression_state"] == SUPPRESSION_STATE_PENDING_APPROVAL
+        assert suppression["is_permanent"] is True
+        history_before = (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history).where(trx_customer_followup_history.c.lead_id == 13))).scalar_one()
+
+        approval = await approve_suppression(session, suppression_id=int(suppression["suppression_id"]), approved_by="manager", pipeline_run_id="approval-run")
+        source_decision = await check_active_suppression(session, cost_center="A100", normalized_mobile_number="9876543213", as_of_date=date(2026, 6, 12))
+        target_decision = await check_active_suppression(session, cost_center="C300", normalized_mobile_number="9876543213", as_of_date=date(2026, 6, 12))
+        await session.commit()
+
+        assert approval.changed is True
+        assert source_decision.is_suppressed is True
+        assert target_decision.is_suppressed is False
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(trx_customer_followup_leads.c.cost_center == "C300", trx_customer_followup_leads.c.normalized_mobile_number == "9876543213"))).scalar_one() == 1
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history).where(trx_customer_followup_history.c.lead_id == 13))).scalar_one() == history_before + 1
 
 
 def test_input_discovery_and_archive_are_deterministic(tmp_path: Path) -> None:

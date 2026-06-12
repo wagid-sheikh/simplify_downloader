@@ -13,12 +13,12 @@ import sqlalchemy as sa
 from app.common.db import session_scope
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
-from .constants import WORKBOOK_OUTCOME_LABELS
+from .constants import WORKBOOK_OUTCOME_LABELS, WORKBOOK_OUTCOME_SHIFTED_LOCATION
 from .db_tables import trx_customer_followup_leads
 from .lifecycle import apply_lifecycle_transition
 from .mobile import normalize_mobile
 from .normalization import ValueNormalizer
-from .persistence import insert_history_once
+from .persistence import fetch_active_cost_centers, insert_history_once
 from .types import RowWarning, WorkbookIngestionResult
 
 FOLLOWUP_SHEET = "FOLLOWUP_LEADS"
@@ -102,6 +102,11 @@ def _normalized_text(value: Any) -> str | None:
     return text or None
 
 
+def _normalized_cost_center(value: Any) -> str | None:
+    text = _normalized_text(value)
+    return text.upper() if text else None
+
+
 def _suppression_start_date_from_row(row: dict[str, Any]) -> date:
     generated_at = _normalized_date(row.get("generated_at"))
     if generated_at is not None:
@@ -127,6 +132,7 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
         return result
     value_normalizer = normalizer or ValueNormalizer()
     async with session_scope(database_url) as session:
+        active_cost_centers = await fetch_active_cost_centers(session)
         for row_number, values in enumerate(rows_iter, start=2):
             row = _row_dict(headers, values)
             if "next_follow_up_date" in row and "next_followup_date" not in row:
@@ -180,6 +186,19 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
             for field in ("contact_mode", "order_expected"):
                 normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field])
                 normalized_values[field] = normalized.normalized_value
+            target_cost_center = _normalized_cost_center(row.get("target_cost_center"))
+            normalized_values["target_cost_center"] = target_cost_center
+            valid_shift_target: str | None = None
+            if normalized_values.get("customer_response") == WORKBOOK_OUTCOME_SHIFTED_LOCATION:
+                source_cost_center = str(lead_map.get("cost_center") or "").strip().upper()
+                if target_cost_center is None:
+                    result.warnings.append(RowWarning("target_cost_center_blank", "Shifted Location requires a target cost center before a destination lead can be created", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+                elif active_cost_centers and target_cost_center not in active_cost_centers:
+                    result.warnings.append(RowWarning("target_cost_center_invalid", "Shifted Location target cost center is missing or inactive in store_master", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+                elif target_cost_center == source_cost_center:
+                    result.warnings.append(RowWarning("target_cost_center_same_store", "Shifted Location target cost center must differ from the source store", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+                else:
+                    valid_shift_target = target_cost_center
             event_suffix = f"{file_digest[:16]}:{row_number}"
             lead_id = int(lead_map["lead_id"])
             if row_has_required_blank:
@@ -212,6 +231,7 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
                     pipeline_run_id=pipeline_run_id,
                     event_key=event_suffix,
                     suppression_start_date=_suppression_start_date_from_row(row),
+                    target_cost_center=valid_shift_target,
                 )
                 inserted = transition.history_inserted
             if inserted:
