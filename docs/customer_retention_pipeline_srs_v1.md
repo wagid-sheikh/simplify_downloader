@@ -1761,7 +1761,7 @@ This prompt is the controlling planning instruction that produced the five execu
 | Phase 2: Lead Ingestion, Normalization, & External Imports | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 2 ingestion/normalization modules, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and focused tests implemented. Phase 1 schema/idempotency constraints preserved; Phase 2 not signed off pending human review. |
 | Phase 3: Lifecycle Management, Suppression, & Recovery | IN_PROGRESS | Codex | 2026-06-12 | TBD | Phase 3 lifecycle, suppression, recovery code and tests implemented; awaiting human review/sign-off. |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | SIGNED_OFF | Codex / Owner | 2026-06-12 | 2026-06-13 | Owner accepted the 2026-06-13 re-audit outcome and signed off Phase 4 after the production Target Cost Center validation fallback, conditional ingestion semantics, Phase 4 selection/workbook logging, and expanded acceptance tests were implemented and verified. Phase 1 schema, Phase 2 ingestion/idempotency, and Phase 3 lifecycle/suppression/recovery contracts remain preserved. |
-| Phase 5: Aggregation Analytics & Management Reporting | NOT_STARTED | TBD | TBD | TBD | TBD |
+| Phase 5: Aggregation Analytics & Management Reporting | TESTED | Codex | 2026-06-13 | 2026-06-13 | Phase 5 analytics, owner-summary notification rendering, orchestration entry point, CLI integration, and focused tests implemented. Prior Phase 3 remains not signed off in tracker, so final all-phase sign-off is intentionally not claimed. |
 
 ## Phase 1: Database Schema & Migration Architecture
 
@@ -1910,23 +1910,27 @@ Guard rails:
 
 Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TESTED`, `SIGNED_OFF`.
 
-- [ ] `NOT_STARTED` Create `app/customer_retention/analytics.py` for run-level and store-level aggregation.
-- [ ] `NOT_STARTED` Aggregate store-wise statistics by source type: RETENTION, TD, and EXTERNAL.
-- [ ] `NOT_STARTED` Aggregate staff productivity metrics from `Handled By`.
-- [ ] `NOT_STARTED` Group blank or missing `Handled By` values under explicit `UNSPECIFIED`.
-- [ ] `NOT_STARTED` Count `UNSPECIFIED` handled-by rows as operational warnings.
-- [ ] `NOT_STARTED` Aggregate aging carry-forward workloads and due follow-up counts.
-- [ ] `NOT_STARTED` Aggregate recovery counts and recovered revenue using `vw_orders.order_amount`.
-- [ ] `NOT_STARTED` Aggregate warning counts: invalid mobiles, normalized dropdowns, duplicate uploads, system-column edits, missing fields, target cost center errors, pending suppression approvals, and frozen stores.
-- [ ] `NOT_STARTED` Create `app/customer_retention/notifications.py` using existing DB-backed notification/email infrastructure.
-- [ ] `NOT_STARTED` Add notification profile/template seed migration if required by existing conventions.
-- [ ] `NOT_STARTED` Create `app/customer_retention/pipeline.py` as the orchestration entry point.
-- [ ] `NOT_STARTED` Wire CLI command into `app/__main__.py` following existing parser style.
-- [ ] `NOT_STARTED` Support manual run parameters such as `--run-date`, `--run-id`, `--env`, `--dry-run`, and `--skip-email`.
-- [ ] `NOT_STARTED` Update canonical docs and scripts only as needed for operator-facing behavior.
-- [ ] `NOT_STARTED` Add integration tests or orchestration tests for end-to-end dry-run behavior.
-- [ ] `NOT_STARTED` Mark all phases `SIGNED_OFF` only after Phase 1-5 tests and approved deviations are recorded.
-- [ ] `NOT_STARTED` Update final SRS tracker status and sign-off notes.
+- [x] `TESTED` Create `app/customer_retention/analytics.py` for run-level and store-level aggregation.
+- [x] `TESTED` Aggregate store-wise statistics by source type: RETENTION, TD, and EXTERNAL.
+- [x] `TESTED` Aggregate staff productivity metrics from `Handled By`.
+- [x] `TESTED` Group blank or missing `Handled By` values under explicit `UNSPECIFIED`.
+- [x] `TESTED` Count `UNSPECIFIED` handled-by rows as operational warnings.
+- [x] `TESTED` Aggregate aging carry-forward workloads and due follow-up counts.
+- [x] `TESTED` Aggregate recovery counts and recovered revenue using `vw_orders.order_amount`.
+- [x] `TESTED` Aggregate warning counts: invalid mobiles, normalized dropdowns, duplicate uploads, system-column edits, missing fields, target cost center errors, pending suppression approvals, and frozen stores.
+- [x] `TESTED` Create `app/customer_retention/notifications.py` using existing DB-backed notification/email infrastructure.
+- [x] `TESTED` Add notification profile/template seed migration if required by existing conventions. Existing DB-backed notification lookup is reused with a built-in fallback template for missing seed data, so no migration was required.
+- [x] `TESTED` Create `app/customer_retention/pipeline.py` as the orchestration entry point.
+- [x] `TESTED` Wire CLI command into `app/__main__.py` following existing parser style.
+- [x] `TESTED` Support manual run parameters such as `--run-date`, `--run-id`, `--env`, `--dry-run`, and `--skip-email`.
+- [x] `IMPLEMENTED` Update canonical docs and scripts only as needed for operator-facing behavior. CLI behavior is documented in this SRS tracker; no scripts required changes.
+- [x] `TESTED` Add integration tests or orchestration tests for end-to-end dry-run behavior.
+- [ ] `BLOCKED` Mark all phases `SIGNED_OFF` only after Phase 1-5 tests and approved deviations are recorded. Phase 3 is still tracked as not owner-signed-off, so final all-phase sign-off is blocked rather than claimed.
+- [x] `TESTED` Update final SRS tracker status and sign-off notes.
+
+Phase 5 progress notes:
+
+- 2026-06-13 — Codex: Implemented management analytics, DB-backed notification rendering/sending path, orchestration runner, and CLI command. Recovered revenue analytics read only from `vw_orders.order_amount`; blank `Handled By` is grouped as `UNSPECIFIED` and counted as an operational warning. No schema migration was required because notification contracts can be loaded from existing DB tables with a safe fallback template. Final all-phase sign-off remains blocked because Phase 3 is not recorded as owner-signed-off in this tracker.
 
 Guard rails:
 

@@ -172,6 +172,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     oli_rebuild.add_argument("--run-id", default=None)
 
+    customer_retention_parser = subparsers.add_parser("customer-retention", help="Run customer retention pipeline commands")
+    customer_retention_subparsers = customer_retention_parser.add_subparsers(dest="customer_retention_command", required=True)
+    customer_retention_run = customer_retention_subparsers.add_parser("run", help="Run the customer retention pipeline")
+    customer_retention_run.add_argument("--run-date", dest="run_date", type=str, default=None, help="Run date (YYYY-MM-DD)")
+    customer_retention_run.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
+    customer_retention_run.add_argument("--env", dest="env", type=str, default=None, help="Override run environment")
+    customer_retention_run.add_argument("--dry-run", dest="dry_run", action="store_true", help="Plan the run without mutating ingestion/workbook/email side effects")
+    customer_retention_run.add_argument("--skip-email", dest="skip_email", action="store_true", help="Build summary payload but do not send owner email")
+
     recovery_parser = subparsers.add_parser(
         "recovery", help="Run recovery maintenance commands"
     )
@@ -200,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
 
     # Preserve existing CLI behaviour for legacy commands (e.g. run-weekly, db upgrade).
-    if args and args[0] not in {"server", "pipeline", "report", "recovery", "crm"}:
+    if args and args[0] not in {"server", "pipeline", "report", "recovery", "crm", "customer-retention"}:
         return pipeline_cli.main(args)
 
     parser = _build_parser()
@@ -244,6 +253,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     return exc.code
                 return 1
             return 0
+
+    if parsed.command == "customer-retention":
+        if parsed.customer_retention_command == "run":
+            from datetime import date
+            from app.customer_retention.pipeline import run_customer_retention_pipeline
+
+            run_date = date.fromisoformat(parsed.run_date) if parsed.run_date else None
+            result = asyncio.run(run_customer_retention_pipeline(run_date=run_date, run_id=parsed.run_id, env=parsed.env, dry_run=parsed.dry_run, skip_email=parsed.skip_email))
+            print(f"customer_retention run_id={result.run_id} status={result.status}", flush=True)
+            return 0 if result.status in {"success", "success_with_warnings"} else 1
 
     if parsed.command == "recovery":
         recovery_args: list[str] = []
