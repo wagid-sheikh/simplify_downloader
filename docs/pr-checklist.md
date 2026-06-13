@@ -29,6 +29,7 @@ Use this before requesting review.
 ## 4) API / contract / data impact
 
 - [ ] I reviewed impacts to pipeline codes, notification profiles, and template expectations.
+- [ ] Before enabling customer retention in production, I verified `customer_retention_pipeline` / `owner_summary` pipeline/profile rows, the active owner-summary email template, and active environment-appropriate notification recipients exist.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
 - [ ] For pending deliveries changes, I validated canonical eligibility: `vw_orders.recovery_status = 'NONE'` and no matching `sales` row for normal summary/detail buckets.
