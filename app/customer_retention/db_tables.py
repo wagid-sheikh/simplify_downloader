@@ -180,6 +180,9 @@ trx_external_leads = sa.Table(
     sa.CheckConstraint(f"lead_status IN ({_LEAD_STATUS_SQL})", name="ck_external_leads_status"),
 )
 
+# customer_followup_cap_config.work_section accepts only cap-governed scopes;
+# workbook work_section also includes uncapped operational categories such as
+# DUE_FOLLOWUP and PENDING_CARRY_FORWARD for workbook ordering/reporting.
 # Enabled cap config rows must not have overlapping inclusive effective date
 # ranges within the same scope. Migration 0130 enforces this at the database
 # level with PostgreSQL exclusion constraints (and SQLite test triggers):

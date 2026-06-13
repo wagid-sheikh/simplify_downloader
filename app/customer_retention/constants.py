@@ -68,6 +68,10 @@ CAP_WORK_SECTION_PENDING_CARRY_FORWARD = "PENDING_CARRY_FORWARD"
 CAP_WORK_SECTION_TD_LEAD = "TD_LEAD"
 CAP_WORK_SECTION_EXTERNAL_LEAD = "EXTERNAL_LEAD"
 CAP_WORK_SECTION_FRESH_RETENTION = "FRESH_RETENTION"
+
+# Workbook work_section values include uncapped operational categories used to
+# order and label carry-forward work. Cap configuration is narrower: only
+# cap-governed scopes belong in CAP_CONFIG_WORK_SECTIONS.
 CAP_WORK_SECTIONS = (
     CAP_WORK_SECTION_DUE_FOLLOWUP,
     CAP_WORK_SECTION_PENDING_CARRY_FORWARD,
@@ -75,6 +79,8 @@ CAP_WORK_SECTIONS = (
     CAP_WORK_SECTION_EXTERNAL_LEAD,
     CAP_WORK_SECTION_FRESH_RETENTION,
 )
+# Do not add DUE_FOLLOWUP or PENDING_CARRY_FORWARD here unless a future SRS
+# explicitly makes those operational workbook categories cap-governed.
 CAP_CONFIG_WORK_SECTIONS = (
     CAP_WORK_SECTION_TD_LEAD,
     CAP_WORK_SECTION_EXTERNAL_LEAD,
