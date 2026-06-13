@@ -31,7 +31,7 @@ from app.customer_retention.constants import (
     WORKBOOK_OUTCOME_LABELS,
     WORKBOOK_OUTCOME_SHIFTED_LOCATION,
 )
-from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_leads, trx_customer_suppression
+from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
 from app.customer_retention.workbook_generator import DROPDOWN_VALUES_BY_HEADER, FOLLOWUP_HEADERS, generate_store_workbook
 from app.customer_retention.workbook_ingestor import EDITABLE_COLUMNS, FOLLOWUP_SHEET, READ_ME_SHEET, ingest_returned_workbook
 from app.customer_retention.workbook_selection import load_active_retention_stores, select_workbook_leads_for_store
@@ -491,3 +491,155 @@ async def test_large_target_cost_center_lookup_sheet_is_not_user_facing_tab(tmp_
     visible_tabs = [sheet.title for sheet in workbook.worksheets if sheet.sheet_state == "visible"]
     assert visible_tabs == [READ_ME_SHEET, FOLLOWUP_SHEET]
     assert workbook["_ACTIVE_COST_CENTER_LOOKUP"].sheet_state in {"hidden", "veryHidden"}
+
+
+@pytest.mark.asyncio
+async def test_active_store_dropdown_is_loaded_from_enabled_store_master_only(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=501, priority=Decimal("20"))
+        await session.commit()
+        active_cost_centers = await load_active_retention_stores(session)
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=active_cost_centers,
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    target_col = openpyxl.utils.get_column_letter(headers.index("Target Cost Center") + 1)
+    validation_by_range = {
+        str(rng): dv for dv in sheet.data_validations.dataValidation for rng in dv.cells.ranges
+    }
+
+    assert active_cost_centers == ("A100", "C300", "D400")
+    assert validation_by_range[f"{target_col}2"].formula1 == '"A100,C300,D400"'
+    assert "B200" not in validation_by_range[f"{target_col}2"].formula1
+
+
+@pytest.mark.asyncio
+async def test_controlled_editable_dropdowns_are_unlocked_and_have_expected_validations(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=502, priority=Decimal("20"))
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=("A100", "C300", "D400"),
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    validation_by_range = {
+        str(rng): dv for dv in sheet.data_validations.dataValidation for rng in dv.cells.ranges
+    }
+    expected_dropdowns = {
+        **{header: values for header, values in DROPDOWN_VALUES_BY_HEADER.items()},
+        "Target Cost Center": ("A100", "C300", "D400"),
+    }
+
+    for header, values in expected_dropdowns.items():
+        col_idx = headers.index(header) + 1
+        col_letter = openpyxl.utils.get_column_letter(col_idx)
+        validation = validation_by_range[f"{col_letter}2"]
+        assert header in EDITABLE_COLUMNS.values()
+        assert sheet.cell(row=2, column=col_idx).protection.locked is False
+        assert validation.type == "list"
+        assert validation.showErrorMessage is True
+        assert validation.allow_blank is (header == "Target Cost Center")
+        for value in values:
+            assert value in validation.formula1
+
+
+@pytest.mark.asyncio
+async def test_generated_workbook_reingestion_ignores_protected_edits_and_preserves_identity_history(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=503, priority=Decimal("20"), mobile="9876500503")
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=("A100", "C300", "D400"),
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    col = {header: headers.index(header) + 1 for header in headers}
+
+    assert sheet.cell(row=2, column=col["lead_id"]).value == 503
+    assert sheet.cell(row=2, column=col["mobile_number"]).value == "9876500503"
+    assert sheet.cell(row=2, column=col["normalized_mobile_number"]).value == "9876500503"
+
+    sheet.cell(row=2, column=col["customer_name"], value="Tampered Name")
+    sheet.cell(row=2, column=col["cost_center"], value="C300")
+    sheet.cell(row=2, column=col["recommended_strategy"], value="Tampered Strategy")
+    sheet.cell(row=2, column=col["Contact Attempted"], value="Yes")
+    sheet.cell(row=2, column=col["Contact Mode"], value="Call")
+    sheet.cell(row=2, column=col["Customer Response"], value="Interested")
+    sheet.cell(row=2, column=col["Order Expected"], value="Maybe")
+    sheet.cell(row=2, column=col["Complaint"], value="No")
+    sheet.cell(row=2, column=col["Do Not Contact"], value="No")
+    sheet.cell(row=2, column=col["Handled By"], value="Staff Phase4")
+    sheet.cell(row=2, column=col["Staff Remarks"], value="Valid editable values")
+    workbook.save(output.output_path)
+
+    result = await ingest_returned_workbook(database_url=url, path=output.output_path, pipeline_run_id="run-phase4-return")
+
+    assert result.rows_seen == 1
+    assert result.protected_edits_ignored == 3
+    assert result.history_inserted == 1
+    assert result.rows_skipped == 0
+    assert {warning.code for warning in result.warnings} == {"protected_column_edit"}
+
+    async with session_scope(url) as session:
+        lead = (
+            await session.execute(
+                sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == 503)
+            )
+        ).mappings().one()
+        history = (
+            await session.execute(
+                sa.select(trx_customer_followup_history).where(trx_customer_followup_history.c.lead_id == 503)
+            )
+        ).mappings().one()
+
+    assert lead["cost_center"] == "A100"
+    assert lead["customer_name"] == "Customer 503"
+    assert lead["recommended_strategy"] == "Gentle reminder call"
+    assert lead["normalized_mobile_number"] == "9876500503"
+    assert history["pipeline_run_id"] == "run-phase4-return"
+    assert history["handled_by"] == "Staff Phase4"
+    assert history["contact_attempted"] is True
+    assert history["contact_mode"] == "Call"
+    assert history["customer_response"] == "Interested"
+    assert history["order_expected"] == "Maybe"
+    assert history["complaint_flag"] is False
+    assert history["do_not_contact_flag"] is False
+    assert history["staff_remarks"] == "Valid editable values"
