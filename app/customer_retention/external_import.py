@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from app.common.db import session_scope
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
-from .constants import LEAD_SOURCE_EXTERNAL, LEAD_STATUS_OPEN
+from .constants import LEAD_SOURCE_EXTERNAL, LEAD_STATUS_ERROR, LEAD_STATUS_OPEN
 from .db_tables import trx_external_leads
 from .mobile import normalize_mobile
 from .persistence import fetch_active_cost_centers, get_or_create_followup_lead, sqlite_next_id, stable_uuid
@@ -101,20 +101,15 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                         )
                     )
             cost_center = str(row.get("cost_center") or "").strip().upper()
-            if not cost_center or (active_cost_centers and cost_center not in active_cost_centers):
-                result.rows_skipped += 1
-                result.warnings.append(RowWarning("invalid_cost_center", "External lead row has missing or inactive cost center", row_number, path.name, "cost_center"))
-                continue
             mobile = normalize_mobile(row.get("mobile_number"))
-            if not mobile.is_valid:
-                result.rows_skipped += 1
-                result.warnings.append(RowWarning(mobile.warning_code or "invalid_mobile", mobile.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", cost_center=cost_center))
-                continue
             lead_date = _parse_date(row.get("lead_date"))
             if lead_date is None:
                 result.rows_skipped += 1
-                result.warnings.append(RowWarning("invalid_lead_date", "External lead row has invalid lead date", row_number, path.name, "lead_date", cost_center=cost_center))
+                result.warnings.append(RowWarning("invalid_lead_date", "External lead row has invalid lead date", row_number, path.name, "lead_date", cost_center=cost_center or None))
                 continue
+
+            has_valid_cost_center = bool(cost_center) and (not active_cost_centers or cost_center in active_cost_centers)
+            is_actionable = has_valid_cost_center and mobile.is_valid
             row_hash = _row_fingerprint(row)
             external_uuid = stable_uuid("external", result.import_batch_id, row_hash)
             existing_external = (await session.execute(sa.select(trx_external_leads.c.external_lead_id, trx_external_leads.c.converted_followup_lead_id).where(trx_external_leads.c.external_lead_uuid == external_uuid))).first()
@@ -131,9 +126,9 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                     "cost_center": cost_center,
                     "customer_name": str(row.get("customer_name") or "").strip() or None,
                     "mobile_number": str(row.get("mobile_number") or "").strip() or None,
-                    "normalized_mobile_number": mobile.normalized_mobile,
+                    "normalized_mobile_number": mobile.normalized_mobile or "",
                     "lead_date": lead_date,
-                    "lead_status": LEAD_STATUS_OPEN,
+                    "lead_status": LEAD_STATUS_OPEN if is_actionable else LEAD_STATUS_ERROR,
                     "remarks": str(row.get("remarks") or "").strip() or None,
                     "import_batch_id": result.import_batch_id,
                     "raw_payload_json": {key: (str(value) if value is not None else None) for key, value in row.items()},
@@ -146,6 +141,14 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 insert_result = await session.execute(trx_external_leads.insert().values(**values))
                 external_id = int(external_id or insert_result.inserted_primary_key[0])
                 result.raw_rows_inserted += 1
+            if not has_valid_cost_center:
+                result.rows_skipped += 1
+                result.warnings.append(RowWarning("invalid_cost_center", "External lead row has missing or inactive cost center", row_number, path.name, "cost_center"))
+                continue
+            if not mobile.is_valid:
+                result.rows_skipped += 1
+                result.warnings.append(RowWarning(mobile.warning_code or "invalid_mobile", mobile.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", cost_center=cost_center))
+                continue
             lead_id, created = await get_or_create_followup_lead(
                 session,
                 lead_source_type=LEAD_SOURCE_EXTERNAL,
