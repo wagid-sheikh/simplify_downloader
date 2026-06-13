@@ -114,6 +114,7 @@ async def test_analytics_counts_pending_suppression_approvals(tmp_path: Path):
     store = payload["store_summary"][0]
     assert store["pending_suppression_approval_count"] == 1
     assert store["suppression_additions_by_outcome"] == {"Wrong Number": 1}
+    assert payload["warning_error_summary"]["pending_suppression_approval_count"] == 1
 
 
 def test_static_customer_retention_reporting_uses_vw_orders_only():

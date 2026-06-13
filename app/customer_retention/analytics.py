@@ -88,7 +88,13 @@ async def build_management_summary_payload(
     suppression = await _suppression_summary(session, run_id=run_id)
     shifted = await _shifted_destination_summary(session, run_id=run_id)
     aging = _aging_from_selections(selection_list)
-    warning_summary = _warning_summary(warnings, ingestion_list, aging, staff)
+    warning_summary = _warning_summary(
+        warnings,
+        ingestion_list,
+        aging,
+        staff,
+        pending_suppression_approval_count=sum(suppression["pending_by_store"].values()),
+    )
 
     store_rows: list[dict[str, Any]] = []
     selection_by_store = {selection.cost_center: selection for selection in selection_list}
@@ -221,7 +227,14 @@ def _empty_aging(cost_center: str) -> dict[str, Any]:
     return {"cost_center": cost_center, "pending_carry_forward": 0, "rolling_14_day_backlog_count": 0, "unworked_gt_3_days": 0, "unworked_gt_7_days": 0, "backlog_threshold": 0, "fresh_retention_frozen": False}
 
 
-def _warning_summary(warnings: list[RowWarning], ingestion_results: list[WorkbookIngestionResult], aging: Mapping[str, Mapping[str, Any]], staff: list[dict[str, Any]]) -> dict[str, Any]:
+def _warning_summary(
+    warnings: list[RowWarning],
+    ingestion_results: list[WorkbookIngestionResult],
+    aging: Mapping[str, Mapping[str, Any]],
+    staff: list[dict[str, Any]],
+    *,
+    pending_suppression_approval_count: int = 0,
+) -> dict[str, Any]:
     codes = Counter(w.code for w in warnings)
     return {
         "returned_files_processed": len(ingestion_results),
@@ -246,7 +259,8 @@ def _warning_summary(warnings: list[RowWarning], ingestion_results: list[Workboo
             )
         ),
         "destination_external_leads_created": codes["shifted_destination_lead_created"],
-        "pending_suppression_approval_count": codes["pending_suppression_approval"],
+        "pending_suppression_approval_count": pending_suppression_approval_count
+        + codes["pending_suppression_approval"],
         "frozen_stores": [cc for cc, row in aging.items() if row.get("fresh_retention_frozen")],
         "unspecified_handled_by_warning_count": sum(1 for row in staff if row["handled_by"] == UNSPECIFIED_HANDLED_BY),
         "warnings_by_code": dict(codes),
