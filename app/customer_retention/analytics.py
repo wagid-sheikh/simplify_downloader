@@ -232,7 +232,19 @@ def _warning_summary(warnings: list[RowWarning], ingestion_results: list[Workboo
         "invalid_mobiles": codes["invalid_mobile"] + codes["invalid_mobile_identity"],
         "rows_left_pending_due_to_missing_fields": codes["missing_field"] + sum(r.rows_pending_not_updated for r in ingestion_results),
         "rows_skipped_invalid_mobile": codes["invalid_mobile"] + codes["invalid_mobile_identity"],
-        "target_cost_center_warnings": codes["invalid_target_cost_center"] + codes["same_store_target_cost_center"],
+        "target_cost_center_warnings": sum(
+            codes[code]
+            for code in (
+                "target_cost_center_blank",
+                "target_cost_center_invalid",
+                "target_cost_center_same_store",
+                "target_cost_center_ignored",
+                # Legacy aliases retained so historical callers/tests do not drop
+                # target-cost-center warnings if older producers are still present.
+                "invalid_target_cost_center",
+                "same_store_target_cost_center",
+            )
+        ),
         "destination_external_leads_created": codes["shifted_destination_lead_created"],
         "pending_suppression_approval_count": codes["pending_suppression_approval"],
         "frozen_stores": [cc for cc, row in aging.items() if row.get("fresh_retention_frozen")],
