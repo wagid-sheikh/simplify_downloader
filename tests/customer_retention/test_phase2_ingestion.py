@@ -605,6 +605,42 @@ async def test_workbook_duplicate_upload_protected_edits_invalid_mobile_and_requ
 
 
 @pytest.mark.asyncio
+async def test_workbook_blank_handled_by_warns_but_ingests_worked_row(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url)
+    wb_path = tmp_path / "blank_handler.xlsx"
+    _write_workbook(wb_path, [
+        {
+            "lead_id": 1,
+            "lead_source_type": "EXTERNAL",
+            "cost_center": "A100",
+            "customer_name": "Customer 1",
+            "mobile_number": "9876543210",
+            "Contact Attempted": "Yes",
+            "Customer Response": "No Response",
+            "Complaint": "No",
+            "Do Not Contact": "No",
+            "Handled By": "  ",
+        },
+    ])
+
+    result = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id="run-blank-handler")
+
+    handled_by_warnings = [warning for warning in result.warnings if warning.code == "handled_by_blank"]
+    assert len(handled_by_warnings) == 1
+    assert handled_by_warnings[0].field_name == "handled_by"
+    assert result.history_inserted == 1
+    assert result.rows_pending_not_updated == 0
+    async with session_scope(url) as session:
+        lead = (await session.execute(sa.select(trx_customer_followup_leads.c.lead_status, trx_customer_followup_leads.c.handled_by).where(trx_customer_followup_leads.c.lead_id == 1))).one()
+        history = (await session.execute(sa.select(trx_customer_followup_history.c.handled_by, trx_customer_followup_history.c.customer_response).where(trx_customer_followup_history.c.pipeline_run_id == "run-blank-handler"))).one()
+    assert lead.lead_status == "WORKED"
+    assert lead.handled_by is None
+    assert history.handled_by is None
+    assert history.customer_response == "No Response"
+
+
+@pytest.mark.asyncio
 async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_path: Path) -> None:
     url = await _prepare_db(tmp_path)
     async with session_scope(url) as session:
