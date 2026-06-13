@@ -331,27 +331,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("uq_cfcc_store_scope_start", table_name="customer_followup_cap_config")
-    op.drop_index("uq_cfcc_global_scope_start", table_name="customer_followup_cap_config")
-    op.drop_index("ix_cfcc_scope_lookup", table_name="customer_followup_cap_config")
-    op.drop_index("ix_external_leads_converted", table_name="trx_external_leads")
-    op.drop_index("ix_external_leads_status", table_name="trx_external_leads")
-    op.drop_index("ix_external_leads_cost_center_mobile", table_name="trx_external_leads")
-    op.drop_index("ix_cfs_permanent", table_name="trx_customer_suppression")
-    op.drop_index("ix_cfs_until", table_name="trx_customer_suppression")
-    op.drop_index("ix_cfs_cost_center_mobile", table_name="trx_customer_suppression")
-    op.drop_index("uq_cfl_retention_customer_bucket_run", table_name="trx_customer_followup_leads")
-    op.drop_index("uq_cfl_external_source_record", table_name="trx_customer_followup_leads")
-    op.drop_index("uq_cfl_td_source_record", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_closed_recovered", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_source_record", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_next_followup", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_cost_center_source", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_cost_center_status", table_name="trx_customer_followup_leads")
-    op.drop_index("ix_cfl_cost_center_mobile", table_name="trx_customer_followup_leads")
-    op.drop_table("customer_followup_cap_config")
-    op.drop_table("trx_external_leads")
-    op.drop_table("trx_customer_suppression")
-    op.drop_table("trx_customer_followup_history")
-    op.drop_table("trx_customer_followup_leads")
-    op.drop_column("store_master", "customer_retention_pipeline")
+    # Forward-only migration.
+    return None
