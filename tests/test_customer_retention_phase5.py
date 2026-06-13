@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, _warning_summary, build_management_summary_payload
-from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
+from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
 from app.customer_retention.workload import WorkloadFreezeResult
 from app.customer_retention.workbook_ingestor import FOLLOWUP_SHEET
 from app.customer_retention.workbook_selection import StoreWorkbookSelectionResult, WorkbookLeadRow
@@ -306,10 +306,10 @@ async def test_pipeline_generates_fresh_retention_leads_from_vw_orders(monkeypat
     monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
 
-    async def no_td_leads(*, database_url, pipeline_run_id, logger=None):
+    async def no_td_leads(session, pipeline_run_id, logger=None):
         return type("TDResult", (), {"rows_seen": 0, "leads_created": 0, "warnings": ()})()
 
-    monkeypatch.setattr("app.customer_retention.pipeline.import_td_leads", no_td_leads)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", no_td_leads)
 
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
@@ -381,7 +381,7 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
         calls.append("discover_returned_workbooks")
         return [SimpleNamespace(path=tmp_path / "returned.xlsx")]
 
-    async def ingest_workbook(**kwargs):
+    async def ingest_workbook(*args, **kwargs):
         calls.append("ingest_returned_workbook")
         return SimpleNamespace(rows_seen=2, history_inserted=1, warnings=[])
 
@@ -397,11 +397,11 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
         calls.append("discover_external_lead_files")
         return [SimpleNamespace(path=tmp_path / "external.csv")]
 
-    async def import_external(**kwargs):
+    async def import_external(*args, **kwargs):
         calls.append("import_external_lead_file")
         return SimpleNamespace(rows_seen=3, leads_created=2, warnings=[])
 
-    async def import_td(**kwargs):
+    async def import_td(*args, **kwargs):
         calls.append("import_td_leads")
         return SimpleNamespace(rows_seen=4, leads_created=3, warnings=[])
 
@@ -430,12 +430,12 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
 
     monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
     monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", discover_workbooks)
-    monkeypatch.setattr("app.customer_retention.pipeline.ingest_returned_workbook", ingest_workbook)
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest_workbook)
     monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", discover_external)
-    monkeypatch.setattr("app.customer_retention.pipeline.import_external_lead_file", import_external)
-    monkeypatch.setattr("app.customer_retention.pipeline.import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate)
@@ -518,10 +518,10 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
-    monkeypatch.setattr("app.customer_retention.pipeline.ingest_returned_workbook", forbidden_async)
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", forbidden_async)
     monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline.import_external_lead_file", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline.import_td_leads", forbidden_async)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", forbidden_async)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", forbidden_async)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", forbidden_async)
     monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", forbidden_async)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", forbidden_sync)
@@ -556,3 +556,146 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
         "select_workbook_leads",
         "build_summary",
     ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_rolls_back_workbook_external_td_and_retention_mutations_on_later_failure(monkeypatch, tmp_path: Path):
+    db = tmp_path / "rollback_all.db"
+    db_url = f"sqlite+aiosqlite:///{db}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+
+    monkeypatch.setattr(
+        "app.customer_retention.pipeline.config",
+        type(
+            "Cfg",
+            (),
+            {
+                "database_url": db_url,
+                "customer_followup_output_dir": str(tmp_path / "outputs"),
+                "customer_followup_backlog_warning_threshold": 7,
+            },
+        )(),
+    )
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [SimpleNamespace(path=tmp_path / "returned.xlsx")])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [SimpleNamespace(path=tmp_path / "external.csv")])
+
+    async def load_stores(session, **kwargs):
+        return ["S1"]
+
+    async def ingest_workbook(session, path, pipeline_run_id, **kwargs):
+        await session.execute(
+            trx_customer_followup_leads.insert().values(
+                lead_id=101,
+                lead_uuid="00000000-0000-0000-0000-000000000101",
+                lead_source_type="RETENTION",
+                source_system="TEST_WORKBOOK",
+                cost_center="S1",
+                normalized_mobile_number="9000000101",
+                lead_date=date(2026, 6, 13),
+                lead_status="OPEN",
+                lifecycle_bucket="WARM",
+                created_by_pipeline_run_id=pipeline_run_id,
+                created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            )
+        )
+        await session.execute(
+            trx_customer_followup_history.insert().values(
+                history_id=201,
+                lead_id=101,
+                pipeline_run_id=pipeline_run_id,
+                event_type="Workbook_Test",
+                created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            )
+        )
+        return SimpleNamespace(rows_seen=1, history_inserted=1, warnings=[])
+
+    async def detect(session, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(session, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def import_external(session, path, pipeline_run_id, **kwargs):
+        await session.execute(
+            trx_external_leads.insert().values(
+                external_lead_id=301,
+                external_lead_uuid="00000000-0000-0000-0000-000000000301",
+                lead_source="campaign",
+                cost_center="S1",
+                normalized_mobile_number="9000000301",
+                lead_date=date(2026, 6, 13),
+                lead_status="OPEN",
+                created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            )
+        )
+        return SimpleNamespace(rows_seen=1, leads_created=0, warnings=[])
+
+    async def import_td(session, pipeline_run_id, **kwargs):
+        await session.execute(
+            trx_customer_followup_leads.insert().values(
+                lead_id=401,
+                lead_uuid="00000000-0000-0000-0000-000000000401",
+                lead_source_type="TD",
+                source_system="TEST_TD",
+                source_table_name="crm_leads_current",
+                source_record_id="td-401",
+                cost_center="S1",
+                normalized_mobile_number="9000000401",
+                lead_date=date(2026, 6, 13),
+                lead_status="OPEN",
+                created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            )
+        )
+        return SimpleNamespace(rows_seen=1, leads_created=1, warnings=[])
+
+    async def generate_retention(session, **kwargs):
+        await session.execute(
+            trx_customer_followup_leads.insert().values(
+                lead_id=501,
+                lead_uuid="00000000-0000-0000-0000-000000000501",
+                lead_source_type="RETENTION",
+                source_system="CUSTOMER_RETENTION_PIPELINE",
+                cost_center="S1",
+                normalized_mobile_number="9000000501",
+                lead_date=date(2026, 6, 13),
+                lead_status="OPEN",
+                lifecycle_bucket="WARM",
+                created_by_pipeline_run_id="rollback-run",
+                created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            )
+        )
+        return SimpleNamespace(rows_seen=1, leads_created=1, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select_raises(session, **kwargs):
+        raise RuntimeError("later workbook selection failure")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest_workbook)
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select_raises)
+
+    with pytest.raises(RuntimeError, match="later workbook selection failure"):
+        await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="rollback-run", dry_run=False, skip_email=True)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        lead_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))
+        history_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_history))
+        external_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_external_leads))
+    assert lead_count == 0
+    assert history_count == 0
+    assert external_count == 0
+    await engine.dispose()

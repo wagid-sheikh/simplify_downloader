@@ -96,7 +96,7 @@ async def test_pipeline_passes_configured_backlog_threshold(monkeypatch) -> None
     monkeypatch.setattr(pipeline, "discover_returned_workbooks", lambda logger=None: [])
     monkeypatch.setattr(pipeline, "discover_external_lead_files", lambda logger=None: [])
     monkeypatch.setattr(pipeline, "load_active_retention_stores", fake_load_active_retention_stores)
-    monkeypatch.setattr(pipeline, "import_td_leads", fake_import_td_leads)
+    monkeypatch.setattr(pipeline, "_import_td_leads", fake_import_td_leads)
     monkeypatch.setattr(pipeline, "detect_recoveries", fake_detect_recoveries)
     monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", fake_snapshot)
     monkeypatch.setattr(pipeline, "generate_retention_leads_from_snapshot", fake_generate)
