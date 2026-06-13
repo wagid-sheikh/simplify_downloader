@@ -156,13 +156,13 @@ async def test_external_csv_import_idempotency_and_warnings(tmp_path: Path) -> N
     ])
     first = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
     second = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run2")
-    assert first.raw_rows_inserted == 1
+    assert first.raw_rows_inserted == 3
     assert first.leads_created == 1
     assert {w.code for w in first.warnings} == {"mobile_malformed", "invalid_cost_center"}
-    assert second.raw_rows_existing == 1
+    assert second.raw_rows_existing == 3
     assert second.leads_existing == 1
     async with session_scope(url) as session:
-        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads))).scalar_one() == 1
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads))).scalar_one() == 3
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
 
 
@@ -181,7 +181,7 @@ async def test_external_import_blank_required_values_warn_and_batch_continues(tm
     result = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
 
     assert result.rows_seen == 5
-    assert result.raw_rows_inserted == 2
+    assert result.raw_rows_inserted == 4
     assert result.leads_created == 2
     assert result.rows_skipped == 3
     warning_pairs = [(warning.code, warning.field_name, warning.row_number) for warning in result.warnings]
@@ -202,11 +202,60 @@ async def test_external_import_blank_required_values_warn_and_batch_continues(tm
                     trx_external_leads.c.lead_source,
                     trx_external_leads.c.campaign_name,
                     trx_external_leads.c.remarks,
+                    trx_external_leads.c.converted_to_followup_lead,
                 ).order_by(trx_external_leads.c.external_lead_id)
             )
         ).all()
-        assert external_rows == [(None, "", None, None), ("Grace", "Referral", "June", "ok")]
+        assert external_rows == [
+            (None, "", None, None, True),
+            ("Blank Mobile", "Meta", "June", "bad", False),
+            ("Blank Store", "Meta", "June", "bad", False),
+            ("Grace", "Referral", "June", "ok", True),
+        ]
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 2
+
+
+@pytest.mark.asyncio
+async def test_external_import_persists_invalid_mobile_raw_without_conversion(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    csv_path = tmp_path / "invalid-mobile-external.csv"
+    _write_external_csv(csv_path, [
+        {"cost_center": "A100", "customer_name": "Bad Mobile", "mobile_number": "not-a-phone", "lead_source": "Meta", "campaign_name": "June", "lead_date": "2026-06-01", "remarks": "keep raw"},
+    ])
+
+    result = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
+
+    assert result.rows_seen == 1
+    assert result.raw_rows_inserted == 1
+    assert result.rows_skipped == 1
+    assert result.leads_created == 0
+    assert [(warning.code, warning.field_name) for warning in result.warnings] == [("mobile_malformed", "mobile_number")]
+    async with session_scope(url) as session:
+        external = (
+            await session.execute(
+                sa.select(
+                    trx_external_leads.c.raw_payload_json,
+                    trx_external_leads.c.import_batch_id,
+                    trx_external_leads.c.lead_source,
+                    trx_external_leads.c.campaign_name,
+                    trx_external_leads.c.mobile_number,
+                    trx_external_leads.c.normalized_mobile_number,
+                    trx_external_leads.c.lead_status,
+                    trx_external_leads.c.converted_to_followup_lead,
+                    trx_external_leads.c.converted_followup_lead_id,
+                )
+            )
+        ).one()
+        assert external.raw_payload_json["mobile_number"] == "not-a-phone"
+        assert external.import_batch_id == result.import_batch_id
+        assert external.lead_source == "Meta"
+        assert external.campaign_name == "June"
+        assert external.mobile_number == "not-a-phone"
+        assert external.normalized_mobile_number == ""
+        assert external.lead_status == "ERROR"
+        assert external.converted_to_followup_lead is False
+        assert external.converted_followup_lead_id is None
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 0
 
 
 @pytest.mark.asyncio
