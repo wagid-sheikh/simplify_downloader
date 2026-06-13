@@ -84,6 +84,7 @@ async def _insert_workbook_lead(
     cost_center: str = "A100",
     mobile: str = "9876543210",
     lead_status: str = "OPEN",
+    lead_date: date = date(2026, 6, 1),
 ) -> None:
     async with session_scope(url) as session:
         await session.execute(trx_customer_followup_leads.insert().values(
@@ -97,7 +98,7 @@ async def _insert_workbook_lead(
             customer_name=f"Customer {lead_id}",
             mobile_number=mobile,
             normalized_mobile_number=mobile,
-            lead_date=date(2026, 6, 1),
+            lead_date=lead_date,
             lead_status=lead_status,
             contact_attempted=False,
             complaint_flag=False,
@@ -705,6 +706,115 @@ async def test_workbook_lifecycle_transition_updates_leads_and_suppressions(tmp_
         ).one()
         assert pending_event.previous_status == "OPEN"
         assert pending_event.new_status == "OPEN"
+
+@pytest.mark.asyncio
+async def test_workbook_suppression_uses_deterministic_lead_date_when_process_date_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def ingest_with_fake_today(case_name: str, fake_today: date) -> tuple[date, date, int, int, str]:
+        case_dir = tmp_path / case_name
+        case_dir.mkdir()
+        url = await _prepare_db(case_dir)
+        await _insert_workbook_lead(url, lead_id=30, mobile="9876543230", lead_date=date(2026, 5, 15))
+        wb_path = case_dir / "returned_without_generated_at.xlsx"
+        _write_workbook(wb_path, [
+            {
+                "lead_id": 30,
+                "lead_source_type": "EXTERNAL",
+                "cost_center": "A100",
+                "customer_name": "Customer 30",
+                "mobile_number": "9876543230",
+                "Contact Attempted": "Yes",
+                "Customer Response": "Not Interested",
+                "Complaint": "No",
+                "Do Not Contact": "No",
+            },
+        ])
+
+        class FakeDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return fake_today
+
+        import app.customer_retention.workbook_ingestor as workbook_ingestor
+
+        monkeypatch.setattr(workbook_ingestor, "date", FakeDate)
+        first = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id=f"{case_name}-run-1")
+        monkeypatch.setattr(workbook_ingestor, "date", FakeDate)
+        replay = await ingest_returned_workbook(database_url=url, path=wb_path, pipeline_run_id=f"{case_name}-run-2")
+
+        async with session_scope(url) as session:
+            suppression = (await session.execute(sa.select(trx_customer_suppression))).mappings().one()
+            event_type = (
+                await session.execute(
+                    sa.select(trx_customer_followup_history.c.event_type).where(
+                        trx_customer_followup_history.c.event_type.like("LIFECYCLE_TRANSITION:%")
+                    )
+                )
+            ).scalar_one()
+        return suppression["suppression_start_date"], suppression["suppression_until"], first.history_inserted, replay.history_existing, event_type
+
+    early = await ingest_with_fake_today("early", date(2026, 6, 13))
+    late = await ingest_with_fake_today("late", date(2026, 7, 20))
+
+    assert early[0] == late[0] == date(2026, 5, 15)
+    assert early[1] == late[1] == date(2026, 8, 13)
+    assert early[2:4] == late[2:4] == (1, 1)
+    assert early[4].endswith(":2:Not Interested")
+    assert late[4].endswith(":2:Not Interested")
+
+
+@pytest.mark.asyncio
+async def test_workbook_suppression_prefers_explicit_run_date_over_process_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = await _prepare_db(tmp_path)
+    await _insert_workbook_lead(url, lead_id=31, mobile="9876543231", lead_date=date(2026, 5, 15))
+    wb_path = tmp_path / "returned_with_generated_at.xlsx"
+    _write_workbook(wb_path, [
+        {
+            "lead_id": 31,
+            "lead_source_type": "EXTERNAL",
+            "cost_center": "A100",
+            "customer_name": "Customer 31",
+            "mobile_number": "9876543231",
+            "generated_at": "2026-06-10",
+            "Contact Attempted": "Yes",
+            "Customer Response": "Not Interested",
+            "Complaint": "No",
+            "Do Not Contact": "No",
+        },
+    ])
+
+    class FakeDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return date(2030, 1, 1)
+
+    import app.customer_retention.workbook_ingestor as workbook_ingestor
+
+    monkeypatch.setattr(workbook_ingestor, "date", FakeDate)
+    first = await ingest_returned_workbook(
+        database_url=url,
+        path=wb_path,
+        pipeline_run_id="run-date-1",
+        run_date=date(2026, 6, 13),
+    )
+    monkeypatch.setattr(workbook_ingestor, "date", FakeDate)
+    replay = await ingest_returned_workbook(
+        database_url=url,
+        path=wb_path,
+        pipeline_run_id="run-date-2",
+        run_date=date(2026, 6, 13),
+    )
+
+    assert first.history_inserted == 1
+    assert replay.history_existing == 1
+    async with session_scope(url) as session:
+        suppression = (await session.execute(sa.select(trx_customer_suppression))).mappings().one()
+    assert suppression["suppression_start_date"] == date(2026, 6, 13)
+    assert suppression["suppression_until"] == date(2026, 9, 11)
+
 
 @pytest.mark.asyncio
 async def test_shifted_location_valid_target_creates_one_idempotent_external_destination(tmp_path: Path) -> None:
