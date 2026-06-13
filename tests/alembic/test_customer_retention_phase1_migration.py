@@ -209,7 +209,7 @@ def test_customer_retention_phase1_constraints_and_idempotency_indexes(
             )
 
 
-def test_customer_retention_phase1_downgrade_removes_schema(
+def test_customer_retention_phase1_downgrade_is_forward_only_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = sa.create_engine("sqlite://")
@@ -217,16 +217,18 @@ def test_customer_retention_phase1_downgrade_removes_schema(
     with engine.begin() as connection:
         _create_store_master(connection)
         _run_migration(connection, migration.upgrade, monkeypatch)
-        _run_migration(connection, migration.downgrade, monkeypatch)
 
+        result = _run_migration(connection, migration.downgrade, monkeypatch)
+
+        assert result is None
         inspector = sa.inspect(connection)
-        assert "customer_retention_pipeline" not in {
+        assert "customer_retention_pipeline" in {
             column["name"] for column in inspector.get_columns("store_master")
         }
-        assert not {
+        assert {
             "trx_customer_followup_leads",
             "trx_customer_followup_history",
             "trx_customer_suppression",
             "trx_external_leads",
             "customer_followup_cap_config",
-        }.intersection(set(inspector.get_table_names()))
+        }.issubset(set(inspector.get_table_names()))
