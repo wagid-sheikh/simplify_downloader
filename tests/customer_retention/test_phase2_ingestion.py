@@ -159,7 +159,7 @@ async def test_external_csv_import_idempotency_and_warnings(tmp_path: Path) -> N
     second = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run2")
     assert first.raw_rows_inserted == 3
     assert first.leads_created == 1
-    assert {w.code for w in first.warnings} == {"mobile_malformed", "invalid_cost_center"}
+    assert {w.code for w in first.warnings} == {"mobile_malformed", "missing_required_field"}
     assert second.raw_rows_existing == 3
     assert second.leads_existing == 1
     async with session_scope(url) as session:
@@ -168,7 +168,7 @@ async def test_external_csv_import_idempotency_and_warnings(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_external_import_blank_required_values_warn_and_batch_continues(tmp_path: Path) -> None:
+async def test_external_import_blank_required_values_block_conversion_and_batch_continues(tmp_path: Path) -> None:
     url = await _prepare_db(tmp_path)
     csv_path = tmp_path / "blank-required-values.csv"
     _write_external_csv(csv_path, [
@@ -183,8 +183,8 @@ async def test_external_import_blank_required_values_warn_and_batch_continues(tm
 
     assert result.rows_seen == 5
     assert result.raw_rows_inserted == 4
-    assert result.leads_created == 2
-    assert result.rows_skipped == 3
+    assert result.leads_created == 1
+    assert result.rows_skipped == 4
     warning_pairs = [(warning.code, warning.field_name, warning.row_number) for warning in result.warnings]
     assert warning_pairs[:4] == [
         ("missing_required_field", "customer_name", 2),
@@ -192,9 +192,10 @@ async def test_external_import_blank_required_values_warn_and_batch_continues(tm
         ("missing_required_field", "campaign_name", 2),
         ("missing_required_field", "remarks", 2),
     ]
-    assert ("mobile_blank", "mobile_number", 3) in warning_pairs
+    assert ("missing_required_field", "mobile_number", 3) in warning_pairs
+    assert ("missing_required_field", "lead_date", 4) in warning_pairs
     assert ("invalid_lead_date", "lead_date", 4) in warning_pairs
-    assert ("invalid_cost_center", "cost_center", 5) in warning_pairs
+    assert ("missing_required_field", "cost_center", 5) in warning_pairs
     async with session_scope(url) as session:
         external_rows = (
             await session.execute(
@@ -208,12 +209,54 @@ async def test_external_import_blank_required_values_warn_and_batch_continues(tm
             )
         ).all()
         assert external_rows == [
-            (None, "", None, None, True),
+            (None, "", None, None, False),
             ("Blank Mobile", "Meta", "June", "bad", False),
             ("Blank Store", "Meta", "June", "bad", False),
             ("Grace", "Referral", "June", "ok", True),
         ]
-        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 2
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank_field", ["lead_source", "campaign_name", "customer_name", "remarks"])
+async def test_external_import_blank_descriptive_required_field_persists_raw_error_without_conversion(tmp_path: Path, blank_field: str) -> None:
+    url = await _prepare_db(tmp_path)
+    csv_path = tmp_path / f"blank-{blank_field}.csv"
+    row = {
+        "cost_center": "A100",
+        "customer_name": "Ada",
+        "mobile_number": "9876543210",
+        "lead_source": "Meta",
+        "campaign_name": "June",
+        "lead_date": "2026-06-01",
+        "remarks": "ok",
+    }
+    row[blank_field] = "  "
+    _write_external_csv(csv_path, [row])
+
+    result = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
+
+    assert result.rows_seen == 1
+    assert result.raw_rows_inserted == 1
+    assert result.rows_skipped == 1
+    assert result.leads_created == 0
+    assert [(warning.code, warning.field_name, warning.row_number) for warning in result.warnings] == [("missing_required_field", blank_field, 2)]
+    async with session_scope(url) as session:
+        external = (
+            await session.execute(
+                sa.select(
+                    trx_external_leads.c.lead_status,
+                    trx_external_leads.c.converted_to_followup_lead,
+                    trx_external_leads.c.converted_followup_lead_id,
+                    trx_external_leads.c.raw_payload_json,
+                )
+            )
+        ).one()
+        assert external.lead_status == "ERROR"
+        assert external.converted_to_followup_lead is False
+        assert external.converted_followup_lead_id is None
+        assert external.raw_payload_json[blank_field].strip() == ""
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 0
 
 
 @pytest.mark.asyncio

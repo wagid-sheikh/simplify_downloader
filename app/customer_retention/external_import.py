@@ -21,8 +21,8 @@ from .persistence import fetch_active_cost_centers, get_or_create_followup_lead,
 from .types import ImportBatchResult, RowWarning
 
 REQUIRED_EXTERNAL_COLUMNS = ("cost_center", "customer_name", "mobile_number", "lead_source", "campaign_name", "lead_date", "remarks")
-BLOCKING_REQUIRED_EXTERNAL_FIELDS = {"cost_center", "mobile_number", "lead_date"}
-WARNING_ONLY_REQUIRED_EXTERNAL_FIELDS = tuple(col for col in REQUIRED_EXTERNAL_COLUMNS if col not in BLOCKING_REQUIRED_EXTERNAL_FIELDS)
+BLOCKING_REQUIRED_EXTERNAL_FIELDS = set(REQUIRED_EXTERNAL_COLUMNS)
+WARNING_ONLY_REQUIRED_EXTERNAL_FIELDS: tuple[str, ...] = ()
 
 
 def _header_key(value: Any) -> str:
@@ -86,20 +86,16 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 continue
             blank_required_fields = [col for col in REQUIRED_EXTERNAL_COLUMNS if not str(row.get(col) or "").strip()]
             for field_name in blank_required_fields:
-                if field_name in WARNING_ONLY_REQUIRED_EXTERNAL_FIELDS:
-                    # SRS Section 18 only blocks rows that cannot be safely matched or actioned
-                    # (store, mobile identity, or lead date). Descriptive campaign/customer
-                    # context is still persisted from the raw import and converted with a
-                    # row-level warning so one weak field does not crash or hide the batch.
-                    result.warnings.append(
-                        RowWarning(
-                            "missing_required_field",
-                            "External lead row has a blank required field",
-                            row_number,
-                            path.name,
-                            field_name,
-                        )
+                result.warnings.append(
+                    RowWarning(
+                        "missing_required_field",
+                        "External lead row has a blank required field",
+                        row_number,
+                        path.name,
+                        field_name,
                     )
+                )
+            blank_blocking_fields = [field_name for field_name in blank_required_fields if field_name in BLOCKING_REQUIRED_EXTERNAL_FIELDS]
             cost_center = str(row.get("cost_center") or "").strip().upper()
             mobile = normalize_mobile(row.get("mobile_number"))
             lead_date = _parse_date(row.get("lead_date"))
@@ -109,7 +105,8 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 continue
 
             has_valid_cost_center = bool(cost_center) and (not active_cost_centers or cost_center in active_cost_centers)
-            is_actionable = has_valid_cost_center and mobile.is_valid
+            has_blank_blocking_field = bool(blank_blocking_fields)
+            is_actionable = has_valid_cost_center and mobile.is_valid and not has_blank_blocking_field
             row_hash = _row_fingerprint(row)
             external_uuid = stable_uuid("external", result.import_batch_id, row_hash)
             existing_external = (await session.execute(sa.select(trx_external_leads.c.external_lead_id, trx_external_leads.c.converted_followup_lead_id).where(trx_external_leads.c.external_lead_uuid == external_uuid))).first()
@@ -143,11 +140,16 @@ async def import_external_lead_file(*, database_url: str, path: Path, pipeline_r
                 result.raw_rows_inserted += 1
             if not has_valid_cost_center:
                 result.rows_skipped += 1
-                result.warnings.append(RowWarning("invalid_cost_center", "External lead row has missing or inactive cost center", row_number, path.name, "cost_center"))
+                if "cost_center" not in blank_blocking_fields:
+                    result.warnings.append(RowWarning("invalid_cost_center", "External lead row has missing or inactive cost center", row_number, path.name, "cost_center"))
                 continue
             if not mobile.is_valid:
                 result.rows_skipped += 1
-                result.warnings.append(RowWarning(mobile.warning_code or "invalid_mobile", mobile.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", cost_center=cost_center))
+                if "mobile_number" not in blank_blocking_fields:
+                    result.warnings.append(RowWarning(mobile.warning_code or "invalid_mobile", mobile.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", cost_center=cost_center))
+                continue
+            if has_blank_blocking_field:
+                result.rows_skipped += 1
                 continue
             lead_id, created = await get_or_create_followup_lead(
                 session,
