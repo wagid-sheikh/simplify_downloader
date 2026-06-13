@@ -19,7 +19,7 @@ from .recovery_detection import detect_recoveries
 from .retention_generation import generate_retention_leads_from_snapshot
 from .snapshot import build_customer_retention_snapshot
 from .source_adapters import import_td_leads
-from .workbook_generator import WorkbookGenerationResult, default_customer_followup_output_root, generate_workbooks
+from .workbook_generator import WorkbookGenerationResult, generate_workbooks
 from .workbook_ingestor import ingest_returned_workbook
 from .workbook_selection import load_active_retention_stores, select_workbook_leads_for_active_stores
 
@@ -114,7 +114,13 @@ async def run_customer_retention_pipeline(
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=DEFAULT_BACKLOG_THRESHOLD, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
             count("workbook_rows_selected", sum(len(s.rows) for s in selections))
             if not dry_run:
-                workbook_result = generate_workbooks(selections=selections, active_cost_centers=active_stores, output_root=default_customer_followup_output_root(), generated_at=started, logger=log)
+                workbook_result = generate_workbooks(
+                    selections=selections,
+                    active_cost_centers=active_stores,
+                    output_root=Path(config.customer_followup_output_dir).expanduser(),
+                    generated_at=started,
+                    logger=log,
+                )
                 generated_files = [str(output.output_path) for output in workbook_result.outputs]
             summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files)
             notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=(skip_email or dry_run), logger=log)

@@ -132,7 +132,17 @@ async def test_pipeline_dry_run_orchestration(monkeypatch, tmp_path: Path):
         await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, customer_retention_pipeline BOOLEAN)"))
         await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
         await conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT 'S1' cost_center, 'O1' order_number, '2026-06-13' order_date, 'C' customer_name, '9999999999' mobile_number, 10 order_amount"))
-    monkeypatch.setattr("app.customer_retention.pipeline.config", type("Cfg", (), {"database_url": f"sqlite+aiosqlite:///{db}"})())
+    monkeypatch.setattr(
+        "app.customer_retention.pipeline.config",
+        type(
+            "Cfg",
+            (),
+            {
+                "database_url": f"sqlite+aiosqlite:///{db}",
+                "customer_followup_output_dir": str(tmp_path / "outputs"),
+            },
+        )(),
+    )
     monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
     result = await run_customer_retention_pipeline(run_date=date(2026,6,13), run_id="dry", dry_run=True, skip_email=True)
@@ -155,7 +165,17 @@ async def test_pipeline_generates_fresh_retention_leads_from_vw_orders(monkeypat
                    'Fresh Customer' AS customer_name, '9876543210' AS mobile_number, 1200.50 AS order_amount
             """
         ))
-    monkeypatch.setattr("app.customer_retention.pipeline.config", type("Cfg", (), {"database_url": f"sqlite+aiosqlite:///{db}"})())
+    monkeypatch.setattr(
+        "app.customer_retention.pipeline.config",
+        type(
+            "Cfg",
+            (),
+            {
+                "database_url": f"sqlite+aiosqlite:///{db}",
+                "customer_followup_output_dir": str(tmp_path / "outputs"),
+            },
+        )(),
+    )
     monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
 
@@ -163,7 +183,6 @@ async def test_pipeline_generates_fresh_retention_leads_from_vw_orders(monkeypat
         return type("TDResult", (), {"rows_seen": 0, "leads_created": 0, "warnings": ()})()
 
     monkeypatch.setattr("app.customer_retention.pipeline.import_td_leads", no_td_leads)
-    monkeypatch.setattr("app.customer_retention.pipeline.default_customer_followup_output_root", lambda: tmp_path / "outputs")
 
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:

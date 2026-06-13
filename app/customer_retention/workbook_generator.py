@@ -91,7 +91,9 @@ def customer_followup_output_path(*, output_root: Path, cost_center: str, run_da
 
 
 def default_customer_followup_output_root() -> Path:
-    return Path("outputs") / "customer_followup"
+    from app.config import config
+
+    return Path(config.customer_followup_output_dir).expanduser()
 
 
 def generate_store_workbook(

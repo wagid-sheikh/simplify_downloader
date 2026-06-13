@@ -146,6 +146,29 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.pipeline_skip_dom_logging is False
     assert cfg.uc_ignore_https_errors is False
     assert cfg.td_browser_operation_timeout_seconds == 90
+    assert cfg.customer_followup_output_dir == str(reports_root / "outputs" / "customer_followup")
+
+
+def test_customer_followup_output_dir_honors_system_config(monkeypatch, tmp_path):
+    db_path = tmp_path / "config.sqlite"
+    configured_output_dir = tmp_path / "configured" / "customer_followup_workbooks"
+    rows = _base_rows("unit-test-secret")
+    rows["CUSTOMER_FOLLOWUP_OUTPUT_DIR"] = f"  {configured_output_dir}  "
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
+        },
+    )
+
+    cfg = Config.load_from_env_and_db()
+
+    assert cfg.customer_followup_output_dir == str(configured_output_dir)
 
 
 def test_missing_env_variable_raises(monkeypatch, tmp_path):
