@@ -212,7 +212,9 @@ async def test_workbook_generation_structure_validation_and_ingestion_identity(t
         await _insert_cap(session, daily_cap=2)
         await _insert_lead(session, lead_id=1, priority=Decimal("20"))
         await session.commit()
-        selection = await select_workbook_leads_for_store(session, cost_center="A100", run_date=run_date, backlog_threshold=99)
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
 
     output = generate_store_workbook(selection=selection, active_cost_centers=("A100", "C300", "D400"), output_root=tmp_path / "outputs" / "customer_followup", generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc))
     assert output.output_path == tmp_path / "outputs" / "customer_followup" / "2026-06" / "customer_followup_A100_2026-06-12.xlsx"
@@ -261,3 +263,100 @@ async def test_workbook_generation_structure_validation_and_ingestion_identity(t
     assert ingest_result.rows_seen == 1
     assert ingest_result.history_inserted == 1
     assert ingest_result.warning_count == 0
+
+
+@pytest.mark.asyncio
+async def test_target_cost_center_dropdown_uses_inline_validation_for_small_active_store_lists(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=21, priority=Decimal("20"))
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=("A100", "C300", "D400"),
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    target_col = openpyxl.utils.get_column_letter(headers.index("Target Cost Center") + 1)
+    validation_by_range = {
+        str(rng): dv for dv in sheet.data_validations.dataValidation for rng in dv.cells.ranges
+    }
+    target_validation = validation_by_range[f"{target_col}2"]
+    assert target_validation.type == "list"
+    assert target_validation.formula1 == '"A100,C300,D400"'
+    assert workbook.sheetnames == [READ_ME_SHEET, FOLLOWUP_SHEET]
+
+
+@pytest.mark.asyncio
+async def test_target_cost_center_dropdown_uses_hidden_lookup_range_for_large_active_store_lists(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    active_cost_centers = tuple(f"S{i:04d}" for i in range(80))
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=22, priority=Decimal("20"))
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=active_cost_centers,
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    target_col = openpyxl.utils.get_column_letter(headers.index("Target Cost Center") + 1)
+    validation_by_range = {
+        str(rng): dv for dv in sheet.data_validations.dataValidation for rng in dv.cells.ranges
+    }
+    target_validation = validation_by_range[f"{target_col}2"]
+    assert target_validation.type == "list"
+    assert target_validation.formula1 == "=ActiveCostCenters"
+    assert "ActiveCostCenters" in workbook.defined_names
+    destinations = list(workbook.defined_names["ActiveCostCenters"].destinations)
+    assert destinations == [("_ACTIVE_COST_CENTER_LOOKUP", "$A$2:$A$81")]
+    lookup = workbook["_ACTIVE_COST_CENTER_LOOKUP"]
+    assert lookup.sheet_state == "veryHidden"
+    assert lookup.protection.sheet is True
+    assert lookup.cell(row=2, column=1).value == "S0000"
+    assert lookup.cell(row=81, column=1).value == "S0079"
+
+
+@pytest.mark.asyncio
+async def test_large_target_cost_center_lookup_sheet_is_not_user_facing_tab(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=2)
+        await _insert_lead(session, lead_id=23, priority=Decimal("20"))
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=tuple(f"STORE-{i:04d}" for i in range(80)),
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    visible_tabs = [sheet.title for sheet in workbook.worksheets if sheet.sheet_state == "visible"]
+    assert visible_tabs == [READ_ME_SHEET, FOLLOWUP_SHEET]
+    assert workbook["_ACTIVE_COST_CENTER_LOOKUP"].sheet_state in {"hidden", "veryHidden"}
