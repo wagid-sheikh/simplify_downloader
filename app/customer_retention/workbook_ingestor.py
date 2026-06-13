@@ -199,6 +199,11 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
                     result.warnings.append(RowWarning("target_cost_center_same_store", "Shifted Location target cost center must differ from the source store", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
                 else:
                     valid_shift_target = target_cost_center
+            elif target_cost_center is not None:
+                # Workbook validation exposes the active-store dropdown for the whole
+                # column. Preserve the response semantics here: only Shifted Location
+                # may hand off work to a destination store.
+                result.warnings.append(RowWarning("target_cost_center_ignored", "Target Cost Center is only used when Customer Response is Shifted Location", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
             event_suffix = f"{file_digest[:16]}:{row_number}"
             lead_id = int(lead_map["lead_id"])
             if row_has_required_blank:

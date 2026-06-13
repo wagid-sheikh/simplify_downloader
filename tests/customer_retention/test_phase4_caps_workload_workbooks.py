@@ -26,6 +26,7 @@ from app.customer_retention.constants import (
     LEAD_STATUS_RECOVERED,
     SUPPRESSION_STATE_ACTIVE,
     WORKBOOK_OUTCOME_LABELS,
+    WORKBOOK_OUTCOME_SHIFTED_LOCATION,
 )
 from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_leads, trx_customer_suppression
 from app.customer_retention.workbook_generator import DROPDOWN_VALUES_BY_HEADER, FOLLOWUP_HEADERS, generate_store_workbook
@@ -263,6 +264,77 @@ async def test_workbook_generation_structure_validation_and_ingestion_identity(t
     assert ingest_result.rows_seen == 1
     assert ingest_result.history_inserted == 1
     assert ingest_result.warning_count == 0
+
+
+@pytest.mark.asyncio
+async def test_target_cost_center_ingestion_warnings_and_destination_creation_contract(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=5)
+        for lead_id in range(31, 36):
+            await _insert_lead(session, lead_id=lead_id, priority=Decimal(str(100 - lead_id)))
+        await session.commit()
+        selection = await select_workbook_leads_for_store(
+            session, cost_center="A100", run_date=run_date, backlog_threshold=99
+        )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=("A100", "C300", "D400"),
+        output_root=tmp_path / "outputs",
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    workbook = openpyxl.load_workbook(output.output_path)
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    col = {header: headers.index(header) + 1 for header in headers}
+    rows_by_lead_id = {sheet.cell(row=row_number, column=col["lead_id"]).value: row_number for row_number in range(2, sheet.max_row + 1)}
+    cases = {
+        31: (WORKBOOK_OUTCOME_SHIFTED_LOCATION, None),
+        32: (WORKBOOK_OUTCOME_SHIFTED_LOCATION, "B200"),
+        33: (WORKBOOK_OUTCOME_SHIFTED_LOCATION, "A100"),
+        34: ("Interested", "C300"),
+        35: (WORKBOOK_OUTCOME_SHIFTED_LOCATION, "D400"),
+    }
+    for lead_id, (response, target_cost_center) in cases.items():
+        row_number = rows_by_lead_id[lead_id]
+        sheet.cell(row=row_number, column=col["Contact Attempted"], value="Yes")
+        sheet.cell(row=row_number, column=col["Customer Response"], value=response)
+        sheet.cell(row=row_number, column=col["Complaint"], value="No")
+        sheet.cell(row=row_number, column=col["Do Not Contact"], value="No")
+        sheet.cell(row=row_number, column=col["Target Cost Center"], value=target_cost_center)
+    workbook.save(output.output_path)
+
+    result = await ingest_returned_workbook(database_url=url, path=output.output_path, pipeline_run_id="run-target-contract")
+
+    warning_codes_by_lead_id = {warning.lead_id: warning.code for warning in result.warnings}
+    assert warning_codes_by_lead_id == {
+        31: "target_cost_center_blank",
+        32: "target_cost_center_invalid",
+        33: "target_cost_center_same_store",
+        34: "target_cost_center_ignored",
+    }
+    async with session_scope(url) as session:
+        destination_leads = (
+            await session.execute(
+                sa.select(trx_customer_followup_leads).where(
+                    trx_customer_followup_leads.c.source_system == "CUSTOMER_FOLLOWUP_SHIFTED_LOCATION"
+                )
+            )
+        ).mappings().all()
+        assert len(destination_leads) == 1
+        assert destination_leads[0]["lead_source_type"] == LEAD_SOURCE_EXTERNAL
+        assert destination_leads[0]["cost_center"] == "D400"
+        assert destination_leads[0]["shifted_from_lead_id"] == 35
+        assert (
+            await session.execute(
+                sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(
+                    trx_customer_followup_leads.c.shifted_from_lead_id.in_([31, 32, 33, 34])
+                )
+            )
+        ).scalar_one() == 0
 
 
 @pytest.mark.asyncio
