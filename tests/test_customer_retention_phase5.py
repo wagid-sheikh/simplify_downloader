@@ -4,13 +4,15 @@ from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import openpyxl
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, build_management_summary_payload
-from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
+from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
 from app.customer_retention.workload import WorkloadFreezeResult
+from app.customer_retention.workbook_ingestor import FOLLOWUP_SHEET
 from app.customer_retention.workbook_selection import StoreWorkbookSelectionResult, WorkbookLeadRow
 from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
 from app.customer_retention.notifications import send_owner_summary
@@ -136,3 +138,73 @@ async def test_pipeline_dry_run_orchestration(monkeypatch, tmp_path: Path):
     result = await run_customer_retention_pipeline(run_date=date(2026,6,13), run_id="dry", dry_run=True, skip_email=True)
     assert result.status == "success"
     assert result.counts["active_stores"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_generates_fresh_retention_leads_from_vw_orders(monkeypatch, tmp_path: Path):
+    db = tmp_path / "fresh_retention.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+        await conn.execute(sa.text(
+            """
+            CREATE VIEW vw_orders AS
+            SELECT 'S1' AS cost_center, 'O1' AS order_number, '2026-05-10' AS order_date,
+                   'Fresh Customer' AS customer_name, '9876543210' AS mobile_number, 1200.50 AS order_amount
+            """
+        ))
+    monkeypatch.setattr("app.customer_retention.pipeline.config", type("Cfg", (), {"database_url": f"sqlite+aiosqlite:///{db}"})())
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
+
+    async def no_td_leads(*, database_url, pipeline_run_id, logger=None):
+        return type("TDResult", (), {"rows_seen": 0, "leads_created": 0, "warnings": ()})()
+
+    monkeypatch.setattr("app.customer_retention.pipeline.import_td_leads", no_td_leads)
+    monkeypatch.setattr("app.customer_retention.pipeline.default_customer_followup_output_root", lambda: tmp_path / "outputs")
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(customer_followup_cap_config.insert().values(
+            cap_config_id=1,
+            cost_center=None,
+            lead_source_type=LEAD_SOURCE_RETENTION,
+            work_section="FRESH_RETENTION",
+            daily_cap=13,
+            is_uncapped=False,
+            enabled=True,
+            effective_from=date(2026, 1, 1),
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.commit()
+
+    result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="retention-run", dry_run=False, skip_email=True)
+
+    assert result.status == "success"
+    assert result.counts["snapshot_rows"] == 1
+    assert result.counts["retention_leads_created"] == 1
+    assert result.counts["workbook_rows_selected"] == 1
+    assert len(result.generated_files) == 1
+
+    async with Session() as session:
+        lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_source_type == LEAD_SOURCE_RETENTION))).mappings().one()
+    assert lead["source_system"] == "CUSTOMER_RETENTION_PIPELINE"
+    assert lead["source_table_name"] is None
+    assert lead["source_record_id"] is None
+    assert lead["cost_center"] == "S1"
+    assert lead["normalized_mobile_number"] == "9876543210"
+    assert lead["lifecycle_bucket"] == "WARM"
+    assert lead["created_by_pipeline_run_id"] == "retention-run"
+
+    workbook = openpyxl.load_workbook(result.generated_files[0])
+    sheet = workbook[FOLLOWUP_SHEET]
+    headers = [cell.value for cell in sheet[1]]
+    row = dict(zip(headers, [cell.value for cell in sheet[2]]))
+    assert row["lead_source_type"] == LEAD_SOURCE_RETENTION
+    assert row["work_section"] == "FRESH_RETENTION"
+    assert row["normalized_mobile_number"] == "9876543210"
+
+    await engine.dispose()
