@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import openpyxl
 import pytest
@@ -19,6 +20,29 @@ from app.customer_retention.notifications import send_owner_summary
 from app.customer_retention.pipeline import run_customer_retention_pipeline
 
 from app.customer_retention.types import RowWarning
+
+
+async def _create_notification_tables(conn) -> None:
+    await conn.execute(sa.text("CREATE TABLE pipelines (id INTEGER, code TEXT, description TEXT)"))
+    await conn.execute(sa.text("CREATE TABLE notification_profiles (id INTEGER, pipeline_id INTEGER, code TEXT, description TEXT, env TEXT, scope TEXT, attach_mode TEXT, is_active BOOLEAN)"))
+    await conn.execute(sa.text("CREATE TABLE email_templates (id INTEGER, profile_id INTEGER, name TEXT, subject_template TEXT, body_template TEXT, is_active BOOLEAN)"))
+    await conn.execute(sa.text("CREATE TABLE notification_recipients (id INTEGER, profile_id INTEGER, store_code TEXT, env TEXT, email_address TEXT, display_name TEXT, send_as TEXT, is_active BOOLEAN, created_at DATETIME)"))
+
+
+def _notification_payload(run_id: str = "r1") -> dict:
+    return {
+        "run_summary": {
+            "pipeline_run_id": run_id,
+            "run_date": "2026-06-13",
+            "success_failure_status": "success",
+            "duration_seconds": 3,
+        },
+        "store_summary": [{"cost_center": "S1"}],
+        "aging_actionable_workload": [],
+        "staff_productivity": [],
+        "source_wise_summary": [],
+        "warning_error_summary": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -130,10 +154,7 @@ def test_static_customer_retention_reporting_uses_vw_orders_only():
 async def test_notification_payload_rendering_skip_email(tmp_path: Path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'n.db'}")
     async with engine.begin() as conn:
-        await conn.execute(sa.text("CREATE TABLE pipelines (id INTEGER, code TEXT, description TEXT)"))
-        await conn.execute(sa.text("CREATE TABLE notification_profiles (id INTEGER, pipeline_id INTEGER, code TEXT, description TEXT, env TEXT, scope TEXT, attach_mode TEXT, is_active BOOLEAN)"))
-        await conn.execute(sa.text("CREATE TABLE email_templates (id INTEGER, profile_id INTEGER, name TEXT, subject_template TEXT, body_template TEXT, is_active BOOLEAN)"))
-        await conn.execute(sa.text("CREATE TABLE notification_recipients (id INTEGER, profile_id INTEGER, store_code TEXT, env TEXT, email_address TEXT, display_name TEXT, send_as TEXT, is_active BOOLEAN, created_at DATETIME)"))
+        await _create_notification_tables(conn)
         await conn.execute(sa.text("INSERT INTO pipelines VALUES (1, 'customer_retention_pipeline', 'x')"))
         await conn.execute(sa.text("INSERT INTO notification_profiles VALUES (1, 1, 'owner_summary', 'x', NULL, 'run', 'none', 1)"))
         await conn.execute(sa.text("INSERT INTO email_templates VALUES (1, 1, 'summary', 'Subject {{ run_summary.pipeline_run_id }}', 'Stores {{ store_summary|length }}', 1)"))
@@ -143,6 +164,84 @@ async def test_notification_payload_rendering_skip_email(tmp_path: Path):
     assert result.skipped is True
     assert result.subject == "Subject r1"
     assert result.body == "Stores 1"
+
+
+@pytest.mark.asyncio
+async def test_notification_missing_tables_uses_fallback_template_skip_email(tmp_path: Path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'missing_tables.db'}")
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await send_owner_summary(session, payload=_notification_payload("no-tables"), env=None, skip_email=True)
+
+    assert result.skipped is True
+    assert result.reason == "skip_email"
+    assert result.subject == "Customer Retention Summary 2026-06-13 (success)"
+    assert "Customer Retention Pipeline Run no-tables" in result.body
+
+
+@pytest.mark.asyncio
+async def test_notification_missing_profile_uses_fallback_template_skip_email(tmp_path: Path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'missing_profile.db'}")
+    async with engine.begin() as conn:
+        await _create_notification_tables(conn)
+        await conn.execute(sa.text("INSERT INTO pipelines VALUES (1, 'customer_retention_pipeline', 'x')"))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await send_owner_summary(session, payload=_notification_payload("no-profile"), env=None, skip_email=True)
+
+    assert result.skipped is True
+    assert result.subject == "Customer Retention Summary 2026-06-13 (success)"
+    assert "Customer Retention Pipeline Run no-profile" in result.body
+
+
+@pytest.mark.asyncio
+async def test_notification_missing_recipients_is_successful_skip_with_warning_status(tmp_path: Path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'missing_recipients.db'}")
+    async with engine.begin() as conn:
+        await _create_notification_tables(conn)
+        await conn.execute(sa.text("INSERT INTO pipelines VALUES (1, 'customer_retention_pipeline', 'x')"))
+        await conn.execute(sa.text("INSERT INTO notification_profiles VALUES (1, 1, 'owner_summary', 'x', NULL, 'run', 'none', 1)"))
+        await conn.execute(sa.text("INSERT INTO email_templates VALUES (1, 1, 'summary', 'Subject {{ run_summary.pipeline_run_id }}', 'Body {{ store_summary|length }}', 1)"))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await send_owner_summary(session, payload=_notification_payload("no-recipients"), env=None, skip_email=False)
+
+    assert result.planned == 0
+    assert result.sent == 0
+    assert result.skipped is True
+    assert result.reason == "no_recipients"
+    assert result.subject == "Subject no-recipients"
+    assert result.body == "Body 1"
+
+
+@pytest.mark.asyncio
+async def test_notification_valid_db_template_renders_and_sends_to_active_recipients(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    def fake_send_email(config, plan):
+        captured["plan"] = plan
+        return SimpleNamespace(sent=True)
+
+    monkeypatch.setattr("app.customer_retention.notifications._send_email", fake_send_email)
+    monkeypatch.setattr("app.customer_retention.notifications._load_smtp_config", lambda: SimpleNamespace())
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'valid_notification.db'}")
+    async with engine.begin() as conn:
+        await _create_notification_tables(conn)
+        await conn.execute(sa.text("INSERT INTO pipelines VALUES (1, 'customer_retention_pipeline', 'x')"))
+        await conn.execute(sa.text("INSERT INTO notification_profiles VALUES (1, 1, 'owner_summary', 'x', NULL, 'run', 'none', 1)"))
+        await conn.execute(sa.text("INSERT INTO email_templates VALUES (1, 1, 'summary', 'Subject {{ run_summary.pipeline_run_id }}', 'Stores {{ store_summary|length }}', 1)"))
+        await conn.execute(sa.text("INSERT INTO notification_recipients VALUES (1, 1, NULL, NULL, 'owner@example.com', 'Owner', 'to', 1, '2026-06-13 00:00:00')"))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await send_owner_summary(session, payload=_notification_payload("db-backed"), env=None, skip_email=False)
+
+    assert result.planned == 1
+    assert result.sent == 1
+    assert result.skipped is False
+    assert result.subject == "Subject db-backed"
+    assert result.body == "Stores 1"
+    assert captured["plan"].to == ["Owner <owner@example.com>"]
 
 
 @pytest.mark.asyncio
