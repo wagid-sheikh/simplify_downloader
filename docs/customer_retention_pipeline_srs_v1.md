@@ -1757,11 +1757,11 @@ This prompt is the controlling planning instruction that produced the five execu
 
 | Phase | Status | Owner/Agent | Started On | Completed On | Sign-off Notes |
 | --- | --- | --- | --- | --- | --- |
-| Phase 1: Database Schema & Migration Architecture | TESTED | Codex | 2026-06-11 | 2026-06-12 | Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests implemented; pending human sign-off before Phase 2. |
-| Phase 2: Lead Ingestion, Normalization, & External Imports | TESTED | Codex | 2026-06-12 | 2026-06-12 | Phase 2 ingestion/normalization modules, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and focused tests implemented. Phase 1 schema/idempotency constraints preserved; Phase 2 not signed off pending human review. |
-| Phase 3: Lifecycle Management, Suppression, & Recovery | IN_PROGRESS | Codex | 2026-06-12 | TBD | Phase 3 lifecycle, suppression, recovery code and tests implemented; awaiting human review/sign-off. |
+| Phase 1: Database Schema & Migration Architecture | SIGNED_OFF | Codex / Owner | 2026-06-11 | 2026-06-12 | Owner confirmed Phase 1-4 were developed and signed off before the Phase 5 audit; Phase 1 schema contracts, forward migration, cap seed, and migration/schema tests remain preserved. |
+| Phase 2: Lead Ingestion, Normalization, & External Imports | SIGNED_OFF | Codex / Owner | 2026-06-12 | 2026-06-12 | Owner confirmed Phase 1-4 were developed and signed off before the Phase 5 audit; Phase 2 ingestion/normalization, TD/external conversion, workbook ingestion shell, deterministic archive behavior, and idempotency contracts remain preserved. |
+| Phase 3: Lifecycle Management, Suppression, & Recovery | SIGNED_OFF | Codex / Owner | 2026-06-12 | 2026-06-13 | Owner confirmed Phase 1-4 were developed and signed off before the Phase 5 audit; Phase 3 lifecycle, suppression, and recovery contracts remain preserved by Phase 5. |
 | Phase 4: Cap Allocation & Dynamic Workbook Generation | SIGNED_OFF | Codex / Owner | 2026-06-12 | 2026-06-13 | Owner accepted the 2026-06-13 re-audit outcome and signed off Phase 4 after the production Target Cost Center validation fallback, conditional ingestion semantics, Phase 4 selection/workbook logging, and expanded acceptance tests were implemented and verified. Phase 1 schema, Phase 2 ingestion/idempotency, and Phase 3 lifecycle/suppression/recovery contracts remain preserved. |
-| Phase 5: Aggregation Analytics & Management Reporting | TESTED | Codex | 2026-06-13 | 2026-06-13 | Phase 5 analytics, owner-summary notification rendering, orchestration entry point, CLI integration, and focused tests implemented. Prior Phase 3 remains not signed off in tracker, so final all-phase sign-off is intentionally not claimed. |
+| Phase 5: Aggregation Analytics & Management Reporting | SIGNED_OFF | Codex | 2026-06-13 | 2026-06-13 | Phase 5 audit found one test-coverage/runtime-import gap in pending suppression approval analytics; Codex fixed it, verified focused tests, and signs off Phase 5 with Phase 1-4 recorded as signed off. |
 
 ## Phase 1: Database Schema & Migration Architecture
 
@@ -1925,12 +1925,12 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 - [x] `TESTED` Support manual run parameters such as `--run-date`, `--run-id`, `--env`, `--dry-run`, and `--skip-email`.
 - [x] `IMPLEMENTED` Update canonical docs and scripts only as needed for operator-facing behavior. CLI behavior is documented in this SRS tracker; no scripts required changes.
 - [x] `TESTED` Add integration tests or orchestration tests for end-to-end dry-run behavior.
-- [ ] `BLOCKED` Mark all phases `SIGNED_OFF` only after Phase 1-5 tests and approved deviations are recorded. Phase 3 is still tracked as not owner-signed-off, so final all-phase sign-off is blocked rather than claimed.
-- [x] `TESTED` Update final SRS tracker status and sign-off notes.
+- [x] `SIGNED_OFF` Mark all phases `SIGNED_OFF` after Phase 1-5 tests and approved deviations are recorded. Owner confirmed Phase 1-4 sign-off before the Phase 5 audit; Phase 5 audit remediation is tested.
+- [x] `SIGNED_OFF` Update final SRS tracker status and sign-off notes.
 
 Phase 5 progress notes:
 
-- 2026-06-13 — Codex: Implemented management analytics, DB-backed notification rendering/sending path, orchestration runner, and CLI command. Recovered revenue analytics read only from `vw_orders.order_amount`; blank `Handled By` is grouped as `UNSPECIFIED` and counted as an operational warning. No schema migration was required because notification contracts can be loaded from existing DB tables with a safe fallback template. Final all-phase sign-off remains blocked because Phase 3 is not recorded as owner-signed-off in this tracker.
+- 2026-06-13 — Codex audit/sign-off: Audited Phase 5 against Section 34 and Phase 5 guard rails. Found and fixed a concrete runtime/import coverage gap for pending suppression approval analytics, added a focused regression test, and verified the Phase 5 suite. Recovered revenue analytics read only from `vw_orders.order_amount`; blank `Handled By` is grouped as `UNSPECIFIED` and counted as an operational warning. No schema migration was required because notification contracts can be loaded from existing DB tables with a safe fallback template. Phase 5 is signed off after remediation, with Phase 1-4 recorded as signed off per owner confirmation.
 
 Guard rails:
 
@@ -1941,7 +1941,7 @@ Guard rails:
 - Missing `Handled By` values must never be dropped.
 - CLI behavior must follow `app/__main__.py` conventions.
 - Final sign-off must confirm existing pipelines are not broken.
-- Final sign-off must confirm all prior phase tasks are `SIGNED_OFF` or have explicitly approved deviations recorded inline.
+- Final sign-off must confirm all prior phase tasks are `SIGNED_OFF` or have explicitly approved deviations recorded inline. Confirmed on 2026-06-13 per owner statement for Phase 1-4 and Codex Phase 5 audit remediation.
 
 ## Progress Update Protocol
 

@@ -9,10 +9,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, build_management_summary_payload
-from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads
+from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
 from app.customer_retention.workload import WorkloadFreezeResult
 from app.customer_retention.workbook_selection import StoreWorkbookSelectionResult, WorkbookLeadRow
-from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL
+from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
 from app.customer_retention.notifications import send_owner_summary
 from app.customer_retention.pipeline import run_customer_retention_pipeline
 
@@ -40,6 +40,57 @@ async def test_analytics_source_counts_revenue_and_unspecified_staff(tmp_path: P
     staff = payload["staff_productivity"]
     assert staff[0]["handled_by"] == UNSPECIFIED_HANDLED_BY
     assert payload["warning_error_summary"]["unspecified_handled_by_warning_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_analytics_counts_pending_suppression_approvals(tmp_path: Path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'s.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT 'S1' AS cost_center, 'O1' AS order_number, 0 AS order_amount"))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=1,
+            lead_uuid="u1",
+            lead_source_type=LEAD_SOURCE_RETENTION,
+            source_system="x",
+            cost_center="S1",
+            normalized_mobile_number="919999999999",
+            lead_date=date(2026, 6, 13),
+            lead_status="PENDING",
+            lifecycle_bucket="WARM",
+            is_closed=False,
+            is_recovered=False,
+            created_by_pipeline_run_id="r1",
+            updated_by_pipeline_run_id="r1",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.execute(trx_customer_suppression.insert().values(
+            suppression_id=1,
+            cost_center="S1",
+            normalized_mobile_number="919999999999",
+            suppression_reason="Wrong Number",
+            suppression_state=SUPPRESSION_STATE_PENDING_APPROVAL,
+            suppression_start_date=date(2026, 6, 13),
+            is_permanent=True,
+            approval_required=True,
+            created_by_pipeline_run_id="r1",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.commit()
+
+        payload = await build_management_summary_payload(
+            session,
+            run_id="r1",
+            run_date=date(2026, 6, 13),
+            timing=RunTiming("r1", datetime(2026, 6, 13, tzinfo=timezone.utc)),
+        )
+
+    store = payload["store_summary"][0]
+    assert store["pending_suppression_approval_count"] == 1
+    assert store["suppression_additions_by_outcome"] == {"Wrong Number": 1}
 
 
 def test_static_customer_retention_reporting_uses_vw_orders_only():
