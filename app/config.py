@@ -410,6 +410,7 @@ class Config:
     customer_followup_input_dir: str
     customer_followup_external_input_dir: str
     customer_followup_archive_dir: str
+    customer_followup_output_dir: str
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -556,6 +557,10 @@ class Config:
             db_values.get("CUSTOMER_FOLLOWUP_ARCHIVE_DIR"),
             default=str(Path(reports_root) / "archive" / "customer_followup"),
         )
+        customer_followup_output_dir = _clean_optional_path_config(
+            db_values.get("CUSTOMER_FOLLOWUP_OUTPUT_DIR"),
+            default=str(Path(reports_root) / "outputs" / "customer_followup"),
+        )
         td_storage_state_filename = _clean_text(
             db_values["TD_STORAGE_STATE_FILENAME"], key="TD_STORAGE_STATE_FILENAME"
         )
@@ -639,6 +644,7 @@ class Config:
             customer_followup_input_dir=customer_followup_input_dir,
             customer_followup_external_input_dir=customer_followup_external_input_dir,
             customer_followup_archive_dir=customer_followup_archive_dir,
+            customer_followup_output_dir=customer_followup_output_dir,
         )
 
 

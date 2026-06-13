@@ -32,10 +32,49 @@ from app.customer_retention.constants import (
     WORKBOOK_OUTCOME_SHIFTED_LOCATION,
 )
 from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
-from app.customer_retention.workbook_generator import DROPDOWN_VALUES_BY_HEADER, FOLLOWUP_HEADERS, generate_store_workbook
+from app.customer_retention.workbook_generator import (
+    DROPDOWN_VALUES_BY_HEADER,
+    FOLLOWUP_HEADERS,
+    default_customer_followup_output_root,
+    generate_store_workbook,
+)
 from app.customer_retention.workbook_ingestor import EDITABLE_COLUMNS, FOLLOWUP_SHEET, READ_ME_SHEET, ingest_returned_workbook
-from app.customer_retention.workbook_selection import load_active_retention_stores, select_workbook_leads_for_store
+from app.customer_retention.workbook_selection import (
+    StoreWorkbookSelectionResult,
+    load_active_retention_stores,
+    select_workbook_leads_for_store,
+)
 from app.customer_retention.workload import evaluate_retention_workload_freeze
+
+
+def test_default_customer_followup_output_root_uses_config(monkeypatch, tmp_path: Path):
+    configured_root = tmp_path / "configured_followup_output"
+    monkeypatch.setattr("app.config.config", type("Cfg", (), {"customer_followup_output_dir": str(configured_root)})())
+
+    assert default_customer_followup_output_root() == configured_root
+
+
+def test_generate_store_workbook_uses_configured_default_output_root(monkeypatch, tmp_path: Path):
+    configured_root = tmp_path / "configured_followup_output"
+    monkeypatch.setattr("app.config.config", type("Cfg", (), {"customer_followup_output_dir": str(configured_root)})())
+    selection = StoreWorkbookSelectionResult(
+        cost_center="A100",
+        run_date=date(2026, 6, 12),
+        rows=(),
+        counts_by_category={},
+        warnings=(),
+    )
+
+    output = generate_store_workbook(
+        selection=selection,
+        active_cost_centers=("A100",),
+        generated_at=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert output.output_path == (
+        configured_root / "2026-06" / "customer_followup_A100_2026-06-12.xlsx"
+    )
+    assert output.output_path.exists()
 
 
 async def _prepare_db(tmp_path: Path, *, relaxed_caps: bool = False) -> str:
