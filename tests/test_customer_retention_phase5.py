@@ -699,3 +699,80 @@ async def test_pipeline_rolls_back_workbook_external_td_and_retention_mutations_
     assert history_count == 0
     assert external_count == 0
     await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_pipeline_summary_payload_includes_external_td_and_retention_generation_warning_codes(monkeypatch, tmp_path: Path):
+    db = tmp_path / "warning_propagation.db"
+    monkeypatch.setattr(
+        "app.customer_retention.pipeline.config",
+        type(
+            "Cfg",
+            (),
+            {
+                "database_url": f"sqlite+aiosqlite:///{db}",
+                "customer_followup_output_dir": str(tmp_path / "outputs"),
+                "customer_followup_backlog_warning_threshold": 7,
+            },
+        )(),
+    )
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [SimpleNamespace(path=tmp_path / "external.csv")])
+
+    async def load_stores(session, **kwargs):
+        return ["S1"]
+
+    async def detect(session, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(session, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def import_external(session, path, pipeline_run_id, **kwargs):
+        return SimpleNamespace(
+            rows_seen=1,
+            leads_created=0,
+            warnings=[RowWarning("invalid_cost_center", "External lead row has missing or inactive cost center", row_number=2, source_file="external.csv", field_name="cost_center")],
+        )
+
+    async def import_td(session, pipeline_run_id, **kwargs):
+        return SimpleNamespace(rows_seen=1, leads_created=0, warnings=[RowWarning("td_store_unmapped", "TD lead store_code is not mapped", cost_center="BAD")])
+
+    async def generate_retention(session, **kwargs):
+        return SimpleNamespace(rows_seen=1, leads_created=0, leads_reused=0, rows_skipped=1, warnings=["invalid_mobile_identity"])
+
+    async def select(session, **kwargs):
+        return []
+
+    def generate(**kwargs):
+        return SimpleNamespace(outputs=[])
+
+    async def summary(session, **kwargs):
+        warning_summary = _warning_summary(list(kwargs["row_warnings"]), ingestion_results=[], aging={}, staff=[])
+        return {"warning_error_summary": warning_summary}
+
+    async def send(session, **kwargs):
+        return SimpleNamespace(planned=0, sent=0, skipped=True, reason="skip_email")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate)
+    monkeypatch.setattr("app.customer_retention.pipeline.archive_processed_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send)
+
+    result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="warning-run", dry_run=False, skip_email=True)
+
+    assert result.status == "success_with_warnings"
+    assert result.warnings == ["invalid_cost_center", "td_store_unmapped", "invalid_mobile_identity"]
+    assert result.summary_payload["warning_error_summary"]["warnings_by_code"] == {
+        "invalid_cost_center": 1,
+        "td_store_unmapped": 1,
+        "invalid_mobile_identity": 1,
+    }
+    assert result.summary_payload["warning_error_summary"]["invalid_mobiles"] == 1
