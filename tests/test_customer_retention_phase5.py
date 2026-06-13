@@ -35,14 +35,20 @@ async def test_analytics_source_counts_revenue_and_unspecified_staff(tmp_path: P
             {"lead_id": 3, "lead_uuid": "u3", "lead_source_type": LEAD_SOURCE_EXTERNAL, "source_system": "x", "source_table_name": "t", "source_record_id": "3", "cost_center": "S1", "normalized_mobile_number": "917777777777", "lead_date": date(2026,6,13), "lead_status": "WORKED", "handled_by": "Asha", "is_closed": False, "is_recovered": False, "created_by_pipeline_run_id": "r1", "created_at": datetime(2026,6,13,tzinfo=timezone.utc), "updated_at": datetime(2026,6,13,tzinfo=timezone.utc)},
         ]:
             await session.execute(trx_customer_followup_leads.insert().values(**row))
-        await session.execute(trx_customer_followup_history.insert(), [{"history_id": 1, "lead_id": 2, "pipeline_run_id": "r1", "event_type": "workbook_ingested", "handled_by": None, "customer_response": "Wrong Number", "created_at": datetime(2026,6,13,tzinfo=timezone.utc)}])
+        await session.execute(trx_customer_followup_history.insert(), [
+            {"history_id": 1, "lead_id": 2, "pipeline_run_id": "r1", "event_type": "workbook_ingested", "handled_by": None, "customer_response": "Wrong Number", "created_at": datetime(2026,6,13,tzinfo=timezone.utc)},
+            {"history_id": 2, "lead_id": 3, "pipeline_run_id": "r1", "event_type": "workbook_ingested", "handled_by": "Asha", "customer_response": "No Response", "created_at": datetime(2026,6,13,tzinfo=timezone.utc)},
+        ])
         await session.commit()
         payload = await build_management_summary_payload(session, run_id="r1", run_date=date(2026,6,13), timing=RunTiming("r1", datetime(2026,6,13,tzinfo=timezone.utc)))
     retention = next(row for row in payload["source_wise_summary"] if row["source"] == LEAD_SOURCE_RETENTION)
     assert retention["recovered"] == 1
     assert retention["recovered_revenue_value"] == "123.45"
     staff = payload["staff_productivity"]
-    assert staff[0]["handled_by"] == UNSPECIFIED_HANDLED_BY
+    staff_by_handler = {row["handled_by"]: row for row in staff}
+    assert UNSPECIFIED_HANDLED_BY in staff_by_handler
+    assert staff_by_handler[UNSPECIFIED_HANDLED_BY]["operational_warning"] is True
+    assert staff_by_handler["Asha"]["operational_warning"] is False
     assert payload["warning_error_summary"]["unspecified_handled_by_warning_count"] == 1
 
 

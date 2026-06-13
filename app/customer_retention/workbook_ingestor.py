@@ -183,6 +183,8 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
             if response.invalid and response.warning_code != "required_blank":
                 row_has_required_blank = True
                 result.warnings.append(RowWarning(response.warning_code or "invalid_response", response.warning_message or "Customer response is invalid", row_number, path.name, "customer_response", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            if not row_has_required_blank and _normalized_text(row.get("handled_by")) is None:
+                result.warnings.append(RowWarning("handled_by_blank", "Handled By is blank on a worked row; row ingested with unspecified handler", row_number, path.name, "handled_by", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
             for field in ("contact_mode", "order_expected"):
                 normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field])
                 normalized_values[field] = normalized.normalized_value
