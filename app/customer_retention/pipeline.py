@@ -212,14 +212,34 @@ async def run_customer_retention_pipeline(
             # call the sender so the run remains non-mutating and side-effect free.
             summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files, row_warnings=row_warnings)
             if not dry_run:
-                notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
+                # The management payload must see this transaction's uncommitted
+                # lead/history/suppression changes, but success email must never
+                # be sent for data that failed to commit. Commit first, then send.
                 await session.commit()
+                try:
+                    notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
+                except Exception as exc:
+                    warning_code = "email_delivery_failed_after_commit"
+                    warnings.append(warning_code)
+                    notification = NotificationResult(planned=1, sent=0, skipped=False, reason=warning_code)
+                    log_event(
+                        logger=log,
+                        phase="email",
+                        status="warning",
+                        message="customer_retention_success_notification_failed_after_commit",
+                        run_id=actual_run_id,
+                        error=str(exc),
+                    )
+                    email_status = notification.__dict__ | {"error": str(exc), "committed": True}
+                else:
+                    email_status = notification.__dict__ | {"committed": True}
             else:
                 # Enforce dry-run read-only semantics at the transaction boundary.
                 await session.rollback()
+                email_status = notification.__dict__
         status = "success_with_warnings" if warnings else "success"
         log_event(logger=log, phase="email", status="ok", message="customer_retention_pipeline_completed", run_id=actual_run_id, extras={"status": status, "counts": counts})
-        return CustomerRetentionRunResult(actual_run_id, actual_run_date, status, counts, warnings, generated_files, notification.__dict__, summary_payload)
+        return CustomerRetentionRunResult(actual_run_id, actual_run_date, status, counts, warnings, generated_files, email_status, summary_payload)
     except Exception as exc:
         log_event(logger=log, phase="email", status="error", message="customer_retention_pipeline_failed", run_id=actual_run_id, error=str(exc))
         raise
