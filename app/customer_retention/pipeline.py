@@ -16,6 +16,7 @@ from .external_import import import_external_lead_file
 from .input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks, get_customer_followup_paths
 from .notifications import NotificationResult, send_owner_summary
 from .recovery_detection import detect_recoveries
+from .retention_generation import generate_retention_leads_from_snapshot
 from .snapshot import build_customer_retention_snapshot
 from .source_adapters import import_td_leads
 from .workbook_generator import WorkbookGenerationResult, default_customer_followup_output_root, generate_workbooks
@@ -102,6 +103,14 @@ async def run_customer_retention_pipeline(
             snapshot = await build_customer_retention_snapshot(session, snapshot_date=actual_run_date)
             count("snapshot_rows", len(snapshot.rows))
             count("snapshot_invalid_mobile_rows", snapshot.rows_invalid_mobile)
+            if not dry_run:
+                retention_generation = await generate_retention_leads_from_snapshot(session, snapshot=snapshot, pipeline_run_id=actual_run_id, logger=log)
+                count("retention_rows_seen", retention_generation.rows_seen)
+                count("retention_leads_created", retention_generation.leads_created)
+                count("retention_leads_reused", retention_generation.leads_reused)
+                count("retention_rows_skipped", retention_generation.rows_skipped)
+                warnings.extend(retention_generation.warnings)
+                await session.flush()
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=DEFAULT_BACKLOG_THRESHOLD, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
             count("workbook_rows_selected", sum(len(s.rows) for s in selections))
             if not dry_run:
