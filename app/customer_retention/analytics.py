@@ -31,6 +31,7 @@ from .constants import (
     LEAD_STATUS_RECOVERED,
     LEAD_STATUS_WORKED,
     PERMANENT_SUPPRESSION_WORKBOOK_OUTCOMES,
+    SUPPRESSION_STATE_PENDING_APPROVAL,
     TIME_BOUND_SUPPRESSION_WORKBOOK_OUTCOMES,
 )
 from .db_tables import trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
