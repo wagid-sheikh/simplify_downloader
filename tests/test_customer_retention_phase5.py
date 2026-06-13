@@ -9,7 +9,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, build_management_summary_payload
+from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, _warning_summary, build_management_summary_payload
 from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression
 from app.customer_retention.workload import WorkloadFreezeResult
 from app.customer_retention.workbook_ingestor import FOLLOWUP_SHEET
@@ -17,6 +17,8 @@ from app.customer_retention.workbook_selection import StoreWorkbookSelectionResu
 from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
 from app.customer_retention.notifications import send_owner_summary
 from app.customer_retention.pipeline import run_customer_retention_pipeline
+
+from app.customer_retention.types import RowWarning
 
 
 @pytest.mark.asyncio
@@ -42,6 +44,25 @@ async def test_analytics_source_counts_revenue_and_unspecified_staff(tmp_path: P
     staff = payload["staff_productivity"]
     assert staff[0]["handled_by"] == UNSPECIFIED_HANDLED_BY
     assert payload["warning_error_summary"]["unspecified_handled_by_warning_count"] == 1
+
+
+def test_warning_summary_counts_all_target_cost_center_warning_codes():
+    warnings = [
+        RowWarning("target_cost_center_blank", "missing target"),
+        RowWarning("target_cost_center_invalid", "inactive target"),
+        RowWarning("target_cost_center_same_store", "same source and target"),
+        RowWarning("target_cost_center_ignored", "target ignored for non-shift response"),
+    ]
+
+    summary = _warning_summary(warnings, ingestion_results=[], aging={}, staff=[])
+
+    assert summary["target_cost_center_warnings"] == 4
+    assert summary["warnings_by_code"] == {
+        "target_cost_center_blank": 1,
+        "target_cost_center_invalid": 1,
+        "target_cost_center_same_store": 1,
+        "target_cost_center_ignored": 1,
+    }
 
 
 @pytest.mark.asyncio
