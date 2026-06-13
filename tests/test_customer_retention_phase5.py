@@ -776,3 +776,179 @@ async def test_pipeline_summary_payload_includes_external_td_and_retention_gener
         "invalid_mobile_identity": 1,
     }
     assert result.summary_payload["warning_error_summary"]["invalid_mobiles"] == 1
+
+@pytest.mark.asyncio
+async def test_pipeline_commit_failure_prevents_success_email_dispatch(monkeypatch, tmp_path: Path):
+    from contextlib import asynccontextmanager
+    from app.customer_retention import pipeline
+
+    calls: list[str] = []
+
+    class CommitFailureSession:
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            calls.append("commit")
+            raise RuntimeError("database commit failed")
+
+        async def rollback(self):
+            calls.append("rollback")
+
+    @asynccontextmanager
+    async def fake_session_scope(_database_url):
+        session = CommitFailureSession()
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+    async def load_stores(*args, **kwargs):
+        return ["S1"]
+
+    async def detect(*args, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(*args, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def import_td(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, warnings=[])
+
+    async def generate_retention(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select(*args, **kwargs):
+        return []
+
+    async def summary(*args, **kwargs):
+        calls.append("build_summary")
+        return {"run_summary": {"pipeline_run_id": "commit-fails"}}
+
+    async def forbidden_send(*args, **kwargs):
+        calls.append("send_email")
+        raise AssertionError("email must not be sent when commit fails")
+
+    monkeypatch.setattr(pipeline, "config", SimpleNamespace(database_url="sqlite+aiosqlite:///unused.db", customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr(pipeline, "session_scope", fake_session_scope)
+    monkeypatch.setattr(pipeline, "get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
+    monkeypatch.setattr(pipeline, "discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr(pipeline, "discover_external_lead_files", lambda logger=None: [])
+    monkeypatch.setattr(pipeline, "load_active_retention_stores", load_stores)
+    monkeypatch.setattr(pipeline, "detect_recoveries", detect)
+    monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr(pipeline, "_import_td_leads", import_td)
+    monkeypatch.setattr(pipeline, "generate_retention_leads_from_snapshot", generate_retention)
+    monkeypatch.setattr(pipeline, "select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr(pipeline, "generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
+    monkeypatch.setattr(pipeline, "build_management_summary_payload", summary)
+    monkeypatch.setattr(pipeline, "send_owner_summary", forbidden_send)
+
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        await pipeline.run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="commit-fails", dry_run=False, skip_email=False)
+
+    assert calls == ["build_summary", "commit", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_email_failure_after_commit_preserves_committed_business_data(monkeypatch, tmp_path: Path):
+    db = tmp_path / "email_failure_after_commit.db"
+    db_url = f"sqlite+aiosqlite:///{db}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+
+    monkeypatch.setattr("app.customer_retention.pipeline.config", SimpleNamespace(database_url=db_url, customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
+    async def load_stores(*args, **kwargs):
+        return ["S1"]
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+
+    async def detect(session, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(session, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def import_td(session, pipeline_run_id, **kwargs):
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=901,
+            lead_uuid="00000000-0000-0000-0000-000000000901",
+            lead_source_type="TD",
+            source_system="TEST_TD",
+            source_table_name="crm_leads_current",
+            source_record_id="td-901",
+            cost_center="S1",
+            normalized_mobile_number="9000000901",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.execute(trx_customer_followup_history.insert().values(
+            history_id=902,
+            lead_id=901,
+            pipeline_run_id=pipeline_run_id,
+            event_type="Email_Failure_Regression",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.execute(trx_customer_suppression.insert().values(
+            suppression_id=903,
+            cost_center="S1",
+            normalized_mobile_number="9000000901",
+            suppression_reason="Wrong Number",
+            suppression_state="ACTIVE",
+            suppression_start_date=date(2026, 6, 13),
+            is_permanent=True,
+            approval_required=False,
+            source_lead_id=901,
+            created_by_pipeline_run_id=pipeline_run_id,
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, leads_created=1, warnings=[])
+
+    async def generate_retention(session, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select(session, **kwargs):
+        return []
+
+    async def summary(session, **kwargs):
+        lead_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))
+        return {"run_summary": {"pipeline_run_id": "email-fails"}, "uncommitted_lead_count": lead_count}
+
+    async def send_raises(*args, **kwargs):
+        raise RuntimeError("SMTP outage after commit")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
+    monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send_raises)
+
+    result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="email-fails", dry_run=False, skip_email=False)
+
+    assert result.status == "success_with_warnings"
+    assert result.summary_payload["uncommitted_lead_count"] == 1
+    assert result.email_status["reason"] == "email_delivery_failed_after_commit"
+    assert result.email_status["committed"] is True
+    assert "SMTP outage after commit" in result.email_status["error"]
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        lead_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))
+        history_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_history))
+        suppression_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_suppression))
+    assert lead_count == 1
+    assert history_count == 1
+    assert suppression_count == 1
+    await engine.dispose()
