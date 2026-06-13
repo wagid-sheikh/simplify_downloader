@@ -10,6 +10,7 @@ from typing import Iterable
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Protection
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
@@ -54,6 +55,10 @@ FOLLOWUP_HEADERS = [
     "Target Cost Center",
 ]
 EDITABLE_HEADER_SET = set(EDITABLE_COLUMNS.values())
+EXCEL_INLINE_LIST_FORMULA_LIMIT = 255
+ACTIVE_COST_CENTER_LOOKUP_SHEET = "_ACTIVE_COST_CENTER_LOOKUP"
+ACTIVE_COST_CENTER_RANGE_NAME = "ActiveCostCenters"
+
 DROPDOWN_VALUES_BY_HEADER = {
     "Contact Attempted": CONTACT_ATTEMPTED_VALUES,
     "Contact Mode": CONTACT_MODE_VALUES,
@@ -235,12 +240,46 @@ def _add_dropdown_validations(sheet, active_cost_centers: list[str], *, max_row:
         column = _column_letter(header)
         validation.add(f"{column}2:{column}{max_row}")
         sheet.add_data_validation(validation)
-    target_validation = DataValidation(type="list", formula1=_quote_list(active_cost_centers), allow_blank=True, showErrorMessage=True)
+    target_formula = _target_cost_center_validation_formula(sheet, active_cost_centers)
+    target_validation = DataValidation(type="list", formula1=target_formula, allow_blank=True, showErrorMessage=True)
     target_validation.error = "Select an active target cost center from the dropdown list."
     target_validation.errorTitle = "Invalid target cost center"
     target_column = _column_letter("Target Cost Center")
     target_validation.add(f"{target_column}2:{target_column}{max_row}")
     sheet.add_data_validation(target_validation)
+
+
+def _target_cost_center_validation_formula(sheet, active_cost_centers: list[str]) -> str:
+    inline_formula = _quote_list(active_cost_centers)
+    if len(inline_formula) < EXCEL_INLINE_LIST_FORMULA_LIMIT:
+        return inline_formula
+    return f"={_ensure_active_cost_center_lookup_range(sheet, active_cost_centers)}"
+
+
+def _ensure_active_cost_center_lookup_range(sheet, active_cost_centers: list[str]) -> str:
+    workbook = sheet.parent
+    if ACTIVE_COST_CENTER_LOOKUP_SHEET in workbook.sheetnames:
+        lookup = workbook[ACTIVE_COST_CENTER_LOOKUP_SHEET]
+        lookup.delete_rows(1, lookup.max_row)
+    else:
+        lookup = workbook.create_sheet(ACTIVE_COST_CENTER_LOOKUP_SHEET)
+
+    lookup.sheet_state = "veryHidden"
+    lookup.protection.sheet = True
+    lookup.protection.enable()
+    lookup.cell(row=1, column=1, value="active_cost_center")
+    for row_idx, cost_center in enumerate(active_cost_centers, start=2):
+        lookup.cell(row=row_idx, column=1, value=cost_center)
+
+    # Excel list validations cannot safely carry long inline CSV formulas. A
+    # workbook-scoped name keeps the user-facing tab list clean while allowing
+    # arbitrarily many active stores.
+    last_row = max(len(active_cost_centers) + 1, 2)
+    range_reference = f"\'{ACTIVE_COST_CENTER_LOOKUP_SHEET}\'!$A$2:$A${last_row}"
+    if ACTIVE_COST_CENTER_RANGE_NAME in workbook.defined_names:
+        del workbook.defined_names[ACTIVE_COST_CENTER_RANGE_NAME]
+    workbook.defined_names.add(DefinedName(ACTIVE_COST_CENTER_RANGE_NAME, attr_text=range_reference))
+    return ACTIVE_COST_CENTER_RANGE_NAME
 
 
 def _add_date_validation(sheet, *, max_row: int) -> None:
