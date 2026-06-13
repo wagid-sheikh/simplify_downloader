@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import io
+import json
 from decimal import Decimal
 from pathlib import Path
 
@@ -10,6 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.common.db import session_scope
+from app.dashboard_downloader.json_logger import JsonLogger
 from app.customer_retention.caps import resolve_active_cap
 from app.customer_retention.constants import (
     CAP_WORK_SECTION_EXTERNAL_LEAD,
@@ -203,6 +206,62 @@ async def test_workbook_selection_categories_caps_freeze_suppression_and_orderin
         frozen = await select_workbook_leads_for_store(session, cost_center="A100", run_date=run_date, backlog_threshold=0)
         assert CAP_WORK_SECTION_FRESH_RETENTION not in {row.work_section for row in frozen.rows}
         assert {CAP_WORK_SECTION_DUE_FOLLOWUP, CAP_WORK_SECTION_PENDING_CARRY_FORWARD, CAP_WORK_SECTION_TD_LEAD, CAP_WORK_SECTION_EXTERNAL_LEAD}.issubset({row.work_section for row in frozen.rows})
+
+
+@pytest.mark.asyncio
+async def test_workbook_selection_emits_phase4_observability_events(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="logger-run", stream=log_stream, log_file_path=None)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=1)
+        await _insert_cap(session, source=LEAD_SOURCE_EXTERNAL, section=CAP_WORK_SECTION_EXTERNAL_LEAD, daily_cap=1)
+        await _insert_lead(session, lead_id=101, next_followup_date=run_date, priority=Decimal("100"))
+        await _insert_lead(session, lead_id=102, lead_date=run_date - timedelta(days=1), priority=Decimal("90"))
+        await _insert_lead(session, lead_id=103, source=LEAD_SOURCE_TD, priority=Decimal("80"))
+        await _insert_lead(session, lead_id=104, source=LEAD_SOURCE_EXTERNAL, priority=Decimal("70"))
+        await _insert_lead(session, lead_id=105, source=LEAD_SOURCE_EXTERNAL, priority=Decimal("60"))
+        await _insert_lead(session, lead_id=106, source=LEAD_SOURCE_RETENTION, priority=Decimal("50"))
+        await _insert_lead(session, lead_id=107, source=LEAD_SOURCE_RETENTION, priority=Decimal("40"))
+        await _insert_lead(session, lead_id=108, source=LEAD_SOURCE_RETENTION, mobile="123", priority=Decimal("30"))
+        await session.commit()
+
+        stores = await load_active_retention_stores(
+            session, logger=logger, run_id="phase4-run", phase="phase4", pipeline="customer_retention", run_date=run_date
+        )
+        result = await select_workbook_leads_for_store(
+            session,
+            cost_center="A100",
+            run_date=run_date,
+            backlog_threshold=99,
+            logger=logger,
+            run_id="phase4-run",
+            phase="phase4",
+            pipeline="customer_retention",
+        )
+
+    events = [json.loads(line) for line in log_stream.getvalue().splitlines()]
+    by_message = {event["message"]: event for event in events}
+
+    assert stores == ("A100", "C300", "D400")
+    assert by_message["active_retention_stores_loaded"]["active_store_count"] == 3
+    assert by_message["active_retention_stores_loaded"]["run_id"] == "phase4-run"
+    cap_events = [event for event in events if event["message"] == "cap_resolution_result"]
+    assert {event["lead_source_type"] for event in cap_events} == {LEAD_SOURCE_RETENTION, LEAD_SOURCE_EXTERNAL}
+    assert all(event["phase"] == "phase4" and event["pipeline"] == "customer_retention" for event in cap_events)
+    assert by_message["workload_freeze_result"]["frozen"] is False
+    assert by_message["due_followup_rows_selected"]["selected_count"] == 1
+    assert by_message["pending_carry_forward_rows_selected"]["selected_count"] == 1
+    assert by_message["td_rows_selected"]["selected_count"] == 1
+    assert by_message["external_rows_selected_capped"]["selected_count"] == 1
+    assert by_message["external_rows_selected_capped"]["capped_count"] == 1
+    assert by_message["fresh_retention_rows_selected_frozen_capped"]["selected_count"] == 1
+    assert by_message["fresh_retention_rows_selected_frozen_capped"]["capped_count"] == 1
+    assert by_message["invalid_normalized_mobile_identity_exclusions"]["excluded_count"] == 1
+    assert by_message["invalid_normalized_mobile_identity_exclusions"]["status"] == "warning"
+    assert by_message["final_workbook_row_counts"]["row_count"] == len(result.rows) == 5
+    assert by_message["final_workbook_row_counts"]["counts_by_category"][CAP_WORK_SECTION_FRESH_RETENTION] == 1
 
 
 @pytest.mark.asyncio
