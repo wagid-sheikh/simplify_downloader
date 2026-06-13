@@ -37,6 +37,7 @@ def _default_system_config_rows(secret_key: str) -> dict[str, str]:
         "UC_IGNORE_HTTPS_ERRORS": "false",
         "ETL_STEP_TIMEOUT_SECONDS": "30",
         "PDF_RENDER_TIMEOUT_SECONDS": "30",
+        "CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD": "20",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")

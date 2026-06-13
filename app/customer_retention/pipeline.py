@@ -23,8 +23,6 @@ from .workbook_generator import WorkbookGenerationResult, generate_workbooks
 from .workbook_ingestor import ingest_returned_workbook
 from .workbook_selection import load_active_retention_stores, select_workbook_leads_for_active_stores
 
-DEFAULT_BACKLOG_THRESHOLD = 50
-
 
 @dataclass(frozen=True)
 class CustomerRetentionRunResult:
@@ -111,7 +109,7 @@ async def run_customer_retention_pipeline(
                 count("retention_rows_skipped", retention_generation.rows_skipped)
                 warnings.extend(retention_generation.warnings)
                 await session.flush()
-            selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=DEFAULT_BACKLOG_THRESHOLD, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
+            selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=config.customer_followup_backlog_warning_threshold, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
             count("workbook_rows_selected", sum(len(s.rows) for s in selections))
             if not dry_run:
                 workbook_result = generate_workbooks(

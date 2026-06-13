@@ -64,6 +64,7 @@ DEFAULT_TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS = 10
 DEFAULT_TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS = 240
 DEFAULT_TD_LEADS_GATHER_TIMEOUT_SECONDS = 270
 DEFAULT_TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS = 10
+DEFAULT_CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD = 20
 
 ENV_ONLY_KEYS = [
     "SECRET_KEY",
@@ -411,6 +412,7 @@ class Config:
     customer_followup_external_input_dir: str
     customer_followup_archive_dir: str
     customer_followup_output_dir: str
+    customer_followup_backlog_warning_threshold: int
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -561,6 +563,13 @@ class Config:
             db_values.get("CUSTOMER_FOLLOWUP_OUTPUT_DIR"),
             default=str(Path(reports_root) / "outputs" / "customer_followup"),
         )
+        customer_followup_backlog_warning_threshold = _parse_positive_int(
+            db_values.get(
+                "CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD",
+                str(DEFAULT_CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD),
+            ),
+            key="CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD",
+        )
         td_storage_state_filename = _clean_text(
             db_values["TD_STORAGE_STATE_FILENAME"], key="TD_STORAGE_STATE_FILENAME"
         )
@@ -645,6 +654,7 @@ class Config:
             customer_followup_external_input_dir=customer_followup_external_input_dir,
             customer_followup_archive_dir=customer_followup_archive_dir,
             customer_followup_output_dir=customer_followup_output_dir,
+            customer_followup_backlog_warning_threshold=customer_followup_backlog_warning_threshold,
         )
 
 

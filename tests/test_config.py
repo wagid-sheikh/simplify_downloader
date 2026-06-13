@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.config import (
+    DEFAULT_CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD,
     DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS,
     DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS,
     Config,
@@ -59,6 +60,7 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS": "240",
         "TD_LEADS_GATHER_TIMEOUT_SECONDS": "270",
         "TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS": "10",
+        "CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD": "20",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")
@@ -190,6 +192,53 @@ def test_missing_env_variable_raises(monkeypatch, tmp_path):
     with pytest.raises(ConfigError):
         Config.load_from_env_and_db()
 
+
+
+def test_customer_followup_backlog_threshold_honors_system_config(monkeypatch, tmp_path):
+    db_path = tmp_path / "config.sqlite"
+    rows = _base_rows("unit-test-secret")
+    rows["CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD"] = " 7 "
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    log_file = tmp_path / "logs" / "test.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(log_file),
+        },
+    )
+
+    cfg = Config.load_from_env_and_db()
+
+    assert cfg.customer_followup_backlog_warning_threshold == 7
+
+
+def test_customer_followup_backlog_threshold_defaults_to_srs_value(monkeypatch, tmp_path):
+    db_path = tmp_path / "config.sqlite"
+    rows = _base_rows("unit-test-secret")
+    rows.pop("CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD", None)
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    log_file = tmp_path / "logs" / "test.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(log_file),
+        },
+    )
+
+    cfg = Config.load_from_env_and_db()
+
+    assert DEFAULT_CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD == 20
+    assert cfg.customer_followup_backlog_warning_threshold == 20
 
 def test_missing_system_config_key(monkeypatch, tmp_path):
     db_path = tmp_path / "config.sqlite"
