@@ -149,7 +149,7 @@ def _populate_readme(sheet) -> None:
         ("Only edit allowed columns: Handled By, Contact Attempted, Contact Mode, Customer Response, Order Expected, Next Follow-up Date, Complaint, Do Not Contact, Staff Remarks, Target Cost Center.",),
         ("Do not change system columns; protected columns are ignored during ingestion because DB values are authoritative.",),
         ("Select dropdown values only for controlled fields; invalid entries become warnings and may keep rows pending.",),
-        ("Target Cost Center is only for Shifted Location and must be selected from the active-store dropdown.",),
+        ("Target Cost Center is only for Shifted Location and must be selected from the active-store dropdown. Excel shows the active-store dropdown on every row; ingestion ignores populated targets on other responses with a warning.",),
         ("Pickup Requested means urgent action. Use Lead Stale only when no further action is useful.",),
     ]
     for row in rows:
