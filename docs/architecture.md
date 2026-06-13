@@ -113,6 +113,8 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 
 ### 7) Notifications and operational messaging
 - `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
+- `app/customer_retention/notifications.py` uses the same DB notification contract tables for owner summaries: `pipelines`, `notification_profiles`, `email_templates`, and `notification_recipients`. Production enablement requires a pipeline row with code `customer_retention_pipeline` and an active run-scoped profile with code `owner_summary`, plus an active email template and active recipients for the target environment.
+- Customer retention notification fallback is intentionally best-effort: if notification tables are absent, or if the expected pipeline/profile/template rows are missing, the module renders built-in default subject/body templates. It does not invent recipients; when active recipients are absent, it logs `customer_retention_owner_summary_no_recipients` and returns a skipped `no_recipients` result rather than sending email.
 - SMTP config values are loaded from `app.config`. The sender currently supports plain SMTP and STARTTLS (`REPORT_EMAIL_USE_TLS=true`); it does not use SMTP SSL-on-connect for port 465.
 - Supports diagnostics commands (`python -m app notifications smtp-check` and `python -m app notifications test ...`).
 - Supports DB-driven dashboard store-scope diagnostics (`python -m app stores diagnose`)
