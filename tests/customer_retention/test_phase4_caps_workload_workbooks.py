@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import io
+from contextlib import asynccontextmanager
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -45,6 +46,68 @@ from app.customer_retention.workbook_selection import (
     select_workbook_leads_for_store,
 )
 from app.customer_retention.workload import evaluate_retention_workload_freeze
+
+
+@pytest.mark.asyncio
+async def test_pipeline_passes_configured_backlog_threshold(monkeypatch) -> None:
+    from app.customer_retention import pipeline
+
+    observed: dict[str, int] = {}
+
+    @asynccontextmanager
+    async def fake_session_scope(_database_url):
+        class FakeSession:
+            async def commit(self):
+                return None
+
+            async def flush(self):
+                return None
+
+        yield FakeSession()
+
+    async def fake_import_td_leads(*_args, **_kwargs):
+        return type("TdResult", (), {"rows_seen": 0, "leads_created": 0, "warnings": []})()
+
+    async def fake_detect_recoveries(*_args, **_kwargs):
+        return type("Recovery", (), {"leads_recovered": 0, "leads_closed": 0})()
+
+    async def fake_snapshot(*_args, **_kwargs):
+        return type("Snapshot", (), {"rows": (), "rows_invalid_mobile": 0})()
+
+    async def fake_generate(*_args, **_kwargs):
+        return type("Generation", (), {"rows_seen": 0, "leads_created": 0, "leads_reused": 0, "rows_skipped": 0, "warnings": []})()
+
+    async def fake_load_active_retention_stores(*_args, **_kwargs):
+        return ("A100",)
+
+    async def fake_select(_session, *, backlog_threshold, **_kwargs):
+        observed["backlog_threshold"] = backlog_threshold
+        return ()
+
+    async def fake_summary(*_args, **_kwargs):
+        return {}
+
+    async def fake_send(*_args, **_kwargs):
+        return pipeline.NotificationResult(planned=0, sent=0, skipped=True, reason="test")
+
+    monkeypatch.setattr(pipeline, "config", type("Cfg", (), {"database_url": "sqlite+aiosqlite:///unused.db", "customer_followup_output_dir": "/tmp/customer_followup", "customer_followup_backlog_warning_threshold": 7})())
+    monkeypatch.setattr(pipeline, "session_scope", fake_session_scope)
+    monkeypatch.setattr(pipeline, "get_customer_followup_paths", lambda: type("Paths", (), {"archive_dir": Path("/tmp/archive")})())
+    monkeypatch.setattr(pipeline, "discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr(pipeline, "discover_external_lead_files", lambda logger=None: [])
+    monkeypatch.setattr(pipeline, "load_active_retention_stores", fake_load_active_retention_stores)
+    monkeypatch.setattr(pipeline, "import_td_leads", fake_import_td_leads)
+    monkeypatch.setattr(pipeline, "detect_recoveries", fake_detect_recoveries)
+    monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", fake_snapshot)
+    monkeypatch.setattr(pipeline, "generate_retention_leads_from_snapshot", fake_generate)
+    monkeypatch.setattr(pipeline, "select_workbook_leads_for_active_stores", fake_select)
+    monkeypatch.setattr(pipeline, "generate_workbooks", lambda **kwargs: type("WorkbookResult", (), {"outputs": []})())
+    monkeypatch.setattr(pipeline, "build_management_summary_payload", fake_summary)
+    monkeypatch.setattr(pipeline, "send_owner_summary", fake_send)
+
+    await pipeline.run_customer_retention_pipeline(run_date=date(2026, 6, 12), run_id="threshold-run")
+
+    assert observed["backlog_threshold"] == 7
 
 
 def test_default_customer_followup_output_root_uses_config(monkeypatch, tmp_path: Path):
