@@ -18,6 +18,7 @@ from app.customer_retention.persistence import get_or_create_followup_lead
 from app.customer_retention.mobile import MobileNormalizationStatus, normalize_mobile
 from app.customer_retention.normalization import ValueNormalizer, normalize_value
 from app.customer_retention.source_adapters import import_td_leads
+from app.customer_retention.recovery_detection import detect_recoveries
 from app.customer_retention.suppression import approve_suppression, check_active_suppression
 from app.customer_retention.workbook_ingestor import ingest_returned_workbook
 
@@ -28,8 +29,8 @@ async def _prepare_db(tmp_path: Path) -> str:
     engine = create_async_engine(url, future=True)
     async with engine.begin() as conn:
         await conn.run_sync(metadata.create_all)
-        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
-        await conn.execute(sa.text("INSERT INTO store_master (cost_center, customer_retention_pipeline) VALUES ('A100', 1), ('B200', 0), ('C300', 1)"))
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, store_code TEXT, sync_group TEXT, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master (cost_center, store_code, sync_group, customer_retention_pipeline) VALUES ('A100', 'SC-A', 'TD', 1), ('B200', 'SC-B', 'TD', 0), ('C300', 'SC-C', 'UC', 1)"))
         await conn.execute(sa.text("""
             CREATE TABLE crm_leads_current (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,8 +265,8 @@ async def test_td_pending_rows_same_store_and_mobile_share_unified_lead(tmp_path
     async with session_scope(url) as session:
         await session.execute(sa.text("""
             INSERT INTO crm_leads_current (lead_uid, store_code, pickup_no, status_bucket, customer_name, mobile, pickup_created_at, run_id, scraped_at)
-            VALUES ('TD-DUPE-1', 'A100', 'P1', 'pending', 'Ada One', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
-                   ('TD-DUPE-2', 'A100', 'P2', 'pending', 'Ada Two', '+91-98765-43210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
+            VALUES ('TD-DUPE-1', 'SC-A', 'P1', 'pending', 'Ada One', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD-DUPE-2', 'SC-A', 'P2', 'pending', 'Ada Two', '+91-98765-43210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
         """))
         await session.commit()
 
@@ -374,9 +375,9 @@ async def test_td_adapter_import_idempotency_and_invalid_mobile_warning(tmp_path
     async with session_scope(url) as session:
         await session.execute(sa.text("""
             INSERT INTO crm_leads_current (lead_uid, store_code, pickup_no, status_bucket, customer_name, mobile, pickup_created_at, run_id, scraped_at)
-            VALUES ('TD1', 'A100', 'P1', 'pending', 'Ada', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
-                   ('TD2', 'A100', 'P2', 'pending', 'Bad', 'abc', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
-                   ('TD3', 'A100', 'P3', 'completed', 'Done', '9876543211', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
+            VALUES ('TD1', 'SC-A', 'P1', 'pending', 'Ada', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD2', 'SC-A', 'P2', 'pending', 'Bad', 'abc', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD3', 'SC-A', 'P3', 'completed', 'Done', '9876543211', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
         """))
         await session.commit()
     first = await import_td_leads(database_url=url, pipeline_run_id="run1")
@@ -387,6 +388,104 @@ async def test_td_adapter_import_idempotency_and_invalid_mobile_warning(tmp_path
     assert second.leads_existing == 1
     async with session_scope(url) as session:
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_td_adapter_resolves_store_code_to_active_retention_cost_center(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO crm_leads_current (lead_uid, store_code, pickup_no, status_bucket, customer_name, mobile, pickup_created_at, run_id, scraped_at)
+            VALUES ('TD-ACTIVE', 'SC-A', 'P-ACTIVE', 'pending', 'Ada', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD-INACTIVE', 'SC-B', 'P-INACTIVE', 'pending', 'Bea', '9876543211', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD-WRONG-GROUP', 'SC-C', 'P-WRONG-GROUP', 'pending', 'Cara', '9876543212', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00'),
+                   ('TD-UNMAPPED', 'SC-X', 'P-UNMAPPED', 'pending', 'Dee', '9876543213', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
+        """))
+        await session.commit()
+
+    result = await import_td_leads(database_url=url, pipeline_run_id="run1")
+
+    assert result.rows_seen == 4
+    assert result.leads_created == 1
+    assert result.rows_skipped == 3
+    assert [warning.code for warning in result.warnings] == ["td_store_inactive", "td_store_inactive", "td_store_unmapped"]
+    async with session_scope(url) as session:
+        lead = (await session.execute(sa.select(trx_customer_followup_leads))).mappings().one()
+        assert lead["cost_center"] == "A100"
+        assert lead["assigned_store"] == "A100"
+        assert lead["source_record_id"] == "TD-ACTIVE"
+        assert lead["source_reference"] == "P-ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_td_cost_center_mapping_keeps_suppression_and_recovery_store_scoped(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    async with session_scope(url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO crm_leads_current (lead_uid, store_code, pickup_no, status_bucket, customer_name, mobile, pickup_created_at, run_id, scraped_at)
+            VALUES ('TD-A100', 'SC-A', 'P-A100', 'pending', 'Ada', '9876543210', '2026-06-01 00:00:00+00:00', 'r1', '2026-06-01 00:00:00+00:00')
+        """))
+        await session.execute(trx_customer_suppression.insert().values(
+            suppression_id=1,
+            cost_center="SC-A",
+            mobile_number="9876543210",
+            normalized_mobile_number="9876543210",
+            suppression_reason="Not Interested",
+            suppression_state=SUPPRESSION_STATE_ACTIVE,
+            suppression_start_date=date(2026, 6, 1),
+            suppression_until=date(2026, 7, 1),
+            is_permanent=False,
+            approval_required=False,
+            created_at=datetime.now(timezone.utc),
+        ))
+        await session.execute(trx_customer_suppression.insert().values(
+            suppression_id=2,
+            cost_center="A100",
+            mobile_number="9876543210",
+            normalized_mobile_number="9876543210",
+            suppression_reason="Not Interested",
+            suppression_state=SUPPRESSION_STATE_ACTIVE,
+            suppression_start_date=date(2026, 6, 1),
+            suppression_until=date(2026, 7, 1),
+            is_permanent=False,
+            approval_required=False,
+            created_at=datetime.now(timezone.utc),
+        ))
+        await session.execute(sa.text("""
+            CREATE TABLE vw_orders (
+                cost_center TEXT,
+                order_number TEXT,
+                order_date TIMESTAMP,
+                customer_name TEXT,
+                mobile_number TEXT,
+                order_amount NUMERIC
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO vw_orders (cost_center, order_number, order_date, customer_name, mobile_number, order_amount)
+            VALUES ('SC-A', 'ORD-STORE-CODE', '2026-06-02 00:00:00+00:00', 'Ada', '9876543210', 100),
+                   ('A100', 'ORD-COST-CENTER', '2026-06-03 00:00:00+00:00', 'Ada', '9876543210', 200)
+        """))
+        await session.commit()
+
+    import_result = await import_td_leads(database_url=url, pipeline_run_id="run1")
+    assert import_result.leads_created == 1
+
+    async with session_scope(url) as session:
+        lead = (await session.execute(sa.select(trx_customer_followup_leads))).mappings().one()
+        assert lead["cost_center"] == "A100"
+        store_code_suppression = await check_active_suppression(session, cost_center="SC-A", normalized_mobile_number="9876543210", as_of_date=date(2026, 6, 2))
+        cost_center_suppression = await check_active_suppression(session, cost_center="A100", normalized_mobile_number="9876543210", as_of_date=date(2026, 6, 2))
+        assert store_code_suppression.is_suppressed is True
+        assert cost_center_suppression.is_suppressed is True
+
+        recovery = await detect_recoveries(session, as_of_date=date(2026, 6, 4), pipeline_run_id="run2")
+        await session.commit()
+
+        assert recovery.leads_recovered == 1
+        assert [match.recovered_order_id for match in recovery.matches] == ["ORD-COST-CENTER"]
+        recovered = (await session.execute(sa.select(trx_customer_followup_leads.c.recovered_order_id))).scalar_one()
+        assert recovered == "ORD-COST-CENTER"
 
 
 @pytest.mark.asyncio
