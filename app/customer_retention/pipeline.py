@@ -19,6 +19,7 @@ from .recovery_detection import detect_recoveries
 from .retention_generation import generate_retention_leads_from_snapshot
 from .snapshot import build_customer_retention_snapshot
 from .source_adapters import _import_td_leads
+from .types import RowWarning
 from .workbook_generator import WorkbookGenerationResult, generate_workbooks
 from .workbook_ingestor import _ingest_returned_workbook
 from .workbook_selection import load_active_retention_stores, select_workbook_leads_for_active_stores
@@ -69,6 +70,7 @@ async def run_customer_retention_pipeline(
 
     counts: dict[str, int] = {}
     warnings: list[str] = []
+    row_warnings: list[RowWarning] = []
     generated_files: list[str] = []
     workbook_result: WorkbookGenerationResult | None = None
     notification = NotificationResult(planned=0, sent=0, skipped=True, reason="not_attempted")
@@ -78,6 +80,25 @@ async def run_customer_retention_pipeline(
 
     def count(name: str, value: int) -> None:
         counts[name] = counts.get(name, 0) + int(value)
+
+    def add_warnings(source_warnings: Any) -> None:
+        """Preserve structured warnings and wrap code-only warnings.
+
+        Some producers can only emit run-level warning codes because there is no
+        row context. Convert those strings into RowWarning objects so management
+        analytics receives one structured stream regardless of source.
+        """
+        for warning in source_warnings or ():
+            if isinstance(warning, RowWarning):
+                row_warning = warning
+            elif hasattr(warning, "code"):
+                code = str(warning.code)
+                row_warning = RowWarning(code=code, message=str(getattr(warning, "message", code)))
+            else:
+                code = str(warning)
+                row_warning = RowWarning(code=code, message=code)
+            row_warnings.append(row_warning)
+            warnings.append(row_warning.code)
 
     try:
         log_event(logger=log, phase="config", status="ok", message="customer_retention_pipeline_started", run_id=actual_run_id, extras={"run_date": actual_run_date.isoformat(), "dry_run": dry_run, "env": env})
@@ -99,7 +120,7 @@ async def run_customer_retention_pipeline(
                     ingestion_results.append(result)
                     count("workbook_rows_seen", result.rows_seen)
                     count("workbook_history_inserted", result.history_inserted)
-                    warnings.extend(w.code for w in result.warnings)
+                    add_warnings(result.warnings)
                     processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
             else:
                 log_event(
@@ -138,14 +159,14 @@ async def run_customer_retention_pipeline(
                     result = await _import_external_lead_file(session, discovered.path, actual_run_id, logger=log)
                     count("external_rows_seen", result.rows_seen)
                     count("external_leads_created", result.leads_created)
-                    warnings.extend(w.code for w in result.warnings)
+                    add_warnings(result.warnings)
                     processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
 
                 # 8. Pull/convert TD leads.
                 td_result = await _import_td_leads(session, actual_run_id, logger=log)
                 count("td_rows_seen", td_result.rows_seen)
                 count("td_leads_created", td_result.leads_created)
-                warnings.extend(w.code for w in td_result.warnings)
+                add_warnings(td_result.warnings)
 
                 # 9. Generate fresh retention leads.
                 retention_generation = await generate_retention_leads_from_snapshot(session, snapshot=snapshot, pipeline_run_id=actual_run_id, logger=log)
@@ -153,14 +174,14 @@ async def run_customer_retention_pipeline(
                 count("retention_leads_created", retention_generation.leads_created)
                 count("retention_leads_reused", retention_generation.leads_reused)
                 count("retention_rows_skipped", retention_generation.rows_skipped)
-                warnings.extend(retention_generation.warnings)
+                add_warnings(retention_generation.warnings)
                 await session.flush()
 
             # 10. Select due follow-ups, carry-forward, TD, external, and fresh retention rows.
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=backlog_threshold, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
             selected_rows = sum(len(selection.rows) for selection in selections)
-            selection_warning_codes = [warning.code for selection in selections for warning in getattr(selection, "warnings", ())]
-            warnings.extend(selection_warning_codes)
+            for selection in selections:
+                add_warnings(getattr(selection, "warnings", ()))
             if dry_run:
                 count("planned_workbook_rows_selected", selected_rows)
                 count("planned_workbooks_to_generate", len(selections))
@@ -189,7 +210,7 @@ async def run_customer_retention_pipeline(
 
             # 13. Build/send summary email. Dry-runs build the payload but do not
             # call the sender so the run remains non-mutating and side-effect free.
-            summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files)
+            summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files, row_warnings=row_warnings)
             if not dry_run:
                 notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
                 await session.commit()

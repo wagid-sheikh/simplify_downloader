@@ -75,7 +75,13 @@ async def build_management_summary_payload(
 ) -> dict[str, Any]:
     selection_list = list(selections)
     ingestion_list = list(ingestion_results)
-    warnings = [*row_warnings, *(w for result in ingestion_list for w in result.warnings), *(w for selection in selection_list for w in selection.warnings)]
+    supplied_warnings = list(row_warnings)
+    if supplied_warnings:
+        warnings = supplied_warnings
+    else:
+        # Backward compatibility for direct callers that still pass only phase
+        # result objects instead of the pipeline's complete structured stream.
+        warnings = [*(w for result in ingestion_list for w in result.warnings), *(w for selection in selection_list for w in selection.warnings)]
     workbook_paths = {out.cost_center: str(out.output_path) for out in (workbook_result.outputs if workbook_result else ())}
     for path in generated_files:
         # Preserve additional generated files even if callers cannot map them to a store.
