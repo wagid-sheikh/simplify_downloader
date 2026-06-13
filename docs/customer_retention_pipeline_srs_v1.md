@@ -1464,6 +1464,63 @@ Definitions:
 - pending suppression approval count for staff-entered permanent suppression outcomes
 - stores where fresh RETENTION lead generation was frozen by rolling 14-day backlog threshold
 
+## Notification Contract and Fallback Behavior
+
+The customer retention owner summary uses the existing DB-backed notification tables when they are present and seeded:
+
+- `pipelines.code = 'customer_retention_pipeline'`
+- active `notification_profiles` row for that pipeline with `scope = 'run'` and profile code `owner_summary`
+- active `email_templates` row for that profile
+- active `notification_recipients` rows for that profile, filtered by the current run environment or a NULL environment
+
+DB-backed profile/template/recipient rows are required for production email delivery. The built-in fallback subject/body is only a safety net for local tests, dry-run rendering, and partially seeded environments; it is not a substitute for seeding the production notification contract.
+
+Fallback rendering rules:
+
+- If any of the notification metadata tables are missing, render the built-in fallback subject/body and resolve no recipients.
+- If the customer retention pipeline row or active owner-summary profile is missing, render the built-in fallback subject/body and resolve no recipients.
+- If the owner-summary profile exists but no active template exists, render the built-in fallback subject/body while still using any active recipients attached to that profile.
+- If a DB-backed template exists, render that template with the management summary payload.
+
+Recipient handling rules:
+
+- Active recipients are resolved from `notification_recipients` for the owner-summary profile and the current environment, with NULL environment rows treated as shared/default rows.
+- If no `to` recipients exist but `cc` recipients exist, the `cc` list is promoted to `to` so the message remains sendable.
+- If no active recipients resolve, the notification step is treated as success-with-warning: no email is sent, the pipeline should not be failed solely for missing recipients, and operators must seed or reactivate recipients before the next production run.
+- SMTP/send errors after recipients resolve are delivery warnings/errors for the notification phase and must be logged with enough detail for operators to diagnose delivery.
+
+Operator seed/verify checklist:
+
+1. Confirm the pipeline row exists:
+   ```sql
+   SELECT id, code FROM pipelines WHERE code = 'customer_retention_pipeline';
+   ```
+2. Confirm one active run-scope owner summary profile exists for the target environment or shared NULL environment:
+   ```sql
+   SELECT id, code, env, scope, is_active
+   FROM notification_profiles
+   WHERE pipeline_id = <pipeline_id>
+     AND code = 'owner_summary'
+     AND scope = 'run'
+     AND is_active = true;
+   ```
+3. Confirm the profile has one active template with `subject_template` and `body_template` that render against the management summary payload keys documented in this section:
+   ```sql
+   SELECT id, name, is_active
+   FROM email_templates
+   WHERE profile_id = <profile_id>
+     AND is_active = true;
+   ```
+4. Confirm at least one active recipient resolves for the run environment:
+   ```sql
+   SELECT email_address, send_as, env, is_active
+   FROM notification_recipients
+   WHERE profile_id = <profile_id>
+     AND is_active = true
+     AND (env = '<run_env>' OR env IS NULL);
+   ```
+5. Verify end to end with the existing notification diagnostics/CLI pattern after a run summary exists; missing recipients must be corrected before relying on production owner alerts.
+
 ---
 
 # 35. Logging Requirements

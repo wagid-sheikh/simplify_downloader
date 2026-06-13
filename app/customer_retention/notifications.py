@@ -79,7 +79,7 @@ async def send_owner_summary(
         return NotificationResult(planned=0, sent=0, skipped=True, reason="no_recipients", subject=subject, body=body)
     plan = EmailPlan(profile_code=str(profile.get("code") or PROFILE_CODE), scope="run", store_code=None, subject=subject, body=body, to=to, cc=cc, bcc=bcc, attachments=[])
     result = _send_email(_load_smtp_config(), plan)
-    sent = 1 if getattr(result, "success", False) else 0
+    sent = 1 if getattr(result, "sent", False) else 0
     _log(logger, "ok" if sent else "warning", "customer_retention_owner_summary_email_dispatched", emails_sent=sent)
     return NotificationResult(planned=1, sent=sent, skipped=False, subject=subject, body=body)
 
