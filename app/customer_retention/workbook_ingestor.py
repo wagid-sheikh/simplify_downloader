@@ -107,17 +107,33 @@ def _normalized_cost_center(value: Any) -> str | None:
     return text.upper() if text else None
 
 
-def _suppression_start_date_from_row(row: dict[str, Any]) -> date:
+def _suppression_start_date_from_row(
+    row: dict[str, Any],
+    *,
+    run_date: date | None = None,
+    lead_date: date | None = None,
+) -> date:
+    """Resolve suppression business date without reading the process clock."""
+    if run_date is not None:
+        return run_date
     generated_at = _normalized_date(row.get("generated_at"))
     if generated_at is not None:
         return generated_at
-    # Boundary fallback for legacy/manual workbooks that do not carry the
-    # generated_at business date. Suppression helpers deliberately do not use
-    # process dates internally so deterministic callers can pass an explicit date.
-    return date.today()
+    normalized_lead_date = _normalized_date(lead_date)
+    if normalized_lead_date is not None:
+        return normalized_lead_date
+    raise ValueError("Suppression start date requires run_date, workbook generated_at, or lead lead_date")
 
 
-async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_run_id: str, logger: JsonLogger | None = None, normalizer: ValueNormalizer | None = None) -> WorkbookIngestionResult:
+async def ingest_returned_workbook(
+    *,
+    database_url: str,
+    path: Path,
+    pipeline_run_id: str,
+    run_date: date | None = None,
+    logger: JsonLogger | None = None,
+    normalizer: ValueNormalizer | None = None,
+) -> WorkbookIngestionResult:
     file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     result = WorkbookIngestionResult(source_file=path.name, file_identity=file_digest)
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
@@ -235,7 +251,9 @@ async def ingest_returned_workbook(*, database_url: str, path: Path, pipeline_ru
                     handled_by=_normalized_text(row.get("handled_by")),
                     pipeline_run_id=pipeline_run_id,
                     event_key=event_suffix,
-                    suppression_start_date=_suppression_start_date_from_row(row),
+                    suppression_start_date=_suppression_start_date_from_row(
+                        row, run_date=run_date, lead_date=lead_map.get("lead_date")
+                    ),
                     target_cost_center=valid_shift_target,
                 )
                 inserted = transition.history_inserted

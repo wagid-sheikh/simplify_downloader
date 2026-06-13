@@ -84,7 +84,7 @@ async def run_customer_retention_pipeline(
             count("returned_files_discovered", len(returned_files))
             if not dry_run:
                 for discovered in returned_files:
-                    result = await ingest_returned_workbook(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, logger=log)
+                    result = await ingest_returned_workbook(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, run_date=actual_run_date, logger=log)
                     ingestion_results.append(result)
                     count("workbook_rows_seen", result.rows_seen)
                     count("workbook_history_inserted", result.history_inserted)
