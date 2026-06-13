@@ -46,7 +46,16 @@ async def run_customer_retention_pipeline(
     database_url: str | None = None,
     logger: JsonLogger | None = None,
 ) -> CustomerRetentionRunResult:
-    """Run customer retention in the SRS Section 9 orchestration order."""
+    """Run customer retention in the SRS Section 9 orchestration order.
+
+    Dry-run mode is intentionally read-only: it may discover input files, build
+    the current snapshot, select would-be workbook rows, and build the summary
+    payload, but it must not ingest/import rows, detect and persist recoveries,
+    generate retention leads, write XLSX workbooks, archive inputs, or send
+    email. Dry-run counts are therefore reported as ``planned_*`` values for
+    would-be side effects, while mutation counters such as ``*_created`` or
+    ``*_inserted`` are only populated by real runs.
+    """
     started = datetime.now(timezone.utc)
 
     # 1. Load config and logging. Keep all config reads centralized here so the
@@ -82,6 +91,8 @@ async def run_customer_retention_pipeline(
             # 3. Discover/ingest returned workbooks.
             returned_files = discover_returned_workbooks(logger=log)
             count("returned_files_discovered", len(returned_files))
+            if dry_run:
+                count("planned_returned_workbooks_to_ingest", len(returned_files))
             if not dry_run:
                 for discovered in returned_files:
                     result = await ingest_returned_workbook(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, run_date=actual_run_date, logger=log)
@@ -91,7 +102,14 @@ async def run_customer_retention_pipeline(
                     warnings.extend(w.code for w in result.warnings)
                     processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
             else:
-                log_event(logger=log, phase="ingest", status="info", message="customer_retention_dry_run_skips_mutating_ingest", run_id=actual_run_id)
+                log_event(
+                    logger=log,
+                    phase="ingest",
+                    status="info",
+                    message="customer_retention_dry_run_skips_mutating_ingest",
+                    run_id=actual_run_id,
+                    extras={"planned_returned_workbooks_to_ingest": len(returned_files)},
+                )
 
             # 4. Returned workbook ingestion updates lifecycle/history/suppression
             # through the existing ingestion/lifecycle functions above.
@@ -111,6 +129,10 @@ async def run_customer_retention_pipeline(
             # 7. Discover/import external lead files.
             external_files = discover_external_lead_files(logger=log)
             count("external_files_discovered", len(external_files))
+            if dry_run:
+                count("planned_external_files_to_import", len(external_files))
+                count("planned_td_imports", 1)
+                count("planned_retention_snapshot_generations", 1)
             if not dry_run:
                 for discovered in external_files:
                     result = await import_external_lead_file(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, logger=log)
@@ -136,7 +158,17 @@ async def run_customer_retention_pipeline(
 
             # 10. Select due follow-ups, carry-forward, TD, external, and fresh retention rows.
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=backlog_threshold, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
-            count("workbook_rows_selected", sum(len(s.rows) for s in selections))
+            selected_rows = sum(len(selection.rows) for selection in selections)
+            selection_warning_codes = [warning.code for selection in selections for warning in getattr(selection, "warnings", ())]
+            warnings.extend(selection_warning_codes)
+            if dry_run:
+                count("planned_workbook_rows_selected", selected_rows)
+                count("planned_workbooks_to_generate", len(selections))
+                count("planned_files_to_archive", len(returned_files) + len(external_files))
+                count("planned_summary_emails", 0 if skip_email else 1)
+                count("dry_run_backlog_threshold", backlog_threshold)
+            else:
+                count("workbook_rows_selected", selected_rows)
 
             # 11. Generate workbooks.
             if not dry_run:
@@ -160,7 +192,10 @@ async def run_customer_retention_pipeline(
             summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files)
             if not dry_run:
                 notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
-            await session.commit()
+                await session.commit()
+            else:
+                # Enforce dry-run read-only semantics at the transaction boundary.
+                await session.rollback()
         status = "success_with_warnings" if warnings else "success"
         log_event(logger=log, phase="email", status="ok", message="customer_retention_pipeline_completed", run_id=actual_run_id, extras={"status": status, "counts": counts})
         return CustomerRetentionRunResult(actual_run_id, actual_run_date, status, counts, warnings, generated_files, notification.__dict__, summary_payload)

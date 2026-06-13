@@ -365,6 +365,8 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
     from types import SimpleNamespace
 
     calls: list[str] = []
+    forbidden_calls: list[str] = []
+    seen_backlog_thresholds: list[int] = []
     db = tmp_path / "dry_order.db"
     monkeypatch.setattr(
         "app.customer_retention.pipeline.config",
@@ -392,16 +394,19 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
 
     async def select(session, **kwargs):
         calls.append("select_workbook_leads")
-        return []
+        seen_backlog_thresholds.append(kwargs["backlog_threshold"])
+        return [SimpleNamespace(rows=[object(), object()], warnings=[SimpleNamespace(code="dry_warning")])]
 
     async def summary(session, **kwargs):
         calls.append("build_summary")
         return {"run_summary": {"pipeline_run_id": "dry-order"}}
 
     async def forbidden_async(*args, **kwargs):
+        forbidden_calls.append(kwargs.get("path") or kwargs.get("payload") or "async")
         raise AssertionError("dry-run called a mutating/import/send function")
 
     def forbidden_sync(*args, **kwargs):
+        forbidden_calls.append(kwargs.get("path") or "sync")
         raise AssertionError("dry-run called an archive/generate function")
 
     monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
@@ -419,8 +424,23 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
 
     result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="dry-order", dry_run=True, skip_email=False)
 
-    assert result.status == "success"
+    assert result.status == "success_with_warnings"
     assert result.generated_files == []
+    assert forbidden_calls == []
+    assert seen_backlog_thresholds == [7]
+    assert result.counts["planned_returned_workbooks_to_ingest"] == 1
+    assert result.counts["planned_external_files_to_import"] == 1
+    assert result.counts["planned_workbook_rows_selected"] == 2
+    assert result.counts["planned_workbooks_to_generate"] == 1
+    assert result.counts["planned_files_to_archive"] == 2
+    assert result.counts["planned_summary_emails"] == 1
+    assert result.counts["dry_run_backlog_threshold"] == 7
+    assert "workbook_history_inserted" not in result.counts
+    assert "external_leads_created" not in result.counts
+    assert "td_leads_created" not in result.counts
+    assert "retention_leads_created" not in result.counts
+    assert "workbook_rows_selected" not in result.counts
+    assert result.warnings == ["dry_warning"]
     assert result.email_status["skipped"] is True
     assert result.email_status["reason"] == "not_attempted"
     assert calls == [
