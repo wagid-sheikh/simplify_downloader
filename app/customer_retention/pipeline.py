@@ -12,15 +12,15 @@ from app.config import config
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 
 from .analytics import RunTiming, build_management_summary_payload
-from .external_import import import_external_lead_file
+from .external_import import _import_external_lead_file
 from .input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks, get_customer_followup_paths
 from .notifications import NotificationResult, send_owner_summary
 from .recovery_detection import detect_recoveries
 from .retention_generation import generate_retention_leads_from_snapshot
 from .snapshot import build_customer_retention_snapshot
-from .source_adapters import import_td_leads
+from .source_adapters import _import_td_leads
 from .workbook_generator import WorkbookGenerationResult, generate_workbooks
-from .workbook_ingestor import ingest_returned_workbook
+from .workbook_ingestor import _ingest_returned_workbook
 from .workbook_selection import load_active_retention_stores, select_workbook_leads_for_active_stores
 
 
@@ -95,7 +95,7 @@ async def run_customer_retention_pipeline(
                 count("planned_returned_workbooks_to_ingest", len(returned_files))
             if not dry_run:
                 for discovered in returned_files:
-                    result = await ingest_returned_workbook(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, run_date=actual_run_date, logger=log)
+                    result = await _ingest_returned_workbook(session, discovered.path, actual_run_id, run_date=actual_run_date, logger=log)
                     ingestion_results.append(result)
                     count("workbook_rows_seen", result.rows_seen)
                     count("workbook_history_inserted", result.history_inserted)
@@ -135,14 +135,14 @@ async def run_customer_retention_pipeline(
                 count("planned_retention_snapshot_generations", 1)
             if not dry_run:
                 for discovered in external_files:
-                    result = await import_external_lead_file(database_url=db_url, path=discovered.path, pipeline_run_id=actual_run_id, logger=log)
+                    result = await _import_external_lead_file(session, discovered.path, actual_run_id, logger=log)
                     count("external_rows_seen", result.rows_seen)
                     count("external_leads_created", result.leads_created)
                     warnings.extend(w.code for w in result.warnings)
                     processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
 
                 # 8. Pull/convert TD leads.
-                td_result = await import_td_leads(database_url=db_url, pipeline_run_id=actual_run_id, logger=log)
+                td_result = await _import_td_leads(session, actual_run_id, logger=log)
                 count("td_rows_seen", td_result.rows_seen)
                 count("td_leads_created", td_result.leads_created)
                 warnings.extend(w.code for w in td_result.warnings)

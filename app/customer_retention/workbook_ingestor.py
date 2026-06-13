@@ -7,6 +7,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 import openpyxl
 import sqlalchemy as sa
 
@@ -125,9 +127,8 @@ def _suppression_start_date_from_row(
     raise ValueError("Suppression start date requires run_date, workbook generated_at, or lead lead_date")
 
 
-async def ingest_returned_workbook(
-    *,
-    database_url: str,
+async def _ingest_returned_workbook(
+    session: AsyncSession,
     path: Path,
     pipeline_run_id: str,
     run_date: date | None = None,
@@ -147,123 +148,144 @@ async def ingest_returned_workbook(
     except StopIteration:
         return result
     value_normalizer = normalizer or ValueNormalizer()
-    async with session_scope(database_url) as session:
-        active_cost_centers = await fetch_active_cost_centers(session)
-        for row_number, values in enumerate(rows_iter, start=2):
-            row = _row_dict(headers, values)
-            if "next_follow_up_date" in row and "next_followup_date" not in row:
-                row["next_followup_date"] = row["next_follow_up_date"]
-            if not any(value is not None and str(value).strip() for value in row.values()):
-                continue
-            result.rows_seen += 1
-            lead = None
-            lead_id_raw = row.get("lead_id")
-            if lead_id_raw not in (None, ""):
-                try:
-                    lead_id = int(lead_id_raw)
-                except (TypeError, ValueError):
-                    lead_id = None
-                if lead_id is not None:
-                    lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == lead_id))).mappings().first()
-            mobile_result = normalize_mobile(row.get("mobile_number"))
-            if lead is None and mobile_result.is_valid:
-                cost_center = str(row.get("cost_center") or "").strip().upper()
-                lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.cost_center == cost_center, trx_customer_followup_leads.c.normalized_mobile_number == mobile_result.normalized_mobile))).mappings().first()
-            if lead is None:
-                result.rows_skipped += 1
-                result.warnings.append(RowWarning("lead_not_found", "Workbook row could not be matched to an existing lead", row_number, path.name))
-                continue
-            lead_map = dict(lead)
-            if not mobile_result.is_valid:
-                result.rows_skipped += 1
-                result.warnings.append(RowWarning(mobile_result.warning_code or "invalid_mobile", mobile_result.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-                continue
-            if mobile_result.normalized_mobile != lead_map.get("normalized_mobile_number"):
-                result.rows_skipped += 1
-                result.warnings.append(RowWarning("mobile_identity_conflict", "Workbook mobile number conflicts with protected lead identity", row_number, path.name, "mobile_number", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-                continue
-            for column in PROTECTED_COLUMNS:
-                if column in row and column in lead_map and _changed(row.get(column), lead_map.get(column)):
-                    result.protected_edits_ignored += 1
-                    result.warnings.append(RowWarning("protected_column_edit", "Protected workbook column edit ignored", row_number, path.name, column, lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-            normalized_values: dict[str, Any] = {}
-            row_has_required_blank = False
-            for field in REQUIRED_EDITABLE:
-                normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field], required=True)
-                normalized_values[field] = normalized.normalized_value
-                if normalized.invalid:
-                    row_has_required_blank = True
-                    result.warnings.append(RowWarning(normalized.warning_code or "invalid_value", normalized.warning_message or "Required editable field is invalid", row_number, path.name, field, lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-            response = value_normalizer.normalize(row.get("customer_response"), allowed_values=WORKBOOK_OUTCOME_LABELS, field_name="Customer Response", required=True)
-            normalized_values["customer_response"] = response.normalized_value
-            if response.invalid and response.warning_code != "required_blank":
+    active_cost_centers = await fetch_active_cost_centers(session)
+    for row_number, values in enumerate(rows_iter, start=2):
+        row = _row_dict(headers, values)
+        if "next_follow_up_date" in row and "next_followup_date" not in row:
+            row["next_followup_date"] = row["next_follow_up_date"]
+        if not any(value is not None and str(value).strip() for value in row.values()):
+            continue
+        result.rows_seen += 1
+        lead = None
+        lead_id_raw = row.get("lead_id")
+        if lead_id_raw not in (None, ""):
+            try:
+                lead_id = int(lead_id_raw)
+            except (TypeError, ValueError):
+                lead_id = None
+            if lead_id is not None:
+                lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.lead_id == lead_id))).mappings().first()
+        mobile_result = normalize_mobile(row.get("mobile_number"))
+        if lead is None and mobile_result.is_valid:
+            cost_center = str(row.get("cost_center") or "").strip().upper()
+            lead = (await session.execute(sa.select(trx_customer_followup_leads).where(trx_customer_followup_leads.c.cost_center == cost_center, trx_customer_followup_leads.c.normalized_mobile_number == mobile_result.normalized_mobile))).mappings().first()
+        if lead is None:
+            result.rows_skipped += 1
+            result.warnings.append(RowWarning("lead_not_found", "Workbook row could not be matched to an existing lead", row_number, path.name))
+            continue
+        lead_map = dict(lead)
+        if not mobile_result.is_valid:
+            result.rows_skipped += 1
+            result.warnings.append(RowWarning(mobile_result.warning_code or "invalid_mobile", mobile_result.warning_message or "Invalid mobile number", row_number, path.name, "mobile_number", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            continue
+        if mobile_result.normalized_mobile != lead_map.get("normalized_mobile_number"):
+            result.rows_skipped += 1
+            result.warnings.append(RowWarning("mobile_identity_conflict", "Workbook mobile number conflicts with protected lead identity", row_number, path.name, "mobile_number", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            continue
+        for column in PROTECTED_COLUMNS:
+            if column in row and column in lead_map and _changed(row.get(column), lead_map.get(column)):
+                result.protected_edits_ignored += 1
+                result.warnings.append(RowWarning("protected_column_edit", "Protected workbook column edit ignored", row_number, path.name, column, lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+        normalized_values: dict[str, Any] = {}
+        row_has_required_blank = False
+        for field in REQUIRED_EDITABLE:
+            normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field], required=True)
+            normalized_values[field] = normalized.normalized_value
+            if normalized.invalid:
                 row_has_required_blank = True
-                result.warnings.append(RowWarning(response.warning_code or "invalid_response", response.warning_message or "Customer response is invalid", row_number, path.name, "customer_response", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-            if not row_has_required_blank and _normalized_text(row.get("handled_by")) is None:
-                result.warnings.append(RowWarning("handled_by_blank", "Handled By is blank on a worked row; row ingested with unspecified handler", row_number, path.name, "handled_by", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-            for field in ("contact_mode", "order_expected"):
-                normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field])
-                normalized_values[field] = normalized.normalized_value
-            target_cost_center = _normalized_cost_center(row.get("target_cost_center"))
-            normalized_values["target_cost_center"] = target_cost_center
-            valid_shift_target: str | None = None
-            if normalized_values.get("customer_response") == WORKBOOK_OUTCOME_SHIFTED_LOCATION:
-                source_cost_center = str(lead_map.get("cost_center") or "").strip().upper()
-                if target_cost_center is None:
-                    result.warnings.append(RowWarning("target_cost_center_blank", "Shifted Location requires a target cost center before a destination lead can be created", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-                elif active_cost_centers and target_cost_center not in active_cost_centers:
-                    result.warnings.append(RowWarning("target_cost_center_invalid", "Shifted Location target cost center is missing or inactive in store_master", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-                elif target_cost_center == source_cost_center:
-                    result.warnings.append(RowWarning("target_cost_center_same_store", "Shifted Location target cost center must differ from the source store", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-                else:
-                    valid_shift_target = target_cost_center
-            elif target_cost_center is not None:
-                # Workbook validation exposes the active-store dropdown for the whole
-                # column. Preserve the response semantics here: only Shifted Location
-                # may hand off work to a destination store.
-                result.warnings.append(RowWarning("target_cost_center_ignored", "Target Cost Center is only used when Customer Response is Shifted Location", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
-            event_suffix = f"{file_digest[:16]}:{row_number}"
-            lead_id = int(lead_map["lead_id"])
-            if row_has_required_blank:
-                result.rows_pending_not_updated += 1
-                inserted = await insert_history_once(
-                    session,
-                    lead_id=lead_id,
-                    pipeline_run_id=pipeline_run_id,
-                    event_type=f"Pending_Not_Updated:{event_suffix}",
-                    previous_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
-                    new_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
-                    raw_excel_value_json={key: (str(value) if value is not None else None) for key, value in row.items() if key in EDITABLE_COLUMNS or key in PROTECTED_COLUMNS},
-                    normalized_value_json=normalized_values,
-                )
+                result.warnings.append(RowWarning(normalized.warning_code or "invalid_value", normalized.warning_message or "Required editable field is invalid", row_number, path.name, field, lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+        response = value_normalizer.normalize(row.get("customer_response"), allowed_values=WORKBOOK_OUTCOME_LABELS, field_name="Customer Response", required=True)
+        normalized_values["customer_response"] = response.normalized_value
+        if response.invalid and response.warning_code != "required_blank":
+            row_has_required_blank = True
+            result.warnings.append(RowWarning(response.warning_code or "invalid_response", response.warning_message or "Customer response is invalid", row_number, path.name, "customer_response", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+        if not row_has_required_blank and row.get("handled_by") is not None and _normalized_text(row.get("handled_by")) is None:
+            result.warnings.append(RowWarning("handled_by_blank", "Handled By is blank on a worked row; row ingested with unspecified handler", row_number, path.name, "handled_by", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+        for field in ("contact_mode", "order_expected"):
+            normalized = value_normalizer.normalize(row.get(field), field_name=EDITABLE_COLUMNS[field])
+            normalized_values[field] = normalized.normalized_value
+        target_cost_center = _normalized_cost_center(row.get("target_cost_center"))
+        normalized_values["target_cost_center"] = target_cost_center
+        valid_shift_target: str | None = None
+        if normalized_values.get("customer_response") == WORKBOOK_OUTCOME_SHIFTED_LOCATION:
+            source_cost_center = str(lead_map.get("cost_center") or "").strip().upper()
+            if target_cost_center is None:
+                result.warnings.append(RowWarning("target_cost_center_blank", "Shifted Location requires a target cost center before a destination lead can be created", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            elif active_cost_centers and target_cost_center not in active_cost_centers:
+                result.warnings.append(RowWarning("target_cost_center_invalid", "Shifted Location target cost center is missing or inactive in store_master", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+            elif target_cost_center == source_cost_center:
+                result.warnings.append(RowWarning("target_cost_center_same_store", "Shifted Location target cost center must differ from the source store", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
             else:
-                # Successful rows must pass through the lifecycle engine so status,
-                # closure, suppression, and history contracts stay centralized.
-                transition = await apply_lifecycle_transition(
-                    session,
-                    lead_id=lead_id,
-                    customer_response=normalized_values.get("customer_response"),
-                    contact_attempted=_normalized_bool(normalized_values.get("contact_attempted")),
-                    contact_mode=_normalized_text(normalized_values.get("contact_mode")),
-                    order_expected=_normalized_text(normalized_values.get("order_expected")),
-                    next_followup_date=_normalized_date(row.get("next_followup_date")),
-                    complaint_flag=_normalized_bool(normalized_values.get("complaint")),
-                    do_not_contact_flag=_normalized_bool(normalized_values.get("do_not_contact")),
-                    staff_remarks=_normalized_text(row.get("staff_remarks")),
-                    handled_by=_normalized_text(row.get("handled_by")),
-                    pipeline_run_id=pipeline_run_id,
-                    event_key=event_suffix,
-                    suppression_start_date=_suppression_start_date_from_row(
-                        row, run_date=run_date, lead_date=lead_map.get("lead_date")
-                    ),
-                    target_cost_center=valid_shift_target,
-                )
-                inserted = transition.history_inserted
-            if inserted:
-                result.history_inserted += 1
-            else:
-                result.history_existing += 1
-        await session.commit()
+                valid_shift_target = target_cost_center
+        elif target_cost_center is not None:
+            # Workbook validation exposes the active-store dropdown for the whole
+            # column. Preserve the response semantics here: only Shifted Location
+            # may hand off work to a destination store.
+            result.warnings.append(RowWarning("target_cost_center_ignored", "Target Cost Center is only used when Customer Response is Shifted Location", row_number, path.name, "target_cost_center", lead_id=int(lead_map["lead_id"]), cost_center=lead_map.get("cost_center")))
+        event_suffix = f"{file_digest[:16]}:{row_number}"
+        lead_id = int(lead_map["lead_id"])
+        if row_has_required_blank:
+            result.rows_pending_not_updated += 1
+            inserted = await insert_history_once(
+                session,
+                lead_id=lead_id,
+                pipeline_run_id=pipeline_run_id,
+                event_type=f"Pending_Not_Updated:{event_suffix}",
+                previous_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
+                new_status=str(lead_map.get("lead_status")) if lead_map.get("lead_status") is not None else None,
+                raw_excel_value_json={key: (str(value) if value is not None else None) for key, value in row.items() if key in EDITABLE_COLUMNS or key in PROTECTED_COLUMNS},
+                normalized_value_json=normalized_values,
+            )
+        else:
+            # Successful rows must pass through the lifecycle engine so status,
+            # closure, suppression, and history contracts stay centralized.
+            transition = await apply_lifecycle_transition(
+                session,
+                lead_id=lead_id,
+                customer_response=normalized_values.get("customer_response"),
+                contact_attempted=_normalized_bool(normalized_values.get("contact_attempted")),
+                contact_mode=_normalized_text(normalized_values.get("contact_mode")),
+                order_expected=_normalized_text(normalized_values.get("order_expected")),
+                next_followup_date=_normalized_date(row.get("next_followup_date")),
+                complaint_flag=_normalized_bool(normalized_values.get("complaint")),
+                do_not_contact_flag=_normalized_bool(normalized_values.get("do_not_contact")),
+                staff_remarks=_normalized_text(row.get("staff_remarks")),
+                handled_by=_normalized_text(row.get("handled_by")),
+                pipeline_run_id=pipeline_run_id,
+                event_key=event_suffix,
+                suppression_start_date=_suppression_start_date_from_row(
+                    row, run_date=run_date, lead_date=lead_map.get("lead_date")
+                ),
+                target_cost_center=valid_shift_target,
+            )
+            inserted = transition.history_inserted
+        if inserted:
+            result.history_inserted += 1
+        else:
+            result.history_existing += 1
     if logger:
         log_event(logger=logger, phase="history_update", message="workbook_ingestion_complete", source_file=path.name, rows_seen=result.rows_seen, history_inserted=result.history_inserted, warnings=result.warning_count)
     return result
+
+async def ingest_returned_workbook(
+    *,
+    database_url: str,
+    path: Path,
+    pipeline_run_id: str,
+    run_date: date | None = None,
+    logger: JsonLogger | None = None,
+    normalizer: ValueNormalizer | None = None,
+) -> WorkbookIngestionResult:
+    """Standalone wrapper that owns its transaction for returned workbook ingestion."""
+
+    async with session_scope(database_url) as session:
+        result = await _ingest_returned_workbook(
+            session,
+            path,
+            pipeline_run_id,
+            run_date=run_date,
+            logger=logger,
+            normalizer=normalizer,
+        )
+        await session.commit()
+        return result
