@@ -88,6 +88,16 @@ Practical map of where to work for major capabilities.
   - `app/crm_downloader/**` ingest/sync modules when deciding whether usage is source synchronization vs business decision logic
   - SQL/views/migrations that define or consume `vw_orders`
 
+## 6.3) Customer retention input processing
+
+- **Purpose:** Discover returned customer-followup workbooks and external lead imports, ingest them once, and archive processed files.
+- **Primary paths:**
+  - `app/customer_retention/input_discovery.py`
+  - `app/customer_retention/pipeline.py`
+  - `tests/customer_retention/test_phase2_ingestion.py`
+- **Operational behavior:** Archive semantics are move-and-remove, not copy-and-retain. After a workbook or external import file is processed successfully and archive metadata is written, the source file is moved under `archive/customer_followup/`; repeated pipeline runs should not rediscover the same physical input file.
+- **Notes/Risks:** Do not change this to copy semantics unless discovery is also made metadata/digest-aware for already-processed files; otherwise retained inputs will be reprocessed every run.
+
 ## 7) Orders sync run profiler (window orchestrator)
 
 - **Purpose:** Run TD/UC sync in date windows, aggregate status, detect missing windows, notify.

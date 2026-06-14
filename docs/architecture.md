@@ -111,6 +111,11 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
   - notification dispatch,
   - run summary style logging.
 
+### 6.1) Customer retention input lifecycle
+- `app/customer_retention/input_discovery.py` discovers returned workbooks from `inputs/customer_followup/` and external lead imports from `inputs/customer_followup/external_leads/`, excluding archive/temp/hidden files.
+- Processed customer-retention inputs use move-and-remove archive semantics: after successful processing and archive metadata creation, `archive_processed_file()` moves the source file into `archive/customer_followup/`. This keeps input discovery simple and prevents repeated runs from reprocessing the same physical workbook/import file.
+- If operators require copy-and-retain semantics later, discovery must first become metadata/digest-aware for already-processed files; retaining files in the input folders without that guard is a duplicate-processing bug.
+
 ### 7) Notifications and operational messaging
 - `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
 - `app/customer_retention/notifications.py` uses the same DB notification contract tables for owner summaries: `pipelines`, `notification_profiles`, `email_templates`, and `notification_recipients`. Production enablement is seeded by Alembic revision `0133_cfl_notif_seed`: pipeline code `customer_retention_pipeline`, active run-scoped profile code `owner_summary`, active `summary` email template, and bootstrap owner recipient rows for `dev`, `prod`, `local`, and `any`. Operators may replace or deactivate those recipient rows for environment-specific owner lists; if no active recipient matches the run environment (or `any`), delivery fails safely with `no_recipients` instead of sending to an unintended address.

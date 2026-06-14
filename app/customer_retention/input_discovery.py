@@ -94,27 +94,36 @@ def discover_returned_workbooks(*, input_dir: Path | None = None, logger: JsonLo
 
 
 def archive_processed_file(source: Path, *, archive_dir: Path | None = None, run_id: str, result_metadata: dict[str, object] | None = None, logger: JsonLogger | None = None) -> Path:
-    """Copy a processed file into a deterministic archive path without overwriting."""
+    """Move a processed file into a deterministic archive path without overwriting."""
 
     paths = get_customer_followup_paths() if archive_dir is None else None
     base = Path(archive_dir or paths.archive_dir)  # type: ignore[union-attr]
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    source_bytes = source.read_bytes()
+    full_digest = hashlib.sha256(source_bytes).hexdigest()
+    digest = full_digest[:16]
     target_dir = base / digest[:2]
     target_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{source.stem}__{run_id}__{digest}"
     target = target_dir / f"{stem}{source.suffix.lower()}"
     counter = 1
     while target.exists():
-        if hashlib.sha256(target.read_bytes()).hexdigest() == hashlib.sha256(source.read_bytes()).hexdigest():
+        if hashlib.sha256(target.read_bytes()).hexdigest() == full_digest:
             break
         target = target_dir / f"{stem}__dup{counter}{source.suffix.lower()}"
         counter += 1
-    if not target.exists():
-        shutil.copy2(source, target)
     metadata_path = target.with_suffix(target.suffix + ".json")
-    metadata = {"source_file": source.name, "run_id": run_id, "content_sha256": hashlib.sha256(source.read_bytes()).hexdigest(), **(result_metadata or {})}
+    metadata = {"source_file": source.name, "run_id": run_id, "content_sha256": full_digest, **(result_metadata or {})}
     if not metadata_path.exists():
         metadata_path.write_text(json.dumps(metadata, default=str, sort_keys=True, indent=2), encoding="utf-8")
+    # Move semantics are intentional: once processing succeeds and archive
+    # metadata is durable, remove the source from input discovery scope so a
+    # later run cannot reprocess the same operator-submitted file.
+    if target.exists():
+        if hashlib.sha256(target.read_bytes()).hexdigest() != full_digest:
+            raise FileExistsError(f"Archive target collision for {target}")
+        source.unlink()
+    else:
+        shutil.move(str(source), str(target))
     if logger:
         log_event(logger=logger, phase="archive", message="file_archived", source_file=source.name, archived_file=str(target), run_id=run_id)
     return target
