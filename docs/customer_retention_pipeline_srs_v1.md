@@ -1983,7 +1983,7 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 - [x] `TESTED` Aggregate recovery counts and recovered revenue using `vw_orders.order_amount`.
 - [x] `TESTED` Aggregate warning counts: invalid mobiles, normalized dropdowns, duplicate uploads, system-column edits, missing fields, target cost center errors, pending suppression approvals, and frozen stores.
 - [x] `TESTED` Create `app/customer_retention/notifications.py` using existing DB-backed notification/email infrastructure.
-- [x] `TESTED` Add notification profile/template seed migration if required by existing conventions. Existing DB-backed notification lookup is reused with a built-in fallback template for missing seed data, so no migration was required.
+- [x] `TESTED` Reuse existing DB-backed notification lookup and seed the customer retention owner-summary profile/template contract. Alembic migration `0135_cfl_owner_recipient` seeds/reactivates the baseline owner recipient `Wagid Sheikh <wagid.sheikh@gmail.com>` for the owner-summary notification, so manual DB entry is not required for that baseline recipient; additional recipients remain operator-managed through `notification_recipients`.
 - [x] `TESTED` Create `app/customer_retention/pipeline.py` as the orchestration entry point.
 - [x] `TESTED` Wire CLI command into `app/__main__.py` following existing parser style.
 - [x] `TESTED` Support manual run parameters such as `--run-date`, `--run-id`, `--env`, `--dry-run`, and `--skip-email`.
@@ -1994,7 +1994,7 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 
 Phase 5 progress notes:
 
-- 2026-06-13 — Codex audit/sign-off: Audited Phase 5 against Section 34 and Phase 5 guard rails. Found and fixed a concrete runtime/import coverage gap for pending suppression approval analytics, added a focused regression test, and verified the Phase 5 suite. Recovered revenue analytics read only from `vw_orders.order_amount`; blank `Handled By` is grouped as `UNSPECIFIED` and counted as an operational warning. No schema migration was required because notification contracts can be loaded from existing DB tables with a safe fallback template. Phase 5 is signed off after remediation, with Phase 1-4 recorded as signed off per owner confirmation.
+- 2026-06-13 — Codex audit/sign-off: Audited Phase 5 against Section 34 and Phase 5 guard rails. Found and fixed a concrete runtime/import coverage gap for pending suppression approval analytics, added a focused regression test, and verified the Phase 5 suite. Recovered revenue analytics read only from `vw_orders.order_amount`; blank `Handled By` is grouped as `UNSPECIFIED` and counted as an operational warning. Existing DB-backed notification lookup is reused, and the profile/template contract is seeded. Alembic migration `0135_cfl_owner_recipient` seeds/reactivates the baseline owner recipient `Wagid Sheikh <wagid.sheikh@gmail.com>`, so manual DB entry is not required for the baseline owner-summary recipient; additional recipients remain operator-managed through `notification_recipients`. Phase 5 remains signed off after remediation, with Phase 1-4 recorded as signed off per owner confirmation.
 
 Guard rails:
 
