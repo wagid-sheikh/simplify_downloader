@@ -916,16 +916,18 @@ Example:
 outputs/customer_followup/2026-05/customer_followup_UN3668_2026-05-08.xlsx
 ```
 
-Workbook must contain exactly two sheets:
+Workbook user-visible sheets must remain exactly:
 
 ```text
 READ_ME
 FOLLOWUP_LEADS
 ```
 
-No multiple lead tabs.
+No multiple user-facing lead tabs.
 
 All lead categories must appear inside `FOLLOWUP_LEADS`.
+
+Approved technical exception: when the dynamically generated active-store list is too large for inline Excel list validation, the workbook generator may create one internal technical lookup sheet for `Target Cost Center` validation. This sheet must be marked `veryHidden`, protected, and used only as the backing range for the active-store dropdown. It must not be treated as a user-visible workbook sheet and must not contain customer data, lead data, staff data, or free-text operational input.
 
 ---
 
@@ -1070,6 +1072,8 @@ Only these columns should be editable.
 
 `Target Cost Center` must not allow free-text or unvalidated string entry in the generated workbook. The sheet template must structurally enforce selection from the dynamically generated active-store dropdown list.
 
+Approved technical exception: to support large active-store dropdown validation, the generator may create a protected `veryHidden` technical lookup sheet only when inline list validation is insufficient. That lookup sheet may contain active store identifiers needed for validation only; it must not contain customer data, lead data, staff data, or free-text operational input. The user-visible sheet contract remains exactly `READ_ME` and `FOLLOWUP_LEADS`, and tests in `tests/customer_retention/test_phase4_caps_workload_workbooks.py` must continue verifying that visible-tab contract.
+
 ---
 
 # 26. Dropdown Values
@@ -1112,6 +1116,8 @@ Lead Stale
 ```
 
 When `Shifted Location` is selected, the workbook must enable the strict `Target Cost Center` dropdown for that row. If a valid alternative cost center is supplied, ingestion must use the manual shifted-location bridge in Section 7.
+
+For small active-store lists, the dropdown may use inline list validation. For large active-store lists, the approved implementation is a named range backed by a protected `veryHidden` technical lookup sheet created only when needed. The lookup sheet is limited to validation support for active store identifiers and must not contain customer data, lead data, staff data, or free-text operational input. The only user-visible tabs must remain `READ_ME` and `FOLLOWUP_LEADS`.
 
 ## 26.4 Order Expected
 
