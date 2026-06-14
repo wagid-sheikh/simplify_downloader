@@ -1487,7 +1487,7 @@ Recipient handling rules:
 - Active recipients are resolved from `notification_recipients` for the owner-summary profile and the current environment, with NULL environment rows treated as shared/default rows.
 - If no `to` recipients exist but `cc` recipients exist, the `cc` list is promoted to `to` so the message remains sendable.
 - If no active recipients resolve, the notification step is treated as success-with-warning: no email is sent, the pipeline should not be failed solely for missing recipients, and operators must seed or reactivate recipients before the next production run.
-- SMTP/send errors after recipients resolve are delivery warnings/errors for the notification phase and must be logged with enough detail for operators to diagnose delivery.
+- SMTP/send errors after recipients resolve are hard owner-summary delivery failures. The pipeline must not report the run as `success` or `success_with_warnings` when the required owner summary cannot be delivered. Because business data is committed before delivery is attempted, the failure path must preserve operator-visible diagnostics, including the post-commit failure classification, generated workbook paths, and archived input paths, so operators can retry/recover without losing traceability.
 
 Operator seed/verify checklist:
 
@@ -1744,7 +1744,7 @@ Implementation is accepted only when:
 21. Stale-lead suppression works: `Lead Stale` closes the lead, creates a suppression record for 90 days unless the owner specifies a different duration, and excludes the same customer/store from future retention lead generation until suppression expires.
 22. Lead closes when order is created or dead-end is reached.
 23. Recovery is confirmed from `orders`.
-24. Owner summary email is sent.
+24. Owner summary email is sent; if SMTP/send fails after recipients resolve, the operator-visible run result is failure rather than success-with-warning, with generated workbook paths and archived input paths retained for recovery diagnostics.
 25. Existing config/logging/email/DB helpers are reused.
 26. Existing pipelines are not broken.
 27. Valid `Shifted Location` + strict-dropdown `Target Cost Center` input closes the source-store lead as `CLOSED - Shifted`, preserves source-store suppression-approval/audit records, and creates one destination `EXTERNAL` lead for the validated target store.

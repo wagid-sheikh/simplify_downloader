@@ -37,6 +37,20 @@ class CustomerRetentionRunResult:
     summary_payload: dict[str, Any] = field(default_factory=dict)
 
 
+class CustomerRetentionNotificationError(RuntimeError):
+    """Raised when the SRS-required owner summary cannot be delivered.
+
+    Business data is committed before delivery is attempted so that owner
+    summaries never announce uncommitted work. The attached run_result preserves
+    generated workbook and archive traces for operator recovery after the hard
+    notification failure.
+    """
+
+    def __init__(self, message: str, *, run_result: CustomerRetentionRunResult):
+        super().__init__(message)
+        self.run_result = run_result
+
+
 async def run_customer_retention_pipeline(
     *,
     run_date: date | None = None,
@@ -77,6 +91,7 @@ async def run_customer_retention_pipeline(
     ingestion_results = []
     selections = []
     processed_files: list[tuple[Path, dict[str, Any]]] = []
+    archived_files: list[str] = []
 
     def count(name: str, value: int) -> None:
         counts[name] = counts.get(name, 0) + int(value)
@@ -206,7 +221,9 @@ async def run_customer_retention_pipeline(
                 # successful processing policy is satisfied (all processing through
                 # workbook generation has completed without raising).
                 for path, metadata in sorted(processed_files, key=lambda item: str(item[0])):
-                    archive_processed_file(path, archive_dir=paths.archive_dir, run_id=actual_run_id, result_metadata=metadata, logger=log)
+                    archived_path = archive_processed_file(path, archive_dir=paths.archive_dir, run_id=actual_run_id, result_metadata=metadata, logger=log)
+                    archived_files.append(str(archived_path))
+                count("files_archived", len(archived_files))
 
             # 13. Build/send summary email. Dry-runs build the payload but do not
             # call the sender so the run remains non-mutating and side-effect free.
@@ -219,18 +236,37 @@ async def run_customer_retention_pipeline(
                 try:
                     notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
                 except Exception as exc:
-                    warning_code = "email_delivery_failed_after_commit"
-                    warnings.append(warning_code)
-                    notification = NotificationResult(planned=1, sent=0, skipped=False, reason=warning_code)
+                    failure_code = "email_delivery_failed_after_commit"
+                    notification = NotificationResult(planned=1, sent=0, skipped=False, reason=failure_code)
                     log_event(
                         logger=log,
                         phase="email",
-                        status="warning",
+                        status="error",
                         message="customer_retention_success_notification_failed_after_commit",
                         run_id=actual_run_id,
                         error=str(exc),
+                        extras={"generated_files": generated_files, "archived_files": archived_files},
                     )
-                    email_status = notification.__dict__ | {"error": str(exc), "committed": True}
+                    email_status = notification.__dict__ | {
+                        "error": str(exc),
+                        "committed": True,
+                        "generated_files": generated_files,
+                        "archived_files": archived_files,
+                    }
+                    failure_result = CustomerRetentionRunResult(
+                        actual_run_id,
+                        actual_run_date,
+                        "failed",
+                        counts,
+                        [*warnings, failure_code],
+                        generated_files,
+                        email_status,
+                        summary_payload,
+                    )
+                    raise CustomerRetentionNotificationError(
+                        "customer retention owner summary email delivery failed after commit",
+                        run_result=failure_result,
+                    ) from exc
                 else:
                     email_status = notification.__dict__ | {"committed": True}
             else:

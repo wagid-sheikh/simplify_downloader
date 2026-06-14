@@ -17,7 +17,7 @@ from app.customer_retention.workbook_ingestor import FOLLOWUP_SHEET
 from app.customer_retention.workbook_selection import StoreWorkbookSelectionResult, WorkbookLeadRow
 from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
 from app.customer_retention.notifications import send_owner_summary
-from app.customer_retention.pipeline import run_customer_retention_pipeline
+from app.customer_retention.pipeline import CustomerRetentionNotificationError, run_customer_retention_pipeline
 
 from app.customer_retention.types import RowWarning
 
@@ -852,7 +852,67 @@ async def test_pipeline_commit_failure_prevents_success_email_dispatch(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_pipeline_email_failure_after_commit_preserves_committed_business_data(monkeypatch, tmp_path: Path):
+async def test_pipeline_committed_run_reports_success_when_owner_email_sent(monkeypatch, tmp_path: Path):
+    db = tmp_path / "email_success_after_commit.db"
+    db_url = f"sqlite+aiosqlite:///{db}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+
+    sent = []
+    monkeypatch.setattr("app.customer_retention.pipeline.config", SimpleNamespace(database_url=db_url, customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
+    async def load_stores(*args, **kwargs):
+        return ["S1"]
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+
+    async def detect(*args, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(*args, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def import_td(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, warnings=[])
+
+    async def generate_retention(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select(*args, **kwargs):
+        return []
+
+    async def summary(*args, **kwargs):
+        return {"run_summary": {"pipeline_run_id": "email-sent"}}
+
+    async def send(session, **kwargs):
+        sent.append(kwargs["payload"]["run_summary"]["pipeline_run_id"])
+        return SimpleNamespace(planned=1, sent=1, skipped=False, reason=None, subject="ok", body="ok")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_retention_leads_from_snapshot", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
+    monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send)
+
+    result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="email-sent", dry_run=False, skip_email=False)
+
+    assert result.status == "success"
+    assert result.email_status["sent"] == 1
+    assert result.email_status["committed"] is True
+    assert sent == ["email-sent"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_email_failure_after_commit_is_hard_failure_and_preserves_trace_paths(monkeypatch, tmp_path: Path):
     db = tmp_path / "email_failure_after_commit.db"
     db_url = f"sqlite+aiosqlite:///{db}"
     engine = create_async_engine(db_url)
@@ -863,7 +923,9 @@ async def test_pipeline_email_failure_after_commit_preserves_committed_business_
 
     monkeypatch.setattr("app.customer_retention.pipeline.config", SimpleNamespace(database_url=db_url, customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
     monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
-    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
+    returned_file = tmp_path / "returned.xlsx"
+    returned_file.write_text("returned", encoding="utf-8")
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [SimpleNamespace(path=returned_file)])
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
     async def load_stores(*args, **kwargs):
         return ["S1"]
@@ -913,6 +975,9 @@ async def test_pipeline_email_failure_after_commit_preserves_committed_business_
         ))
         return SimpleNamespace(rows_seen=1, leads_created=1, warnings=[])
 
+    async def ingest_workbook(session, path, pipeline_run_id, **kwargs):
+        return SimpleNamespace(rows_seen=1, history_inserted=0, warnings=[])
+
     async def generate_retention(session, **kwargs):
         return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
 
@@ -926,6 +991,7 @@ async def test_pipeline_email_failure_after_commit_preserves_committed_business_
     async def send_raises(*args, **kwargs):
         raise RuntimeError("SMTP outage after commit")
 
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest_workbook)
     monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
@@ -935,13 +1001,23 @@ async def test_pipeline_email_failure_after_commit_preserves_committed_business_
     monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
     monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send_raises)
 
-    result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="email-fails", dry_run=False, skip_email=False)
+    with pytest.raises(CustomerRetentionNotificationError) as exc_info:
+        await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="email-fails", dry_run=False, skip_email=False)
 
-    assert result.status == "success_with_warnings"
-    assert result.summary_payload["uncommitted_lead_count"] == 1
+    result = exc_info.value.run_result
+    assert result.status == "failed"
+    assert "email_delivery_failed_after_commit" in result.warnings
     assert result.email_status["reason"] == "email_delivery_failed_after_commit"
     assert result.email_status["committed"] is True
     assert "SMTP outage after commit" in result.email_status["error"]
+    assert result.email_status["generated_files"] == result.generated_files
+    assert len(result.email_status["archived_files"]) == 1
+    assert Path(result.email_status["archived_files"][0]).exists()
+    assert result.counts["files_archived"] == 1
+
+    # The failed email changes only the operator-visible run result; the
+    # already-committed business transaction remains durable for recovery.
+    assert result.summary_payload["uncommitted_lead_count"] == 1
 
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
