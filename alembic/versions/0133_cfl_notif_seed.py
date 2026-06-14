@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from alembic import op
 import sqlalchemy as sa
-
 
 revision = "0133_cfl_notif_seed"
 down_revision = "0132_cfl_backlog_threshold"
@@ -21,10 +18,6 @@ PROFILE_ENV = "any"
 PROFILE_SCOPE = "run"
 PROFILE_ATTACH_MODE = "none"
 TEMPLATE_NAME = "summary"
-RECIPIENT_EMAIL = "wagid.sheikh@gmail.com"
-RECIPIENT_DISPLAY_NAME = "Wagid Sheikh"
-RECIPIENT_ENVS = ("dev", "prod", "local", "any")
-
 SUBJECT_TEMPLATE = "Customer Retention Summary {{ run_summary.run_date }} ({{ run_summary.success_failure_status }})"
 BODY_TEMPLATE = """
 Customer Retention Pipeline Run {{ run_summary.pipeline_run_id }}
@@ -62,11 +55,7 @@ Warning/Error Summary:
 """
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _tables() -> tuple[sa.Table, sa.Table, sa.Table, sa.Table]:
+def _tables() -> tuple[sa.Table, sa.Table, sa.Table]:
     pipelines = sa.table(
         "pipelines", sa.column("id"), sa.column("code"), sa.column("description")
     )
@@ -90,24 +79,12 @@ def _tables() -> tuple[sa.Table, sa.Table, sa.Table, sa.Table]:
         sa.column("body_template"),
         sa.column("is_active"),
     )
-    recipients = sa.table(
-        "notification_recipients",
-        sa.column("id"),
-        sa.column("profile_id"),
-        sa.column("store_code"),
-        sa.column("env"),
-        sa.column("email_address"),
-        sa.column("display_name"),
-        sa.column("send_as"),
-        sa.column("is_active"),
-        sa.column("created_at"),
-    )
-    return pipelines, profiles, templates, recipients
+    return pipelines, profiles, templates
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    pipelines, profiles, templates, recipients = _tables()
+    pipelines, profiles, templates = _tables()
 
     pipeline_id = bind.execute(
         sa.select(pipelines.c.id).where(pipelines.c.code == PIPELINE_CODE)
@@ -178,34 +155,6 @@ def upgrade() -> None:
             .where(templates.c.id == template_id)
             .values(**template_values)
         )
-
-    for env in RECIPIENT_ENVS:
-        recipient_id = bind.execute(
-            sa.select(recipients.c.id)
-            .where(recipients.c.profile_id == profile_id)
-            .where(recipients.c.env == env)
-            .where(recipients.c.email_address == RECIPIENT_EMAIL)
-            .where(recipients.c.send_as == "to")
-        ).scalar_one_or_none()
-        recipient_values = {
-            "profile_id": profile_id,
-            "store_code": None,
-            "env": env,
-            "email_address": RECIPIENT_EMAIL,
-            "display_name": RECIPIENT_DISPLAY_NAME,
-            "send_as": "to",
-            "is_active": True,
-        }
-        if recipient_id is None:
-            bind.execute(
-                recipients.insert().values(**recipient_values, created_at=_now())
-            )
-        else:
-            bind.execute(
-                recipients.update()
-                .where(recipients.c.id == recipient_id)
-                .values(**recipient_values)
-            )
 
 
 def downgrade() -> None:

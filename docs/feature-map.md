@@ -153,7 +153,7 @@ Practical map of where to work for major capabilities.
   - `app/customer_retention/notifications.py`
   - `app/dashboard_downloader/db_tables.py`
 - **Tables:** `pipelines`, `notification_profiles`, `email_templates`, `notification_recipients`, `documents`, `pipeline_run_summaries`. Customer retention owner-summary notifications depend on `pipelines`, `notification_profiles`, `email_templates`, and `notification_recipients`.
-- **Customer retention contract:** production must seed/enable pipeline code `customer_retention_pipeline` and run-scoped profile code `owner_summary`, with an active template and active recipients for the deployment environment. If those tables or rows are absent, `app/customer_retention/notifications.py` falls back to built-in default subject/body templates, but missing recipients still skip delivery with a `no_recipients` result and warning telemetry.
+- **Customer retention contract:** production must seed/enable pipeline code `customer_retention_pipeline` and run-scoped profile code `owner_summary`, with an active template. Recipient email addresses must be configured operationally in `notification_recipients`, not code. If those contract rows are absent, `app/customer_retention/notifications.py` falls back to built-in default subject/body templates, but missing recipients still skip delivery with a `no_recipients` result and warning telemetry.
 - **Notes/Risks:** Mismatched pipeline code/template profile causes silent no-email or summary-only behavior.
 
 ## 11) Schema migrations and migration tests

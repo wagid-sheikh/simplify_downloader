@@ -10,10 +10,10 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
 
-def _load_migration_module():
+def _load_migration_module(filename: str, module_name: str):
     project_root = Path(__file__).resolve().parents[2]
-    module_path = project_root / "alembic" / "versions" / "0133_cfl_notif_seed.py"
-    spec = importlib.util.spec_from_file_location("v0133_cfl_notif_seed", module_path)
+    module_path = project_root / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load migration module from {module_path}")
     module = importlib.util.module_from_spec(spec)
@@ -21,37 +21,37 @@ def _load_migration_module():
     return module
 
 
-migration = _load_migration_module()
+migration = _load_migration_module("0133_cfl_notif_seed.py", "v0133_cfl_notif_seed")
+cleanup_migration = _load_migration_module(
+    "0134_cfl_notif_no_recip.py", "v0134_cfl_notif_no_recip"
+)
 
 
 def _run_migration(
-    connection: sa.Connection, fn: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+    connection: sa.Connection,
+    module,
+    fn: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = MigrationContext.configure(connection)
     operations = Operations(context)
-    original_op = migration.op
-    monkeypatch.setattr(migration, "op", operations)
+    original_op = module.op
+    monkeypatch.setattr(module, "op", operations)
     try:
         fn()
     finally:
-        monkeypatch.setattr(migration, "op", original_op)
+        monkeypatch.setattr(module, "op", original_op)
 
 
 def _create_base_notification_tables(connection: sa.Connection) -> None:
-    connection.execute(
-        sa.text(
-            """
+    connection.execute(sa.text("""
             CREATE TABLE pipelines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 code TEXT UNIQUE,
                 description TEXT
             )
-            """
-        )
-    )
-    connection.execute(
-        sa.text(
-            """
+            """))
+    connection.execute(sa.text("""
             CREATE TABLE notification_profiles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pipeline_id INTEGER,
@@ -63,12 +63,8 @@ def _create_base_notification_tables(connection: sa.Connection) -> None:
                 is_active BOOLEAN,
                 UNIQUE(pipeline_id, code, env)
             )
-            """
-        )
-    )
-    connection.execute(
-        sa.text(
-            """
+            """))
+    connection.execute(sa.text("""
             CREATE TABLE email_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER,
@@ -78,12 +74,8 @@ def _create_base_notification_tables(connection: sa.Connection) -> None:
                 is_active BOOLEAN,
                 UNIQUE(profile_id, name)
             )
-            """
-        )
-    )
-    connection.execute(
-        sa.text(
-            """
+            """))
+    connection.execute(sa.text("""
             CREATE TABLE notification_recipients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER,
@@ -95,9 +87,7 @@ def _create_base_notification_tables(connection: sa.Connection) -> None:
                 is_active BOOLEAN,
                 created_at DATETIME
             )
-            """
-        )
-    )
+            """))
 
 
 def test_customer_retention_notif_seed_upgrade_is_idempotent(
@@ -107,8 +97,8 @@ def test_customer_retention_notif_seed_upgrade_is_idempotent(
 
     with engine.begin() as connection:
         _create_base_notification_tables(connection)
-        _run_migration(connection, migration.upgrade, monkeypatch)
-        _run_migration(connection, migration.upgrade, monkeypatch)
+        _run_migration(connection, migration, migration.upgrade, monkeypatch)
+        _run_migration(connection, migration, migration.upgrade, monkeypatch)
 
         pipeline = connection.execute(
             sa.text(
@@ -126,13 +116,11 @@ def test_customer_retention_notif_seed_upgrade_is_idempotent(
         )
 
         profile = connection.execute(
-            sa.text(
-                """
+            sa.text("""
                 SELECT id, code, description, env, scope, attach_mode, is_active
                 FROM notification_profiles
                 WHERE pipeline_id = :pipeline_id AND code = 'owner_summary'
-                """
-            ),
+                """),
             {"pipeline_id": pipeline.id},
         ).one()
         assert profile.description == "Customer retention owner run summary"
@@ -142,13 +130,11 @@ def test_customer_retention_notif_seed_upgrade_is_idempotent(
         assert profile.is_active == 1
 
         template = connection.execute(
-            sa.text(
-                """
+            sa.text("""
                 SELECT name, subject_template, body_template, is_active
                 FROM email_templates
                 WHERE profile_id = :profile_id
-                """
-            ),
+                """),
             {"profile_id": profile.id},
         ).one()
         assert template.name == "summary"
@@ -161,19 +147,70 @@ def test_customer_retention_notif_seed_upgrade_is_idempotent(
         assert "Warning/Error Summary" in template.body_template
         assert template.is_active == 1
 
-        recipients = connection.execute(
-            sa.text(
-                """
+        hardcoded_recipients = connection.execute(
+            sa.text("""
                 SELECT env, email_address, display_name, send_as, is_active
                 FROM notification_recipients
                 WHERE profile_id = :profile_id
-                ORDER BY env
-                """
-            ),
+                """),
             {"profile_id": profile.id},
         ).fetchall()
-        assert {row.env for row in recipients} == {"any", "dev", "local", "prod"}
-        assert all(row.email_address == "wagid.sheikh@gmail.com" for row in recipients)
-        assert all(row.display_name == "Wagid Sheikh" for row in recipients)
-        assert all(row.send_as == "to" for row in recipients)
-        assert all(row.is_active == 1 for row in recipients)
+        assert hardcoded_recipients == []
+
+
+def test_customer_retention_recipient_cleanup_only_removes_legacy_seed_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = sa.create_engine("sqlite://")
+
+    with engine.begin() as connection:
+        _create_base_notification_tables(connection)
+        _run_migration(connection, migration, migration.upgrade, monkeypatch)
+
+        pipeline_id = connection.execute(
+            sa.text(
+                "SELECT id FROM pipelines WHERE code = 'customer_retention_pipeline'"
+            )
+        ).scalar_one()
+        profile_id = connection.execute(
+            sa.text("""
+                SELECT id FROM notification_profiles
+                WHERE pipeline_id = :pipeline_id AND code = 'owner_summary' AND env = 'any'
+                """),
+            {"pipeline_id": pipeline_id},
+        ).scalar_one()
+
+        connection.execute(
+            sa.text("""
+                INSERT INTO notification_recipients
+                    (profile_id, store_code, env, email_address, display_name, send_as, is_active)
+                VALUES
+                    (:profile_id, NULL, 'dev', 'wagid.sheikh@gmail.com', 'Wagid Sheikh', 'to', 1),
+                    (:profile_id, NULL, 'prod', 'ops@example.com', 'Ops Managed', 'to', 1),
+                    (:profile_id, 'CC01', 'dev', 'wagid.sheikh@gmail.com', 'Wagid Sheikh', 'to', 1),
+                    (:profile_id, NULL, 'dev', 'wagid.sheikh@gmail.com', 'Renamed Operator', 'to', 1)
+                """),
+            {"profile_id": profile_id},
+        )
+
+        _run_migration(
+            connection, cleanup_migration, cleanup_migration.upgrade, monkeypatch
+        )
+
+        recipients = connection.execute(
+            sa.text("""
+                SELECT store_code, env, email_address, display_name, send_as, is_active
+                FROM notification_recipients
+                WHERE profile_id = :profile_id
+                ORDER BY email_address, display_name, store_code
+                """),
+            {"profile_id": profile_id},
+        ).fetchall()
+        assert [
+            (row.store_code, row.env, row.email_address, row.display_name)
+            for row in recipients
+        ] == [
+            (None, "prod", "ops@example.com", "Ops Managed"),
+            (None, "dev", "wagid.sheikh@gmail.com", "Renamed Operator"),
+            ("CC01", "dev", "wagid.sheikh@gmail.com", "Wagid Sheikh"),
+        ]
