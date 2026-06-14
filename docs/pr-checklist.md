@@ -29,7 +29,7 @@ Use this before requesting review.
 ## 4) API / contract / data impact
 
 - [ ] I reviewed impacts to pipeline codes, notification profiles, and template expectations.
-- [ ] Before enabling customer retention in production, I verified Alembic revision `0133_cfl_notif_seed` has run and that environment-appropriate active `notification_recipients` rows exist for the seeded `customer_retention_pipeline` / `owner_summary` profile; missing recipients must produce a safe `no_recipients` skip rather than an unintended send.
+- [ ] Before enabling customer retention in production, I verified Alembic revision `0133_cfl_notif_seed` has run, no recipient email addresses are hardcoded by the seed, and operators have configured environment-appropriate active `notification_recipients` rows for the seeded `customer_retention_pipeline` / `owner_summary` profile; missing recipients must produce a safe `no_recipients` skip rather than an unintended send.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
 - [ ] For customer retention input/archive changes, I preserved move-and-remove semantics or added metadata/digest-aware discovery before allowing copy-and-retain behavior.
