@@ -32,6 +32,7 @@ Use this before requesting review.
 - [ ] Before enabling customer retention in production, I verified Alembic revision `0133_cfl_notif_seed` has run and that environment-appropriate active `notification_recipients` rows exist for the seeded `customer_retention_pipeline` / `owner_summary` profile; missing recipients must produce a safe `no_recipients` skip rather than an unintended send.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
+- [ ] For customer retention input/archive changes, I preserved move-and-remove semantics or added metadata/digest-aware discovery before allowing copy-and-retain behavior.
 - [ ] For pending deliveries changes, I validated canonical eligibility: `vw_orders.recovery_status = 'NONE'` and no matching `sales` row for normal summary/detail buckets.
 - [ ] For pending deliveries artifact changes, I verified both PDF and XLSX are attached in the same existing notification send path without changing recipients/profiles/templates.
 - [ ] For reports or payment/recovery decision logic, I used `vw_orders.order_amount` and did not read raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment` directly unless the exception was explicitly approved and documented.

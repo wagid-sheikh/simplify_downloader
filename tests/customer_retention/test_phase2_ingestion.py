@@ -960,7 +960,7 @@ async def test_shifted_location_source_suppression_records_remain_intact_and_tar
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_history).where(trx_customer_followup_history.c.lead_id == 13))).scalar_one() == history_before + 1
 
 
-def test_input_discovery_and_archive_are_deterministic(tmp_path: Path) -> None:
+def test_input_discovery_and_archive_move_processed_external_file_out_of_input_scope(tmp_path: Path) -> None:
     input_dir = tmp_path / "inputs" / "customer_followup"
     external_dir = input_dir / "external_leads"
     external_dir.mkdir(parents=True)
@@ -970,11 +970,38 @@ def test_input_discovery_and_archive_are_deterministic(tmp_path: Path) -> None:
     workbook.write_text("workbook")
     external = external_dir / "leads.csv"
     external.write_text("cost_center,customer_name,mobile_number,lead_source,campaign_name,lead_date,remarks\n")
+
     assert [f.file_name for f in discover_returned_workbooks(input_dir=input_dir)] == ["returned.xlsx"]
     assert [f.file_name for f in discover_external_lead_files(external_input_dir=external_dir)] == ["leads.csv"]
+
     archive1 = archive_processed_file(external, archive_dir=tmp_path / "archive" / "customer_followup", run_id="run1", result_metadata={"status": "ok"})
-    archive2 = archive_processed_file(external, archive_dir=tmp_path / "archive" / "customer_followup", run_id="run1", result_metadata={"status": "ok"})
-    assert archive1 == archive2
+
+    assert archive1.exists()
+    assert archive1.read_text() == "cost_center,customer_name,mobile_number,lead_source,campaign_name,lead_date,remarks\n"
+    assert not external.exists()
+    assert archive1.with_suffix(archive1.suffix + ".json").exists()
+    assert discover_external_lead_files(external_input_dir=external_dir) == []
+
     external.write_text("changed")
-    archive3 = archive_processed_file(external, archive_dir=tmp_path / "archive" / "customer_followup", run_id="run1")
-    assert archive3 != archive1
+    archive2 = archive_processed_file(external, archive_dir=tmp_path / "archive" / "customer_followup", run_id="run1")
+
+    assert archive2 != archive1
+    assert archive2.exists()
+    assert not external.exists()
+    assert discover_external_lead_files(external_input_dir=external_dir) == []
+
+
+def test_archive_move_prevents_repeated_workbook_discovery_after_processed_run(tmp_path: Path) -> None:
+    input_dir = tmp_path / "inputs" / "customer_followup"
+    input_dir.mkdir(parents=True)
+    workbook = input_dir / "returned.xlsx"
+    workbook.write_text("workbook")
+
+    first_discovery = discover_returned_workbooks(input_dir=input_dir)
+    assert [f.file_name for f in first_discovery] == ["returned.xlsx"]
+
+    archived = archive_processed_file(first_discovery[0].path, archive_dir=tmp_path / "archive" / "customer_followup", run_id="run-workbook")
+
+    assert archived.exists()
+    assert not workbook.exists()
+    assert discover_returned_workbooks(input_dir=input_dir) == []
