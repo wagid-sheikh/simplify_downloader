@@ -25,6 +25,9 @@ migration = _load_migration_module("0133_cfl_notif_seed.py", "v0133_cfl_notif_se
 cleanup_migration = _load_migration_module(
     "0134_cfl_notif_no_recip.py", "v0134_cfl_notif_no_recip"
 )
+owner_recipient_migration = _load_migration_module(
+    "0135_cfl_owner_recipient.py", "v0135_cfl_owner_recipient"
+)
 
 
 def _run_migration(
@@ -213,4 +216,110 @@ def test_customer_retention_recipient_cleanup_only_removes_legacy_seed_rows(
             (None, "prod", "ops@example.com", "Ops Managed"),
             (None, "dev", "wagid.sheikh@gmail.com", "Renamed Operator"),
             ("CC01", "dev", "wagid.sheikh@gmail.com", "Wagid Sheikh"),
+        ]
+
+
+def test_customer_retention_owner_recipient_seed_is_idempotent_and_preserves_unrelated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = sa.create_engine("sqlite://")
+
+    with engine.begin() as connection:
+        _create_base_notification_tables(connection)
+        _run_migration(connection, migration, migration.upgrade, monkeypatch)
+
+        pipeline_id = connection.execute(
+            sa.text(
+                "SELECT id FROM pipelines WHERE code = 'customer_retention_pipeline'"
+            )
+        ).scalar_one()
+        profile_id = connection.execute(
+            sa.text("""
+                SELECT id FROM notification_profiles
+                WHERE pipeline_id = :pipeline_id
+                  AND code = 'owner_summary'
+                  AND scope = 'run'
+                """),
+            {"pipeline_id": pipeline_id},
+        ).scalar_one()
+
+        connection.execute(
+            sa.text("""
+                INSERT INTO notification_recipients
+                    (profile_id, store_code, env, email_address, display_name, send_as, is_active)
+                VALUES
+                    (:profile_id, NULL, 'dev', 'wagid.sheikh@gmail.com', 'Old Name', 'cc', 0),
+                    (:profile_id, NULL, 'prod', 'ops@example.com', 'Ops Managed', 'to', 1),
+                    (:profile_id, 'CC01', 'dev', 'wagid.sheikh@gmail.com', 'Store Managed', 'cc', 0)
+                """),
+            {"profile_id": profile_id},
+        )
+
+        _run_migration(
+            connection,
+            owner_recipient_migration,
+            owner_recipient_migration.upgrade,
+            monkeypatch,
+        )
+        _run_migration(
+            connection,
+            owner_recipient_migration,
+            owner_recipient_migration.upgrade,
+            monkeypatch,
+        )
+
+        owner_rows = connection.execute(
+            sa.text("""
+                SELECT env, email_address, display_name, send_as, store_code, is_active
+                FROM notification_recipients
+                WHERE profile_id = :profile_id
+                  AND email_address = 'wagid.sheikh@gmail.com'
+                  AND store_code IS NULL
+                ORDER BY env
+                """),
+            {"profile_id": profile_id},
+        ).fetchall()
+        assert {row.env for row in owner_rows} == {"any", "dev", "local", "prod"}
+        assert len(owner_rows) == 4
+        assert all(row.display_name == "Wagid Sheikh" for row in owner_rows)
+        assert all(row.send_as == "to" for row in owner_rows)
+        assert all(row.is_active == 1 for row in owner_rows)
+
+        assert (
+            connection.execute(
+                sa.text("""
+                    SELECT COUNT(*)
+                    FROM notification_recipients
+                    WHERE profile_id = :profile_id
+                      AND email_address = 'wagid.sheikh@gmail.com'
+                      AND store_code IS NULL
+                    """),
+                {"profile_id": profile_id},
+            ).scalar_one()
+            == 4
+        )
+
+        unrelated_rows = connection.execute(
+            sa.text("""
+                SELECT store_code, env, email_address, display_name, send_as, is_active
+                FROM notification_recipients
+                WHERE profile_id = :profile_id
+                  AND (email_address = 'ops@example.com' OR store_code = 'CC01')
+                ORDER BY email_address, store_code
+                """),
+            {"profile_id": profile_id},
+        ).fetchall()
+        assert [
+            (
+                row.store_code,
+                row.env,
+                row.email_address,
+                row.display_name,
+                row.send_as,
+                row.is_active,
+            )
+            for row in unrelated_rows
+        ] == [
+            (None, "prod", "ops@example.com", "Ops Managed", "to", 1),
+            ("CC01", "dev", "wagid.sheikh@gmail.com", "Store Managed", "cc", 0),
         ]
