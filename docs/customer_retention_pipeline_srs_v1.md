@@ -1473,9 +1473,9 @@ The customer retention owner summary uses the existing DB-backed notification ta
 - active `email_templates` row for that profile
 - active `notification_recipients` rows for that profile, filtered by the current run environment or a NULL environment
 
-DB-backed profile/template/recipient rows are required for production email delivery. The built-in fallback subject/body is only a safety net for local tests, dry-run rendering, and partially seeded environments; it is not a substitute for seeding the production notification contract.
+DB-backed profile/template/recipient rows are required for production email delivery. The built-in fallback subject/body render strings are only a safety net for safe rendering and diagnostics (for example local tests, dry-run rendering, and partially seeded environments); they are not a substitute for seeding the production notification contract.
 
-Fallback rendering rules:
+Fallback rendering rules (implemented in `app/customer_retention/notifications.py`):
 
 - If any of the notification metadata tables are missing, render the built-in fallback subject/body and resolve no recipients.
 - If the customer retention pipeline row or active owner-summary profile is missing, render the built-in fallback subject/body and resolve no recipients.
@@ -1484,9 +1484,9 @@ Fallback rendering rules:
 
 Recipient handling rules:
 
-- Active recipients are resolved from `notification_recipients` for the owner-summary profile and the current environment, with NULL environment rows treated as shared/default rows.
+- Actual email recipients must come from `notification_recipients`; the fallback renderer must never invent, hardcode, or infer production recipients. Active recipients are resolved from `notification_recipients` for the owner-summary profile and the current environment, with NULL environment rows treated as shared/default rows.
 - If no `to` recipients exist but `cc` recipients exist, the `cc` list is promoted to `to` so the message remains sendable.
-- If no active recipients resolve, the notification step is treated as success-with-warning: no email is sent, the pipeline should not be failed solely for missing recipients, and operators must seed or reactivate recipients before the next production run.
+- If no active recipients resolve, `app/customer_retention/notifications.py` returns a skipped notification result with reason `no_recipients`: no email is sent, the pipeline should not be failed solely for missing recipients, and operators must treat this as an operational setup warning that must be fixed before production use by seeding or reactivating recipients.
 - SMTP/send errors after recipients resolve are hard owner-summary delivery failures. The pipeline must not report the run as `success` or `success_with_warnings` when the required owner summary cannot be delivered. Because business data is committed before delivery is attempted, the failure path must preserve operator-visible diagnostics, including the post-commit failure classification, generated workbook paths, and archived input paths, so operators can retry/recover without losing traceability.
 
 Operator seed/verify checklist:
@@ -1519,7 +1519,7 @@ Operator seed/verify checklist:
      AND is_active = true
      AND (env = '<run_env>' OR env IS NULL);
    ```
-5. Verify end to end with the existing notification diagnostics/CLI pattern after a run summary exists; missing recipients must be corrected before relying on production owner alerts.
+5. Verify end to end with the existing notification diagnostics/CLI pattern after a run summary exists, matching the repository-wide command shape `poetry run python -m app notifications test --pipeline <code> --run-id <run_id>`; for this pipeline use `--pipeline customer_retention_pipeline`. Missing recipients must be corrected before relying on production owner alerts.
 
 ---
 
