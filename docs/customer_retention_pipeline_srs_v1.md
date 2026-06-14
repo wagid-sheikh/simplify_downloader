@@ -1490,6 +1490,7 @@ Fallback rendering rules (implemented in `app/customer_retention/notifications.p
 
 Recipient handling rules:
 
+- The baseline owner recipient (`Wagid Sheikh <wagid.sheikh@gmail.com>`, `send_as = 'to'`) is seeded/reactivated by Alembic migration `0135_cfl_owner_recipient` for supported notification environments (`dev`, `prod`, `local`, and `any`); manual DB entry is not required for that baseline owner recipient.
 - Actual email recipients must come from `notification_recipients`; the fallback renderer must never invent, hardcode, or infer production recipients. Active recipients are resolved from `notification_recipients` for the owner-summary profile and the current environment, with NULL environment rows treated as shared/default rows.
 - If no `to` recipients exist but `cc` recipients exist, the `cc` list is promoted to `to` so the message remains sendable.
 - If no active recipients resolve, `app/customer_retention/notifications.py` returns a skipped notification result with reason `no_recipients`: no email is sent, the pipeline should not be failed solely for missing recipients, and operators must treat this as an operational setup warning that must be fixed before production use by seeding or reactivating recipients.
