@@ -1912,7 +1912,7 @@ Task status options: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IMPLEMENTED`, `TE
 
 Phase 3 progress notes:
 
-- 2026-06-12 — Codex: Implemented and tested snapshot generation, lifecycle bucket classification, deterministic priority/strategy assignment, store-scoped suppression lookup/write paths, pending approval workflow for staff-entered permanent outcomes, time-bound suppression, lifecycle transitions, and `vw_orders.order_amount`-based recovery detection. No schema deviation was required; Phase 1 schema and Phase 2 ingestion/idempotency contracts were preserved. Human review/sign-off remains pending, so Phase 3 is not marked `SIGNED_OFF`.
+- 2026-06-12 — Codex: Implemented and tested snapshot generation, lifecycle bucket classification, deterministic priority/strategy assignment, store-scoped suppression lookup/write paths, pending approval workflow for staff-entered permanent outcomes, time-bound suppression, lifecycle transitions, and `vw_orders.order_amount`-based recovery detection. No schema deviation was required; Phase 1 schema and Phase 2 ingestion/idempotency contracts were preserved. Phase 3 was subsequently owner/Codex signed off and remains preserved by later phases.
 
 Guard rails:
 
