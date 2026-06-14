@@ -395,6 +395,7 @@ async def test_workbook_generation_structure_validation_and_ingestion_identity(t
     assert sheet.cell(row=2, column=headers.index("recommended_strategy") + 1).value == "Gentle reminder call"
     assert sheet.cell(row=2, column=headers.index("lead_id") + 1).value == 1
     assert sheet.cell(row=2, column=headers.index("normalized_mobile_number") + 1).value
+    assert sheet.cell(row=2, column=headers.index("normalized_mobile_number") + 1).protection.locked is True
     assert sheet.cell(row=2, column=headers.index("lead_id") + 1).protection.locked is True
     assert sheet.cell(row=2, column=headers.index("Contact Attempted") + 1).protection.locked is False
 
@@ -702,6 +703,7 @@ async def test_generated_workbook_reingestion_ignores_protected_edits_and_preser
     sheet.cell(row=2, column=col["customer_name"], value="Tampered Name")
     sheet.cell(row=2, column=col["cost_center"], value="C300")
     sheet.cell(row=2, column=col["recommended_strategy"], value="Tampered Strategy")
+    sheet.cell(row=2, column=col["normalized_mobile_number"], value="9999999999")
     sheet.cell(row=2, column=col["Contact Attempted"], value="Yes")
     sheet.cell(row=2, column=col["Contact Mode"], value="Call")
     sheet.cell(row=2, column=col["Customer Response"], value="Interested")
@@ -715,10 +717,11 @@ async def test_generated_workbook_reingestion_ignores_protected_edits_and_preser
     result = await ingest_returned_workbook(database_url=url, path=output.output_path, pipeline_run_id="run-phase4-return")
 
     assert result.rows_seen == 1
-    assert result.protected_edits_ignored == 3
+    assert result.protected_edits_ignored == 4
     assert result.history_inserted == 1
     assert result.rows_skipped == 0
     assert {warning.code for warning in result.warnings} == {"protected_column_edit"}
+    assert {warning.field_name for warning in result.warnings} >= {"customer_name", "cost_center", "recommended_strategy", "normalized_mobile_number"}
 
     async with session_scope(url) as session:
         lead = (
