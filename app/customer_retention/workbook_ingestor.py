@@ -32,6 +32,7 @@ PROTECTED_COLUMNS = {
     "cost_center",
     "customer_name",
     "mobile_number",
+    "normalized_mobile_number",
     "lifecycle_bucket",
     "last_order_date",
     "days_since_last_order",
