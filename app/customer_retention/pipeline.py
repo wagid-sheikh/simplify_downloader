@@ -16,7 +16,7 @@ from .external_import import _import_external_lead_file
 from .input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks, get_customer_followup_paths
 from .notifications import NotificationResult, send_owner_summary
 from .recovery_detection import detect_recoveries
-from .retention_generation import generate_retention_leads_from_snapshot
+from .retention_generation import allocate_and_generate_retention_leads
 from .snapshot import build_customer_retention_snapshot
 from .source_adapters import _import_td_leads
 from .types import RowWarning
@@ -184,7 +184,7 @@ async def run_customer_retention_pipeline(
                 add_warnings(td_result.warnings)
 
                 # 9. Generate fresh retention leads.
-                retention_generation = await generate_retention_leads_from_snapshot(session, snapshot=snapshot, pipeline_run_id=actual_run_id, logger=log)
+                retention_generation = await allocate_and_generate_retention_leads(session, snapshot=snapshot, active_stores=active_stores, run_date=actual_run_date, backlog_threshold=backlog_threshold, pipeline_run_id=actual_run_id, logger=log)
                 count("retention_rows_seen", retention_generation.rows_seen)
                 count("retention_leads_created", retention_generation.leads_created)
                 count("retention_leads_reused", retention_generation.leads_reused)

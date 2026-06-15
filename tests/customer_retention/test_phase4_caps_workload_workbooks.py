@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.common.db import session_scope
 from app.dashboard_downloader.json_logger import JsonLogger
 from app.customer_retention.caps import resolve_active_cap
+from app.customer_retention.retention_generation import allocate_and_generate_retention_leads
+from app.customer_retention.snapshot import CustomerRetentionSnapshotRow, SnapshotResult
 from app.customer_retention.constants import (
     CAP_WORK_SECTION_EXTERNAL_LEAD,
     CAP_WORK_SECTION_FRESH_RETENTION,
@@ -99,7 +101,7 @@ async def test_pipeline_passes_configured_backlog_threshold(monkeypatch) -> None
     monkeypatch.setattr(pipeline, "_import_td_leads", fake_import_td_leads)
     monkeypatch.setattr(pipeline, "detect_recoveries", fake_detect_recoveries)
     monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", fake_snapshot)
-    monkeypatch.setattr(pipeline, "generate_retention_leads_from_snapshot", fake_generate)
+    monkeypatch.setattr(pipeline, "allocate_and_generate_retention_leads", fake_generate)
     monkeypatch.setattr(pipeline, "select_workbook_leads_for_active_stores", fake_select)
     monkeypatch.setattr(pipeline, "generate_workbooks", lambda **kwargs: type("WorkbookResult", (), {"outputs": []})())
     monkeypatch.setattr(pipeline, "build_management_summary_payload", fake_summary)
@@ -748,3 +750,107 @@ async def test_generated_workbook_reingestion_ignores_protected_edits_and_preser
     assert history["complaint_flag"] is False
     assert history["do_not_contact_flag"] is False
     assert history["staff_remarks"] == "Valid editable values"
+
+
+def _snapshot_row(index: int, *, cost_center: str = "A100", snapshot_date: date = date(2026, 6, 12), priority: Decimal | None = None) -> CustomerRetentionSnapshotRow:
+    mobile = f"987650{index:04d}"
+    return CustomerRetentionSnapshotRow(
+        snapshot_date=snapshot_date,
+        cost_center=cost_center,
+        customer_name=f"Snapshot Customer {index}",
+        mobile_number=mobile,
+        normalized_mobile_number=mobile,
+        last_order_date=snapshot_date - timedelta(days=45),
+        days_since_last_order=45,
+        lifecycle_bucket="WARM",
+        total_orders=2,
+        lifetime_spend=Decimal("500.00"),
+        average_order_value=Decimal("250.00"),
+        last_order_amount=Decimal("250.00"),
+        last_followup_date=None,
+        last_followup_status=None,
+        suppression_status=None,
+        eligible_for_retention=True,
+        priority_score=priority if priority is not None else Decimal(str(1000 - index)),
+        recommended_strategy="Gentle reminder call",
+    )
+
+
+def _snapshot(rows) -> SnapshotResult:
+    rows = tuple(rows)
+    return SnapshotResult(
+        snapshot_date=date(2026, 6, 12),
+        rows=rows,
+        rows_seen=len(rows),
+        rows_invalid_mobile=0,
+        rows_suppressed=0,
+        rows_existing_open_lead=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_retention_allocation_freeze_prevents_fresh_db_inserts(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=13)
+        await _insert_lead(session, lead_id=900, lead_date=run_date - timedelta(days=1), mobile="9999999900")
+        result = await allocate_and_generate_retention_leads(
+            session,
+            snapshot=_snapshot(_snapshot_row(i) for i in range(1, 6)),
+            active_stores=("A100",),
+            run_date=run_date,
+            backlog_threshold=0,
+            pipeline_run_id="freeze-run",
+        )
+        await session.commit()
+
+        fresh_created = (
+            await session.execute(
+                sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(
+                    trx_customer_followup_leads.c.created_by_pipeline_run_id == "freeze-run",
+                    trx_customer_followup_leads.c.lead_source_type == LEAD_SOURCE_RETENTION,
+                )
+            )
+        ).scalar_one()
+
+    assert result.leads_created == 0
+    assert result.skipped_frozen == 5
+    assert fresh_created == 0
+
+
+@pytest.mark.asyncio
+async def test_retention_allocation_caps_db_inserts_without_consuming_due_or_carry_forward(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    run_date = date(2026, 6, 12)
+    async with session_scope(url) as session:
+        await _insert_cap(session, daily_cap=13)
+        await _insert_lead(session, lead_id=901, lead_date=run_date - timedelta(days=30), mobile="9999999901", status=LEAD_STATUS_PENDING)
+        await _insert_lead(session, lead_id=902, lead_date=run_date - timedelta(days=2), next_followup_date=run_date, mobile="9999999902")
+        result = await allocate_and_generate_retention_leads(
+            session,
+            snapshot=_snapshot(_snapshot_row(i) for i in range(1, 21)),
+            active_stores=("A100",),
+            run_date=run_date,
+            backlog_threshold=99,
+            pipeline_run_id="cap-run",
+        )
+        await session.flush()
+        selection = await select_workbook_leads_for_store(session, cost_center="A100", run_date=run_date, backlog_threshold=99)
+        fresh_created = (
+            await session.execute(
+                sa.select(sa.func.count()).select_from(trx_customer_followup_leads).where(
+                    trx_customer_followup_leads.c.created_by_pipeline_run_id == "cap-run",
+                    trx_customer_followup_leads.c.lead_source_type == LEAD_SOURCE_RETENTION,
+                    trx_customer_followup_leads.c.lead_date == run_date,
+                )
+            )
+        ).scalar_one()
+        await session.commit()
+
+    assert result.leads_created == 13
+    assert result.skipped_cap == 7
+    assert fresh_created == 13
+    assert selection.counts_by_category[CAP_WORK_SECTION_FRESH_RETENTION] == 13
+    assert selection.counts_by_category[CAP_WORK_SECTION_PENDING_CARRY_FORWARD] == 1
+    assert selection.counts_by_category[CAP_WORK_SECTION_DUE_FOLLOWUP] == 1
