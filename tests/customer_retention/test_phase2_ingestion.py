@@ -10,9 +10,9 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.common.db import session_scope
-from app.customer_retention.constants import SUPPRESSION_STATE_ACTIVE, SUPPRESSION_STATE_PENDING_APPROVAL, WORKBOOK_OUTCOME_SHIFTED_LOCATION
-from app.customer_retention.db_tables import metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
-from app.customer_retention.external_import import import_external_lead_file, parse_external_lead_file
+from app.customer_retention.constants import CAP_WORK_SECTION_EXTERNAL_LEAD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_ACTIVE, SUPPRESSION_STATE_PENDING_APPROVAL, WORKBOOK_OUTCOME_SHIFTED_LOCATION
+from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
+from app.customer_retention.external_import import convert_capped_external_leads_for_store, import_external_lead_file, parse_external_lead_file
 from app.customer_retention.input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks
 from app.customer_retention.persistence import get_or_create_followup_lead
 from app.customer_retention.mobile import MobileNormalizationStatus, normalize_mobile
@@ -60,6 +60,23 @@ def _write_external_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=["cost_center", "customer_name", "mobile_number", "lead_source", "campaign_name", "lead_date", "remarks"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+
+async def _insert_external_cap(session, *, daily_cap: int, effective_from: date = date(2026, 1, 1)) -> None:
+    next_id = int((await session.execute(sa.select(sa.func.coalesce(sa.func.max(customer_followup_cap_config.c.cap_config_id), 0) + 1))).scalar_one())
+    await session.execute(customer_followup_cap_config.insert().values(
+        cap_config_id=next_id,
+        cost_center="A100",
+        lead_source_type=LEAD_SOURCE_EXTERNAL,
+        work_section=CAP_WORK_SECTION_EXTERNAL_LEAD,
+        daily_cap=daily_cap,
+        is_uncapped=False,
+        enabled=True,
+        effective_from=effective_from,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    ))
 
 
 def _write_workbook(path: Path, rows: list[dict[str, object]]) -> None:
@@ -159,13 +176,13 @@ async def test_external_csv_import_idempotency_and_warnings(tmp_path: Path) -> N
     first = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run1")
     second = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run2")
     assert first.raw_rows_inserted == 3
-    assert first.leads_created == 1
+    assert first.leads_created == 0
     assert {w.code for w in first.warnings} == {"mobile_malformed", "missing_required_field"}
     assert second.raw_rows_existing == 3
-    assert second.leads_existing == 1
+    assert second.leads_existing == 0
     async with session_scope(url) as session:
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads))).scalar_one() == 3
-        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 0
 
 
 @pytest.mark.asyncio
@@ -184,7 +201,7 @@ async def test_external_import_blank_required_values_block_conversion_and_batch_
 
     assert result.rows_seen == 5
     assert result.raw_rows_inserted == 4
-    assert result.leads_created == 1
+    assert result.leads_created == 0
     assert result.rows_skipped == 4
     warning_pairs = [(warning.code, warning.field_name, warning.row_number) for warning in result.warnings]
     assert warning_pairs[:4] == [
@@ -213,9 +230,9 @@ async def test_external_import_blank_required_values_block_conversion_and_batch_
             (None, "", None, None, False),
             ("Blank Mobile", "Meta", "June", "bad", False),
             ("Blank Store", "Meta", "June", "bad", False),
-            ("Grace", "Referral", "June", "ok", True),
+            ("Grace", "Referral", "June", "ok", False),
         ]
-        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 0
 
 
 @pytest.mark.asyncio
@@ -304,6 +321,46 @@ async def test_external_import_persists_invalid_mobile_raw_without_conversion(tm
 
 
 @pytest.mark.asyncio
+async def test_external_conversion_caps_raw_rows_idempotently_and_preserves_future_eligibility(tmp_path: Path) -> None:
+    url = await _prepare_db(tmp_path)
+    csv_path = tmp_path / "twenty-external.csv"
+    _write_external_csv(csv_path, [
+        {"cost_center": "A100", "customer_name": f"Customer {i}", "mobile_number": f"98765432{i:02d}", "lead_source": "Meta", "campaign_name": "June", "lead_date": "2026-06-01", "remarks": "ok"}
+        for i in range(20)
+    ] + [
+        {"cost_center": "A100", "customer_name": "Invalid", "mobile_number": "abc", "lead_source": "Meta", "campaign_name": "June", "lead_date": "2026-06-01", "remarks": "bad"},
+    ])
+
+    first_import = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run-import-1")
+    second_import = await import_external_lead_file(database_url=url, path=csv_path, pipeline_run_id="run-import-2")
+
+    assert first_import.raw_rows_inserted == 21
+    assert first_import.leads_created == 0
+    assert second_import.raw_rows_existing == 21
+    async with session_scope(url) as session:
+        await _insert_external_cap(session, daily_cap=5)
+        first_conversion = await convert_capped_external_leads_for_store(session, cost_center="A100", run_date=date(2026, 6, 12), pipeline_run_id="run-convert-1")
+        second_conversion_same_day = await convert_capped_external_leads_for_store(session, cost_center="A100", run_date=date(2026, 6, 12), pipeline_run_id="run-convert-2")
+        await session.commit()
+
+        assert first_conversion.rows_seen == 5
+        assert first_conversion.leads_created == 5
+        assert second_conversion_same_day.rows_seen == 0
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads))).scalar_one() == 21
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 5
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads).where(trx_external_leads.c.converted_to_followup_lead.is_(False), trx_external_leads.c.lead_status == "OPEN"))).scalar_one() == 15
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads).where(trx_external_leads.c.lead_status == "ERROR", trx_external_leads.c.converted_to_followup_lead.is_(False)))).scalar_one() == 1
+
+    async with session_scope(url) as session:
+        later_conversion = await convert_capped_external_leads_for_store(session, cost_center="A100", run_date=date(2026, 6, 13), pipeline_run_id="run-convert-3")
+        await session.commit()
+        assert later_conversion.rows_seen == 5
+        assert later_conversion.leads_created == 5
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 10
+        assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads).where(trx_external_leads.c.converted_to_followup_lead.is_(False), trx_external_leads.c.lead_status == "OPEN"))).scalar_one() == 10
+
+
+@pytest.mark.asyncio
 async def test_td_pending_rows_same_store_and_mobile_share_unified_lead(tmp_path: Path) -> None:
     url = await _prepare_db(tmp_path)
     async with session_scope(url) as session:
@@ -339,10 +396,15 @@ async def test_external_import_batches_same_cost_center_and_mobile_share_unified
     second = await import_external_lead_file(database_url=url, path=second_path, pipeline_run_id="run2")
 
     assert first.raw_rows_inserted == 1
-    assert first.leads_created == 1
+    assert first.leads_created == 0
     assert second.raw_rows_inserted == 1
-    assert second.leads_existing == 1
+    assert second.leads_existing == 0
     async with session_scope(url) as session:
+        await _insert_external_cap(session, daily_cap=2)
+        conversion = await convert_capped_external_leads_for_store(session, cost_center="A100", run_date=date(2026, 6, 12), pipeline_run_id="run-convert")
+        await session.commit()
+        assert conversion.leads_created == 1
+        assert conversion.leads_existing == 1
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_external_leads))).scalar_one() == 2
         assert (await session.execute(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))).scalar_one() == 1
         converted_ids = (await session.execute(sa.select(trx_external_leads.c.converted_followup_lead_id).order_by(trx_external_leads.c.external_lead_id))).scalars().all()

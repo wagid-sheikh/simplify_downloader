@@ -12,7 +12,7 @@ from app.config import config
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 
 from .analytics import RunTiming, build_management_summary_payload
-from .external_import import _import_external_lead_file
+from .external_import import _import_external_lead_file, convert_capped_external_leads_for_store
 from .input_discovery import archive_processed_file, discover_external_lead_files, discover_returned_workbooks, get_customer_followup_paths
 from .notifications import NotificationResult, send_owner_summary
 from .recovery_detection import detect_recoveries
@@ -173,7 +173,7 @@ async def run_customer_retention_pipeline(
                 for discovered in external_files:
                     result = await _import_external_lead_file(session, discovered.path, actual_run_id, logger=log)
                     count("external_rows_seen", result.rows_seen)
-                    count("external_leads_created", result.leads_created)
+                    count("external_raw_rows_inserted", result.raw_rows_inserted)
                     add_warnings(result.warnings)
                     processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
 
@@ -183,7 +183,22 @@ async def run_customer_retention_pipeline(
                 count("td_leads_created", td_result.leads_created)
                 add_warnings(td_result.warnings)
 
-                # 9. Generate fresh retention leads.
+                # 9. Convert external raw rows through the active EXTERNAL/EXTERNAL_LEAD cap before workbook selection.
+                for cost_center in active_stores:
+                    external_conversion = await convert_capped_external_leads_for_store(
+                        session,
+                        cost_center=cost_center,
+                        run_date=actual_run_date,
+                        pipeline_run_id=actual_run_id,
+                        logger=log,
+                    )
+                    count("external_conversion_rows_seen", external_conversion.rows_seen)
+                    count("external_leads_created", external_conversion.leads_created)
+                    count("external_leads_existing", external_conversion.leads_existing)
+                    count("external_conversion_rows_skipped", external_conversion.rows_skipped)
+                    add_warnings(external_conversion.warnings)
+
+                # 10. Generate fresh retention leads.
                 retention_generation = await allocate_and_generate_retention_leads(session, snapshot=snapshot, active_stores=active_stores, run_date=actual_run_date, backlog_threshold=backlog_threshold, pipeline_run_id=actual_run_id, logger=log)
                 count("retention_rows_seen", retention_generation.rows_seen)
                 count("retention_leads_created", retention_generation.leads_created)
@@ -192,7 +207,7 @@ async def run_customer_retention_pipeline(
                 add_warnings(retention_generation.warnings)
                 await session.flush()
 
-            # 10. Select due follow-ups, carry-forward, TD, external, and fresh retention rows.
+            # 11. Select due follow-ups, carry-forward, TD, external, and fresh retention rows.
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=backlog_threshold, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
             selected_rows = sum(len(selection.rows) for selection in selections)
             for selection in selections:
@@ -206,7 +221,7 @@ async def run_customer_retention_pipeline(
             else:
                 count("workbook_rows_selected", selected_rows)
 
-            # 11. Generate workbooks.
+            # 12. Generate workbooks.
             if not dry_run:
                 workbook_result = generate_workbooks(
                     selections=selections,
@@ -217,7 +232,7 @@ async def run_customer_retention_pipeline(
                 )
                 generated_files = [str(output.output_path) for output in workbook_result.outputs]
 
-                # 12. Archive processed input/import files deterministically after
+                # 13. Archive processed input/import files deterministically after
                 # successful processing policy is satisfied (all processing through
                 # workbook generation has completed without raising).
                 for path, metadata in sorted(processed_files, key=lambda item: str(item[0])):
@@ -225,7 +240,7 @@ async def run_customer_retention_pipeline(
                     archived_files.append(str(archived_path))
                 count("files_archived", len(archived_files))
 
-            # 13. Build/send summary email. Dry-runs build the payload but do not
+            # 14. Build/send summary email. Dry-runs build the payload but do not
             # call the sender so the run remains non-mutating and side-effect free.
             summary_payload = await build_management_summary_payload(session, run_id=actual_run_id, run_date=actual_run_date, timing=RunTiming(run_id=actual_run_id, started_at=started, ended_at=datetime.now(timezone.utc), execution_mode="dry_run" if dry_run else "manual", status="success", env=env), selections=selections, workbook_result=workbook_result, ingestion_results=ingestion_results, generated_files=generated_files, row_warnings=row_warnings)
             if not dry_run:
