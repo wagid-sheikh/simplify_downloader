@@ -272,6 +272,23 @@ async def test_pipeline_dry_run_orchestration(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [])
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
+
+    async def no_recoveries(*args, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def no_td_leads(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, warnings=[])
+
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
+    async def no_retention_generation(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
+
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", no_recoveries)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", no_td_leads)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
+    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", no_retention_generation)
     result = await run_customer_retention_pipeline(run_date=date(2026,6,13), run_id="dry", dry_run=True, skip_email=True)
     assert result.status == "success"
     assert result.counts["active_stores"] == 1
@@ -310,6 +327,11 @@ async def test_pipeline_generates_fresh_retention_leads_from_vw_orders(monkeypat
         return type("TDResult", (), {"rows_seen": 0, "leads_created": 0, "warnings": ()})()
 
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", no_td_leads)
+
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
 
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
@@ -405,6 +427,10 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
         calls.append("import_td_leads")
         return SimpleNamespace(rows_seen=4, leads_created=3, warnings=[])
 
+    async def convert_external(*args, **kwargs):
+        calls.append("convert_external_leads")
+        return SimpleNamespace(rows_seen=2, leads_created=1, leads_existing=0, rows_skipped=0, warnings=[])
+
     async def generate_retention(session, **kwargs):
         calls.append("generate_retention_leads")
         return SimpleNamespace(rows_seen=5, leads_created=4, leads_reused=1, rows_skipped=0, warnings=[])
@@ -436,6 +462,7 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
     monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", discover_external)
     monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", convert_external)
     monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate)
@@ -455,6 +482,7 @@ async def test_pipeline_srs_section9_orchestration_order(monkeypatch, tmp_path: 
         "discover_external_lead_files",
         "import_external_lead_file",
         "import_td_leads",
+        "convert_external_leads",
         "generate_retention_leads",
         "select_workbook_leads",
         "generate_workbooks",
@@ -506,9 +534,33 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
         calls.append("build_summary")
         return {"run_summary": {"pipeline_run_id": "dry-order"}}
 
-    async def forbidden_async(*args, **kwargs):
-        forbidden_calls.append(kwargs.get("path") or kwargs.get("payload") or "async")
-        raise AssertionError("dry-run called a mutating/import/send function")
+    async def ingest_workbook(*args, **kwargs):
+        calls.append("ingest_returned_workbook")
+        return SimpleNamespace(rows_seen=2, history_inserted=1, warnings=[])
+
+    async def detect(*args, **kwargs):
+        calls.append("detect_recoveries")
+        return SimpleNamespace(leads_recovered=1, leads_closed=1)
+
+    async def import_external(*args, **kwargs):
+        calls.append("import_external_lead_file")
+        return SimpleNamespace(rows_seen=3, raw_rows_inserted=2, warnings=[])
+
+    async def import_td(*args, **kwargs):
+        calls.append("import_td_leads")
+        return SimpleNamespace(rows_seen=4, leads_created=3, warnings=[])
+
+    async def convert_external(*args, **kwargs):
+        calls.append("convert_external_leads")
+        return SimpleNamespace(rows_seen=2, leads_created=1, leads_existing=0, rows_skipped=0, warnings=[])
+
+    async def generate_retention(*args, **kwargs):
+        calls.append("generate_retention_leads")
+        return SimpleNamespace(rows_seen=5, leads_created=4, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def forbidden_send(*args, **kwargs):
+        forbidden_calls.append("send_email")
+        raise AssertionError("dry-run called email sender")
 
     def forbidden_sync(*args, **kwargs):
         forbidden_calls.append(kwargs.get("path") or "sync")
@@ -518,12 +570,13 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
-    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", forbidden_async)
-    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", forbidden_async)
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest_workbook)
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", convert_external)
+    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", forbidden_send)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", forbidden_sync)
     monkeypatch.setattr("app.customer_retention.pipeline.archive_processed_file", forbidden_sync)
 
@@ -540,6 +593,11 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
     assert result.counts["planned_files_to_archive"] == 2
     assert result.counts["planned_summary_emails"] == 1
     assert result.counts["dry_run_backlog_threshold"] == 7
+    assert result.counts["planned_workbook_history_inserted"] == 1
+    assert result.counts["planned_external_rows_imported"] == 2
+    assert result.counts["planned_external_leads_converted"] == 1
+    assert result.counts["planned_td_leads_converted"] == 3
+    assert result.counts["planned_retention_leads_created"] == 4
     assert "workbook_history_inserted" not in result.counts
     assert "external_leads_created" not in result.counts
     assert "td_leads_created" not in result.counts
@@ -551,11 +609,211 @@ async def test_pipeline_dry_run_skips_mutating_import_archive_generate_and_email
     assert calls == [
         "fetch_active_stores",
         "discover_returned_workbooks",
+        "ingest_returned_workbook",
+        "detect_recoveries",
         "build_snapshot",
         "discover_external_lead_files",
+        "import_external_lead_file",
+        "import_td_leads",
+        "convert_external_leads",
+        "generate_retention_leads",
         "select_workbook_leads",
         "build_summary",
     ]
+
+@pytest.mark.asyncio
+async def test_pipeline_dry_run_simulates_full_pipeline_then_rolls_back_without_side_effects(monkeypatch, tmp_path: Path):
+    db = tmp_path / "dry_vs_live.db"
+    db_url = f"sqlite+aiosqlite:///{db}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+
+    output_dir = tmp_path / "outputs"
+    archive_dir = tmp_path / "archive"
+    sent_payloads: list[str] = []
+    monkeypatch.setattr("app.customer_retention.pipeline.config", SimpleNamespace(database_url=db_url, customer_followup_output_dir=str(output_dir), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=archive_dir))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [SimpleNamespace(path=tmp_path / "returned.xlsx")])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [SimpleNamespace(path=tmp_path / "external.csv")])
+
+    async def load_stores(*args, **kwargs):
+        return ["S1"]
+
+    async def ingest_workbook(session, path, pipeline_run_id, **kwargs):
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=10,
+            lead_uuid="00000000-0000-0000-0000-000000000010",
+            lead_source_type=LEAD_SOURCE_RETENTION,
+            source_system="TEST_WORKBOOK",
+            cost_center="S1",
+            normalized_mobile_number="9000000010",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            lifecycle_bucket="WARM",
+            created_by_pipeline_run_id=pipeline_run_id,
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        await session.execute(trx_customer_followup_history.insert().values(
+            history_id=10,
+            lead_id=10,
+            pipeline_run_id=pipeline_run_id,
+            event_type="Dry_Run_Workbook",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, history_inserted=1, warnings=[])
+
+    async def detect(*args, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(*args, **kwargs):
+        return SimpleNamespace(rows=[object()], rows_invalid_mobile=0)
+
+    async def import_external(session, path, pipeline_run_id, **kwargs):
+        await session.execute(trx_external_leads.insert().values(
+            external_lead_id=20,
+            external_lead_uuid="00000000-0000-0000-0000-000000000020",
+            lead_source="campaign",
+            cost_center="S1",
+            normalized_mobile_number="9000000020",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, raw_rows_inserted=1, warnings=[])
+
+    async def import_td(session, pipeline_run_id, **kwargs):
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=30,
+            lead_uuid="00000000-0000-0000-0000-000000000030",
+            lead_source_type=LEAD_SOURCE_TD,
+            source_system="TEST_TD",
+            source_table_name="crm_leads_current",
+            source_record_id="td-30",
+            cost_center="S1",
+            normalized_mobile_number="9000000030",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            created_by_pipeline_run_id=pipeline_run_id,
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, leads_created=1, warnings=[])
+
+    async def convert_external(session, pipeline_run_id, **kwargs):
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=40,
+            lead_uuid="00000000-0000-0000-0000-000000000040",
+            lead_source_type=LEAD_SOURCE_EXTERNAL,
+            source_system="TEST_EXTERNAL",
+            source_table_name="trx_external_leads",
+            source_record_id="external-40",
+            cost_center="S1",
+            normalized_mobile_number="9000000040",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            created_by_pipeline_run_id=pipeline_run_id,
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, leads_created=1, leads_existing=0, rows_skipped=0, warnings=[])
+
+    async def generate_retention(session, pipeline_run_id, **kwargs):
+        await session.execute(trx_customer_followup_leads.insert().values(
+            lead_id=50,
+            lead_uuid="00000000-0000-0000-0000-000000000050",
+            lead_source_type=LEAD_SOURCE_RETENTION,
+            source_system="CUSTOMER_RETENTION_PIPELINE",
+            cost_center="S1",
+            normalized_mobile_number="9000000050",
+            lead_date=date(2026, 6, 13),
+            lead_status="OPEN",
+            lifecycle_bucket="WARM",
+            created_by_pipeline_run_id=pipeline_run_id,
+            created_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 6, 13, tzinfo=timezone.utc),
+        ))
+        return SimpleNamespace(rows_seen=1, leads_created=1, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select(session, **kwargs):
+        count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))
+        return [SimpleNamespace(rows=[object() for _ in range(count)], warnings=[])]
+
+    def generate_workbooks(**kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "S1.xlsx"
+        path.write_text("workbook", encoding="utf-8")
+        return SimpleNamespace(outputs=[SimpleNamespace(output_path=path)])
+
+    def archive(path, **kwargs):
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived = archive_dir / Path(path).name
+        archived.write_text("archived", encoding="utf-8")
+        return archived
+
+    async def summary(session, **kwargs):
+        lead_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads))
+        external_count = await session.scalar(sa.select(sa.func.count()).select_from(trx_external_leads))
+        return {"run_summary": {"pipeline_run_id": kwargs["run_id"]}, "lead_count": lead_count, "external_count": external_count}
+
+    async def send(session, **kwargs):
+        sent_payloads.append(kwargs["payload"]["run_summary"]["pipeline_run_id"])
+        return SimpleNamespace(planned=1, sent=1, skipped=False, reason=None)
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest_workbook)
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", convert_external)
+    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate_workbooks)
+    monkeypatch.setattr("app.customer_retention.pipeline.archive_processed_file", archive)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send)
+
+    dry_result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="dry-sim", dry_run=True, skip_email=False)
+
+    assert dry_result.summary_payload["lead_count"] == 4
+    assert dry_result.summary_payload["external_count"] == 1
+    assert dry_result.counts["planned_external_rows_imported"] == 1
+    assert dry_result.counts["planned_external_leads_converted"] == 1
+    assert dry_result.counts["planned_td_leads_converted"] == 1
+    assert dry_result.counts["planned_retention_leads_created"] == 1
+    assert dry_result.counts["planned_workbook_rows_selected"] == 4
+    assert dry_result.counts["planned_workbooks_to_generate"] == 1
+    assert not output_dir.exists()
+    assert not archive_dir.exists()
+    assert sent_payloads == []
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_history)) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_external_leads)) == 0
+
+    live_result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="live-sim", dry_run=False, skip_email=False)
+
+    assert live_result.counts["external_raw_rows_inserted"] == 1
+    assert live_result.counts["external_leads_created"] == 1
+    assert live_result.counts["td_leads_created"] == 1
+    assert live_result.counts["retention_leads_created"] == 1
+    assert live_result.counts["workbook_rows_selected"] == 4
+    assert Path(live_result.generated_files[0]).exists()
+    assert sorted(path.name for path in archive_dir.iterdir()) == ["external.csv", "returned.xlsx"]
+    assert sent_payloads == ["live-sim"]
+
+    async with Session() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_leads)) == 4
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_customer_followup_history)) == 1
+        assert await session.scalar(sa.select(sa.func.count()).select_from(trx_external_leads)) == 1
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -684,6 +942,11 @@ async def test_pipeline_rolls_back_workbook_external_td_and_retention_mutations_
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
     monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select_raises)
 
@@ -738,6 +1001,9 @@ async def test_pipeline_summary_payload_includes_external_td_and_retention_gener
     async def import_td(session, pipeline_run_id, **kwargs):
         return SimpleNamespace(rows_seen=1, leads_created=0, warnings=[RowWarning("td_store_unmapped", "TD lead store_code is not mapped", cost_center="BAD")])
 
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
     async def generate_retention(session, **kwargs):
         return SimpleNamespace(rows_seen=1, leads_created=0, leads_reused=0, rows_skipped=1, warnings=["invalid_mobile_identity"])
 
@@ -759,6 +1025,7 @@ async def test_pipeline_summary_payload_includes_external_td_and_retention_gener
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline._import_external_lead_file", import_external)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
     monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate)
@@ -819,6 +1086,9 @@ async def test_pipeline_commit_failure_prevents_success_email_dispatch(monkeypat
     async def generate_retention(*args, **kwargs):
         return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
 
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
     async def select(*args, **kwargs):
         return []
 
@@ -839,6 +1109,7 @@ async def test_pipeline_commit_failure_prevents_success_email_dispatch(monkeypat
     monkeypatch.setattr(pipeline, "detect_recoveries", detect)
     monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr(pipeline, "_import_td_leads", import_td)
+    monkeypatch.setattr(pipeline, "convert_capped_external_leads_for_store", no_external_conversion)
     monkeypatch.setattr(pipeline, "allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr(pipeline, "select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr(pipeline, "generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
@@ -883,6 +1154,9 @@ async def test_pipeline_committed_run_reports_success_when_owner_email_sent(monk
     async def generate_retention(*args, **kwargs):
         return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
 
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
     async def select(*args, **kwargs):
         return []
 
@@ -896,6 +1170,7 @@ async def test_pipeline_committed_run_reports_success_when_owner_email_sent(monk
     monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
     monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
@@ -981,6 +1256,9 @@ async def test_pipeline_email_failure_after_commit_is_hard_failure_and_preserves
     async def generate_retention(session, **kwargs):
         return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
 
+    async def no_external_conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
     async def select(session, **kwargs):
         return []
 
@@ -995,6 +1273,7 @@ async def test_pipeline_email_failure_after_commit_is_hard_failure_and_preserves
     monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", detect)
     monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
     monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", import_td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", no_external_conversion)
     monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", generate_retention)
     monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
     monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", lambda **kwargs: SimpleNamespace(outputs=[]))
