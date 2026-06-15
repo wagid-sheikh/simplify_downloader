@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone, timedelta
-from decimal import Decimal
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.customer_retention.analytics import RunTiming, UNSPECIFIED_HANDLED_BY, _warning_summary, build_management_summary_payload
 from app.customer_retention.db_tables import customer_followup_cap_config, metadata, trx_customer_followup_history, trx_customer_followup_leads, trx_customer_suppression, trx_external_leads
-from app.customer_retention.workload import WorkloadFreezeResult
 from app.customer_retention.workbook_ingestor import FOLLOWUP_SHEET
-from app.customer_retention.workbook_selection import StoreWorkbookSelectionResult, WorkbookLeadRow
-from app.customer_retention.constants import CAP_WORK_SECTION_PENDING_CARRY_FORWARD, LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
+from app.customer_retention.constants import LEAD_SOURCE_RETENTION, LEAD_SOURCE_TD, LEAD_SOURCE_EXTERNAL, SUPPRESSION_STATE_PENDING_APPROVAL
 from app.customer_retention.notifications import send_owner_summary
 from app.customer_retention.pipeline import CustomerRetentionNotificationError, run_customer_retention_pipeline
 
@@ -1100,7 +1097,7 @@ async def test_pipeline_commit_failure_prevents_success_email_dispatch(monkeypat
         calls.append("send_email")
         raise AssertionError("email must not be sent when commit fails")
 
-    monkeypatch.setattr(pipeline, "config", SimpleNamespace(database_url="sqlite+aiosqlite:///unused.db", customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr(pipeline, "config", SimpleNamespace(database_url=f"sqlite+aiosqlite:///{tmp_path / 'unused.db'}", customer_followup_output_dir=str(tmp_path / "outputs"), customer_followup_backlog_warning_threshold=7))
     monkeypatch.setattr(pipeline, "session_scope", fake_session_scope)
     monkeypatch.setattr(pipeline, "get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=tmp_path / "archive"))
     monkeypatch.setattr(pipeline, "discover_returned_workbooks", lambda logger=None: [])
@@ -1456,4 +1453,132 @@ async def test_pipeline_skip_email_and_no_recipients_do_not_hard_fail(monkeypatc
     no_recipient_result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="no-recipients-ok", dry_run=False, skip_email=False)
     assert no_recipient_result.status == "success"
     assert no_recipient_result.email_status["reason"] == "no_recipients"
+    await engine.dispose()
+
+async def _create_pipeline_run_summaries_table(conn) -> None:
+    await conn.execute(sa.text("""
+        CREATE TABLE pipeline_run_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_name TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE,
+            run_env TEXT NOT NULL,
+            started_at DATETIME NOT NULL,
+            finished_at DATETIME NOT NULL,
+            total_time_taken TEXT NOT NULL,
+            report_date DATE,
+            overall_status TEXT NOT NULL,
+            summary_text TEXT NOT NULL,
+            phases_json JSON,
+            metrics_json JSON,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+
+
+async def _fetch_customer_retention_run_summary(engine, run_id: str):
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await session.execute(sa.text("SELECT * FROM pipeline_run_summaries WHERE run_id = :run_id"), {"run_id": run_id})
+        return result.mappings().one()
+
+
+@pytest.mark.asyncio
+async def test_customer_retention_run_summary_success_is_created_and_closed(monkeypatch, tmp_path: Path):
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path,
+        SimpleNamespace(planned=1, sent=1, skipped=False, reason=None, error=None),
+    )
+    async with engine.begin() as conn:
+        await _create_pipeline_run_summaries_table(conn)
+
+    from app.dashboard_downloader.run_summary import fetch_summary_for_run
+    from app.customer_retention import pipeline
+
+    result = await pipeline.run_customer_retention_pipeline(
+        run_date=date(2026, 6, 13), run_id="summary-success", env="test", dry_run=False, skip_email=False
+    )
+
+    row = await _fetch_customer_retention_run_summary(engine, "summary-success")
+    diagnostics_row = await fetch_summary_for_run(str(engine.url), "summary-success")
+    assert result.status == "success"
+    assert row["pipeline_name"] == "customer_retention_pipeline"
+    assert row["overall_status"] == "success"
+    assert row["run_env"] == "test"
+    assert "Customer retention run summary-success success" in row["summary_text"]
+    assert diagnostics_row is not None
+    assert diagnostics_row["run_id"] == "summary-success"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_customer_retention_run_summary_warning_status_is_persisted(monkeypatch, tmp_path: Path):
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path,
+        SimpleNamespace(planned=0, sent=0, skipped=True, reason="skip_email", error=None),
+    )
+    async with engine.begin() as conn:
+        await _create_pipeline_run_summaries_table(conn)
+
+    async def retention_warning(*args, **kwargs):
+        return SimpleNamespace(rows_seen=1, leads_created=0, leads_reused=0, rows_skipped=1, warnings=["backlog_threshold_exceeded"])
+
+    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", retention_warning)
+
+    result = await run_customer_retention_pipeline(
+        run_date=date(2026, 6, 13), run_id="summary-warning", env="test", dry_run=False, skip_email=True
+    )
+
+    row = await _fetch_customer_retention_run_summary(engine, "summary-warning")
+    assert result.status == "success_with_warnings"
+    assert row["overall_status"] == "success_with_warnings"
+    assert "warnings=1" in row["summary_text"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_customer_retention_run_summary_failure_status_is_persisted_on_exception(monkeypatch, tmp_path: Path):
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path,
+        SimpleNamespace(planned=0, sent=0, skipped=True, reason="skip_email", error=None),
+    )
+    async with engine.begin() as conn:
+        await _create_pipeline_run_summaries_table(conn)
+
+    async def select_raises(*args, **kwargs):
+        raise RuntimeError("selection exploded")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select_raises)
+
+    with pytest.raises(RuntimeError, match="selection exploded"):
+        await run_customer_retention_pipeline(
+            run_date=date(2026, 6, 13), run_id="summary-failure", env="test", dry_run=False, skip_email=True
+        )
+
+    row = await _fetch_customer_retention_run_summary(engine, "summary-failure")
+    assert row["overall_status"] == "failed"
+    assert "selection exploded" in row["summary_text"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_customer_retention_run_summary_email_failure_after_commit_is_persisted(monkeypatch, tmp_path: Path):
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path,
+        SimpleNamespace(planned=1, sent=0, skipped=False, reason="email_send_failed", error="SMTP refused recipients"),
+    )
+    async with engine.begin() as conn:
+        await _create_pipeline_run_summaries_table(conn)
+
+    with pytest.raises(CustomerRetentionNotificationError):
+        await run_customer_retention_pipeline(
+            run_date=date(2026, 6, 13), run_id="summary-email-failure", env="test", dry_run=False, skip_email=False
+        )
+
+    row = await _fetch_customer_retention_run_summary(engine, "summary-email-failure")
+    assert row["overall_status"] == "failed"
+    assert "SMTP refused recipients" in row["summary_text"]
     await engine.dispose()

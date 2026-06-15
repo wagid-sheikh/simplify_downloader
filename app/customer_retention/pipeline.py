@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from app.common.db import session_scope
+from app.dashboard_downloader.run_summary import insert_run_summary, update_run_summary
 from app.config import config
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 
@@ -23,6 +24,97 @@ from .types import RowWarning
 from .workbook_generator import WorkbookGenerationResult, generate_workbooks
 from .workbook_ingestor import _ingest_returned_workbook
 from .workbook_selection import load_active_retention_stores, select_workbook_leads_for_active_stores
+
+
+PIPELINE_CODE = "customer_retention_pipeline"
+
+
+def _format_duration(seconds: int) -> str:
+    seconds = max(0, seconds)
+    return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+
+
+def _safe_config_attr(name: str, default: str | None = None) -> str | None:
+    return str(getattr(config, name, default) or default) if getattr(config, name, default) is not None else None
+
+
+def _build_run_summary_record(
+    *,
+    run_id: str,
+    run_date: date,
+    run_env: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    execution_mode: str,
+    environment: str | None,
+    counts: Mapping[str, int] | None = None,
+    warnings: list[str] | None = None,
+    generated_files: list[str] | None = None,
+    archived_files: list[str] | None = None,
+    email_status: Mapping[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    duration_seconds = int((finished_at - started_at).total_seconds())
+    warning_list = list(warnings or [])
+    metrics = {
+        "run_id": run_id,
+        "pipeline_code": PIPELINE_CODE,
+        "run_date": run_date.isoformat(),
+        "execution_mode": execution_mode,
+        "environment": environment or run_env,
+        "duration_seconds": max(0, duration_seconds),
+        "counts": dict(counts or {}),
+        "warnings": warning_list,
+        "generated_workbook_paths": list(generated_files or []),
+        "archived_file_paths": list(archived_files or []),
+        "email_status": dict(email_status or {}),
+    }
+    if error:
+        metrics["error"] = error
+    summary_parts = [
+        f"Customer retention run {run_id} {status}.",
+        f"mode={execution_mode}",
+        f"run_date={run_date.isoformat()}",
+        f"warnings={len(warning_list)}",
+    ]
+    if error:
+        summary_parts.append(f"error={error}")
+    return {
+        "pipeline_name": PIPELINE_CODE,
+        "run_id": run_id,
+        "run_env": run_env,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "total_time_taken": _format_duration(duration_seconds),
+        "report_date": run_date,
+        "overall_status": status,
+        "summary_text": " | ".join(summary_parts),
+        "phases_json": {
+            "run": {"status": status, "started_at": started_at, "finished_at": finished_at},
+            "email": dict(email_status or {}),
+        },
+        "metrics_json": metrics,
+    }
+
+
+async def _persist_run_summary_record(
+    *, database_url: str, run_id: str, record: Mapping[str, Any], update: bool, logger: JsonLogger
+) -> None:
+    try:
+        if update:
+            await update_run_summary(database_url, run_id, record)
+        else:
+            await insert_run_summary(database_url, record)
+    except Exception as exc:  # Run-summary logging must not mask pipeline outcome.
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="warning",
+            message="customer retention run summary persistence skipped",
+            run_id=run_id,
+            error=str(exc),
+        )
 
 
 @dataclass(frozen=True)
@@ -80,6 +172,9 @@ async def run_customer_retention_pipeline(
     log = logger or get_logger(run_id=actual_run_id)
     backlog_threshold = getattr(config, "customer_followup_backlog_warning_threshold", 20)
     output_root = Path(config.customer_followup_output_dir).expanduser()
+    execution_mode = "dry_run" if dry_run else "manual"
+    run_env = env or _safe_config_attr("run_env", None) or _safe_config_attr("environment", None) or "unknown"
+    environment = env or _safe_config_attr("environment", run_env)
 
     counts: dict[str, int] = {}
     warnings: list[str] = []
@@ -91,6 +186,23 @@ async def run_customer_retention_pipeline(
     selections = []
     processed_files: list[tuple[Path, dict[str, Any]]] = []
     archived_files: list[str] = []
+
+    await _persist_run_summary_record(
+        database_url=db_url,
+        run_id=actual_run_id,
+        update=False,
+        logger=log,
+        record=_build_run_summary_record(
+            run_id=actual_run_id,
+            run_date=actual_run_date,
+            run_env=run_env,
+            started_at=started,
+            finished_at=started,
+            status="running",
+            execution_mode=execution_mode,
+            environment=environment,
+        ),
+    )
 
     def count(name: str, value: int) -> None:
         counts[name] = counts.get(name, 0) + int(value)
@@ -275,15 +387,39 @@ async def run_customer_retention_pipeline(
                         "generated_files": generated_files,
                         "archived_files": archived_files,
                     }
+                    failure_warnings = [*warnings, failure_code]
                     failure_result = CustomerRetentionRunResult(
                         actual_run_id,
                         actual_run_date,
                         "failed",
                         counts,
-                        [*warnings, failure_code],
+                        failure_warnings,
                         generated_files,
                         email_status,
                         summary_payload,
+                    )
+                    failed_at = datetime.now(timezone.utc)
+                    await _persist_run_summary_record(
+                        database_url=db_url,
+                        run_id=actual_run_id,
+                        update=True,
+                        logger=log,
+                        record=_build_run_summary_record(
+                            run_id=actual_run_id,
+                            run_date=actual_run_date,
+                            run_env=run_env,
+                            started_at=started,
+                            finished_at=failed_at,
+                            status="failed",
+                            execution_mode=execution_mode,
+                            environment=environment,
+                            counts=counts,
+                            warnings=failure_warnings,
+                            generated_files=generated_files,
+                            archived_files=archived_files,
+                            email_status=email_status,
+                            error=str(email_error),
+                        ),
                     )
                     raise CustomerRetentionNotificationError(
                         "customer retention owner summary email delivery failed after commit",
@@ -294,8 +430,54 @@ async def run_customer_retention_pipeline(
                 await session.rollback()
                 email_status = notification.__dict__
         status = "success_with_warnings" if warnings else "success"
+        finished = datetime.now(timezone.utc)
+        await _persist_run_summary_record(
+            database_url=db_url,
+            run_id=actual_run_id,
+            update=True,
+            logger=log,
+            record=_build_run_summary_record(
+                run_id=actual_run_id,
+                run_date=actual_run_date,
+                run_env=run_env,
+                started_at=started,
+                finished_at=finished,
+                status=status,
+                execution_mode=execution_mode,
+                environment=environment,
+                counts=counts,
+                warnings=warnings,
+                generated_files=generated_files,
+                archived_files=archived_files,
+                email_status=email_status,
+            ),
+        )
         log_event(logger=log, phase="email", status="ok", message="customer_retention_pipeline_completed", run_id=actual_run_id, extras={"status": status, "counts": counts})
         return CustomerRetentionRunResult(actual_run_id, actual_run_date, status, counts, warnings, generated_files, email_status, summary_payload)
     except Exception as exc:
+        if not isinstance(exc, CustomerRetentionNotificationError):
+            failed_at = datetime.now(timezone.utc)
+            await _persist_run_summary_record(
+                database_url=db_url,
+                run_id=actual_run_id,
+                update=True,
+                logger=log,
+                record=_build_run_summary_record(
+                    run_id=actual_run_id,
+                    run_date=actual_run_date,
+                    run_env=run_env,
+                    started_at=started,
+                    finished_at=failed_at,
+                    status="failed",
+                    execution_mode=execution_mode,
+                    environment=environment,
+                    counts=counts,
+                    warnings=warnings,
+                    generated_files=generated_files,
+                    archived_files=archived_files,
+                    email_status=getattr(locals().get("notification", None), "__dict__", {}),
+                    error=str(exc),
+                ),
+            )
         log_event(logger=log, phase="email", status="error", message="customer_retention_pipeline_failed", run_id=actual_run_id, error=str(exc))
         raise
