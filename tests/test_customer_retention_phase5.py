@@ -1307,3 +1307,153 @@ async def test_pipeline_email_failure_after_commit_is_hard_failure_and_preserves
     assert history_count == 1
     assert suppression_count == 1
     await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_notification_unsent_send_result_preserves_failure_reason(monkeypatch, tmp_path: Path):
+    failure = SimpleNamespace(exception_summary="SMTP refused recipients")
+
+    def fake_send_email(config, plan):
+        return SimpleNamespace(sent=False, failure=failure)
+
+    monkeypatch.setattr("app.customer_retention.notifications._send_email", fake_send_email)
+    monkeypatch.setattr("app.customer_retention.notifications._load_smtp_config", lambda: SimpleNamespace())
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path/'unsent_notification.db'}")
+    async with engine.begin() as conn:
+        await _create_notification_tables(conn)
+        await conn.execute(sa.text("INSERT INTO pipelines VALUES (1, 'customer_retention_pipeline', 'x')"))
+        await conn.execute(sa.text("INSERT INTO notification_profiles VALUES (1, 1, 'owner_summary', 'x', NULL, 'run', 'none', 1)"))
+        await conn.execute(sa.text("INSERT INTO email_templates VALUES (1, 1, 'summary', 'Subject {{ run_summary.pipeline_run_id }}', 'Body', 1)"))
+        await conn.execute(sa.text("INSERT INTO notification_recipients VALUES (1, 1, NULL, NULL, 'owner@example.com', 'Owner', 'to', 1, '2026-06-13 00:00:00')"))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await send_owner_summary(session, payload=_notification_payload("unsent"), env=None, skip_email=False)
+
+    assert result.planned == 1
+    assert result.sent == 0
+    assert result.skipped is False
+    assert result.reason == "email_send_failed"
+    assert result.error == "SMTP refused recipients"
+    await engine.dispose()
+
+
+async def _run_minimal_pipeline_for_email(monkeypatch, tmp_path: Path, send_result):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    db = tmp_path / "minimal_email.db"
+    db_url = f"sqlite+aiosqlite:///{db}"
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT PRIMARY KEY, customer_retention_pipeline BOOLEAN NOT NULL DEFAULT 1)"))
+        await conn.execute(sa.text("INSERT INTO store_master VALUES ('S1', 1)"))
+
+    archive_dir = tmp_path / "archive"
+    output_dir = tmp_path / "outputs"
+    returned_file = tmp_path / "returned.xlsx"
+    returned_file.write_text("returned", encoding="utf-8")
+
+    monkeypatch.setattr("app.customer_retention.pipeline.config", SimpleNamespace(database_url=db_url, customer_followup_output_dir=str(output_dir), customer_followup_backlog_warning_threshold=7))
+    monkeypatch.setattr("app.customer_retention.pipeline.get_customer_followup_paths", lambda: SimpleNamespace(archive_dir=archive_dir))
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_returned_workbooks", lambda logger=None: [SimpleNamespace(path=returned_file)])
+    monkeypatch.setattr("app.customer_retention.pipeline.discover_external_lead_files", lambda logger=None: [])
+    async def load_stores(*args, **kwargs):
+        return ["S1"]
+
+    monkeypatch.setattr("app.customer_retention.pipeline.load_active_retention_stores", load_stores)
+
+    async def zero(*args, **kwargs):
+        return SimpleNamespace(leads_recovered=0, leads_closed=0)
+
+    async def snapshot(*args, **kwargs):
+        return SimpleNamespace(rows=[], rows_invalid_mobile=0)
+
+    async def ingest(*args, **kwargs):
+        return SimpleNamespace(rows_seen=1, history_inserted=0, warnings=[])
+
+    async def td(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, warnings=[])
+
+    async def conversion(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_existing=0, rows_skipped=0, warnings=[])
+
+    async def retention(*args, **kwargs):
+        return SimpleNamespace(rows_seen=0, leads_created=0, leads_reused=0, rows_skipped=0, warnings=[])
+
+    async def select(*args, **kwargs):
+        return []
+
+    def generate_workbooks(**kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "S1.xlsx"
+        path.write_text("workbook", encoding="utf-8")
+        return SimpleNamespace(outputs=[SimpleNamespace(output_path=path)])
+
+    def archive(path, **kwargs):
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived = archive_dir / Path(path).name
+        archived.write_text("archived", encoding="utf-8")
+        return archived
+
+    async def summary(*args, **kwargs):
+        return {"run_summary": {"pipeline_run_id": kwargs["run_id"]}, "diagnostic": "payload"}
+
+    async def send(*args, **kwargs):
+        return send_result
+
+    monkeypatch.setattr("app.customer_retention.pipeline._ingest_returned_workbook", ingest)
+    monkeypatch.setattr("app.customer_retention.pipeline.detect_recoveries", zero)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_customer_retention_snapshot", snapshot)
+    monkeypatch.setattr("app.customer_retention.pipeline._import_td_leads", td)
+    monkeypatch.setattr("app.customer_retention.pipeline.convert_capped_external_leads_for_store", conversion)
+    monkeypatch.setattr("app.customer_retention.pipeline.allocate_and_generate_retention_leads", retention)
+    monkeypatch.setattr("app.customer_retention.pipeline.select_workbook_leads_for_active_stores", select)
+    monkeypatch.setattr("app.customer_retention.pipeline.generate_workbooks", generate_workbooks)
+    monkeypatch.setattr("app.customer_retention.pipeline.archive_processed_file", archive)
+    monkeypatch.setattr("app.customer_retention.pipeline.build_management_summary_payload", summary)
+    monkeypatch.setattr("app.customer_retention.pipeline.send_owner_summary", send)
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_pipeline_unsent_owner_summary_is_hard_failure_with_diagnostics(monkeypatch, tmp_path: Path):
+    send_result = SimpleNamespace(planned=1, sent=0, skipped=False, reason="email_send_failed", error="SMTP refused recipients")
+    engine = await _run_minimal_pipeline_for_email(monkeypatch, tmp_path, send_result)
+
+    with pytest.raises(CustomerRetentionNotificationError) as exc_info:
+        await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="unsent-pipeline", dry_run=False, skip_email=False)
+
+    result = exc_info.value.run_result
+    assert result.run_id == "unsent-pipeline"
+    assert result.status == "failed"
+    assert result.generated_files and Path(result.generated_files[0]).exists()
+    assert result.email_status["generated_files"] == result.generated_files
+    assert len(result.email_status["archived_files"]) == 1
+    assert Path(result.email_status["archived_files"][0]).exists()
+    assert result.summary_payload == {"run_summary": {"pipeline_run_id": "unsent-pipeline"}, "diagnostic": "payload"}
+    assert result.email_status["reason"] == "email_send_failed"
+    assert result.email_status["error"] == "SMTP refused recipients"
+    assert result.email_status["committed"] is True
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_skip_email_and_no_recipients_do_not_hard_fail(monkeypatch, tmp_path: Path):
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path,
+        SimpleNamespace(planned=0, sent=0, skipped=True, reason="skip_email", error=None),
+    )
+    skip_result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="skip-ok", dry_run=False, skip_email=True)
+    assert skip_result.status == "success"
+    assert skip_result.email_status["reason"] == "skip_email"
+    await engine.dispose()
+
+    engine = await _run_minimal_pipeline_for_email(
+        monkeypatch,
+        tmp_path / "no_recipients_case",
+        SimpleNamespace(planned=0, sent=0, skipped=True, reason="no_recipients", error=None),
+    )
+    no_recipient_result = await run_customer_retention_pipeline(run_date=date(2026, 6, 13), run_id="no-recipients-ok", dry_run=False, skip_email=False)
+    assert no_recipient_result.status == "success"
+    assert no_recipient_result.email_status["reason"] == "no_recipients"
+    await engine.dispose()

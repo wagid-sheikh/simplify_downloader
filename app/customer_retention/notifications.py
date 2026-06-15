@@ -65,6 +65,7 @@ class NotificationResult:
     reason: str | None = None
     subject: str | None = None
     body: str | None = None
+    error: str | None = None
 
 
 async def send_owner_summary(
@@ -121,14 +122,25 @@ async def send_owner_summary(
     )
     result = _send_email(_load_smtp_config(), plan)
     sent = 1 if getattr(result, "sent", False) else 0
+    failure = getattr(result, "failure", None)
+    error = getattr(failure, "exception_summary", None) if failure is not None else None
+    reason = None if sent else "email_send_failed"
     _log(
         logger,
         "ok" if sent else "warning",
         "customer_retention_owner_summary_email_dispatched",
         emails_sent=sent,
+        reason=reason,
+        error=error,
     )
     return NotificationResult(
-        planned=1, sent=sent, skipped=False, subject=subject, body=body
+        planned=1,
+        sent=sent,
+        skipped=False,
+        reason=reason,
+        subject=subject,
+        body=body,
+        error=error,
     )
 
 
