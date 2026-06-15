@@ -63,13 +63,12 @@ async def run_customer_retention_pipeline(
 ) -> CustomerRetentionRunResult:
     """Run customer retention in the SRS Section 9 orchestration order.
 
-    Dry-run mode is intentionally read-only: it may discover input files, build
-    the current snapshot, select would-be workbook rows, and build the summary
-    payload, but it must not ingest/import rows, detect and persist recoveries,
-    generate retention leads, write XLSX workbooks, archive inputs, or send
-    email. Dry-run counts are therefore reported as ``planned_*`` values for
-    would-be side effects, while mutation counters such as ``*_created`` or
-    ``*_inserted`` are only populated by real runs.
+    Dry-run mode executes the same internal database pipeline as live mode inside
+    the open ``session_scope`` transaction, then rolls that transaction back. It
+    suppresses only external side effects: workbook writing, input archiving,
+    email delivery, and commit. Dry-run mutation counters are reported as
+    ``planned_*`` values so operators can compare the simulated work with a live
+    run without implying durable writes.
     """
     started = datetime.now(timezone.utc)
 
@@ -95,6 +94,9 @@ async def run_customer_retention_pipeline(
 
     def count(name: str, value: int) -> None:
         counts[name] = counts.get(name, 0) + int(value)
+
+    def mutation_count(live_name: str, planned_name: str, value: int) -> None:
+        count(planned_name if dry_run else live_name, value)
 
     def add_warnings(source_warnings: Any) -> None:
         """Preserve structured warnings and wrap code-only warnings.
@@ -129,33 +131,22 @@ async def run_customer_retention_pipeline(
             count("returned_files_discovered", len(returned_files))
             if dry_run:
                 count("planned_returned_workbooks_to_ingest", len(returned_files))
-            if not dry_run:
-                for discovered in returned_files:
-                    result = await _ingest_returned_workbook(session, discovered.path, actual_run_id, run_date=actual_run_date, logger=log)
-                    ingestion_results.append(result)
-                    count("workbook_rows_seen", result.rows_seen)
-                    count("workbook_history_inserted", result.history_inserted)
-                    add_warnings(result.warnings)
-                    processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
-            else:
-                log_event(
-                    logger=log,
-                    phase="ingest",
-                    status="info",
-                    message="customer_retention_dry_run_skips_mutating_ingest",
-                    run_id=actual_run_id,
-                    extras={"planned_returned_workbooks_to_ingest": len(returned_files)},
-                )
+            for discovered in returned_files:
+                result = await _ingest_returned_workbook(session, discovered.path, actual_run_id, run_date=actual_run_date, logger=log)
+                ingestion_results.append(result)
+                count("workbook_rows_seen", result.rows_seen)
+                mutation_count("workbook_history_inserted", "planned_workbook_history_inserted", result.history_inserted)
+                add_warnings(result.warnings)
+                processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
 
             # 4. Returned workbook ingestion updates lifecycle/history/suppression
             # through the existing ingestion/lifecycle functions above.
 
             # 5. Detect recoveries.
-            if not dry_run:
-                recovery = await detect_recoveries(session, as_of_date=actual_run_date, pipeline_run_id=actual_run_id)
-                count("leads_recovered", recovery.leads_recovered)
-                count("leads_closed_by_recovery", recovery.leads_closed)
-                await session.flush()
+            recovery = await detect_recoveries(session, as_of_date=actual_run_date, pipeline_run_id=actual_run_id)
+            mutation_count("leads_recovered", "planned_leads_recovered", recovery.leads_recovered)
+            mutation_count("leads_closed_by_recovery", "planned_leads_closed_by_recovery", recovery.leads_closed)
+            await session.flush()
 
             # 6. Build retention snapshot.
             snapshot = await build_customer_retention_snapshot(session, snapshot_date=actual_run_date)
@@ -169,43 +160,42 @@ async def run_customer_retention_pipeline(
                 count("planned_external_files_to_import", len(external_files))
                 count("planned_td_imports", 1)
                 count("planned_retention_snapshot_generations", 1)
-            if not dry_run:
-                for discovered in external_files:
-                    result = await _import_external_lead_file(session, discovered.path, actual_run_id, logger=log)
-                    count("external_rows_seen", result.rows_seen)
-                    count("external_raw_rows_inserted", result.raw_rows_inserted)
-                    add_warnings(result.warnings)
-                    processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
+            for discovered in external_files:
+                result = await _import_external_lead_file(session, discovered.path, actual_run_id, logger=log)
+                count("external_rows_seen", result.rows_seen)
+                mutation_count("external_raw_rows_inserted", "planned_external_rows_imported", getattr(result, "raw_rows_inserted", getattr(result, "leads_created", 0)))
+                add_warnings(result.warnings)
+                processed_files.append((discovered.path, {"rows_seen": result.rows_seen}))
 
-                # 8. Pull/convert TD leads.
-                td_result = await _import_td_leads(session, actual_run_id, logger=log)
-                count("td_rows_seen", td_result.rows_seen)
-                count("td_leads_created", td_result.leads_created)
-                add_warnings(td_result.warnings)
+            # 8. Pull/convert TD leads.
+            td_result = await _import_td_leads(session, actual_run_id, logger=log)
+            count("td_rows_seen", td_result.rows_seen)
+            mutation_count("td_leads_created", "planned_td_leads_converted", td_result.leads_created)
+            add_warnings(td_result.warnings)
 
-                # 9. Convert external raw rows through the active EXTERNAL/EXTERNAL_LEAD cap before workbook selection.
-                for cost_center in active_stores:
-                    external_conversion = await convert_capped_external_leads_for_store(
-                        session,
-                        cost_center=cost_center,
-                        run_date=actual_run_date,
-                        pipeline_run_id=actual_run_id,
-                        logger=log,
-                    )
-                    count("external_conversion_rows_seen", external_conversion.rows_seen)
-                    count("external_leads_created", external_conversion.leads_created)
-                    count("external_leads_existing", external_conversion.leads_existing)
-                    count("external_conversion_rows_skipped", external_conversion.rows_skipped)
-                    add_warnings(external_conversion.warnings)
+            # 9. Convert external raw rows through the active EXTERNAL/EXTERNAL_LEAD cap before workbook selection.
+            for cost_center in active_stores:
+                external_conversion = await convert_capped_external_leads_for_store(
+                    session,
+                    cost_center=cost_center,
+                    run_date=actual_run_date,
+                    pipeline_run_id=actual_run_id,
+                    logger=log,
+                )
+                count("external_conversion_rows_seen", external_conversion.rows_seen)
+                mutation_count("external_leads_created", "planned_external_leads_converted", external_conversion.leads_created)
+                count("external_leads_existing", external_conversion.leads_existing)
+                count("external_conversion_rows_skipped", external_conversion.rows_skipped)
+                add_warnings(external_conversion.warnings)
 
-                # 10. Generate fresh retention leads.
-                retention_generation = await allocate_and_generate_retention_leads(session, snapshot=snapshot, active_stores=active_stores, run_date=actual_run_date, backlog_threshold=backlog_threshold, pipeline_run_id=actual_run_id, logger=log)
-                count("retention_rows_seen", retention_generation.rows_seen)
-                count("retention_leads_created", retention_generation.leads_created)
-                count("retention_leads_reused", retention_generation.leads_reused)
-                count("retention_rows_skipped", retention_generation.rows_skipped)
-                add_warnings(retention_generation.warnings)
-                await session.flush()
+            # 10. Generate fresh retention leads.
+            retention_generation = await allocate_and_generate_retention_leads(session, snapshot=snapshot, active_stores=active_stores, run_date=actual_run_date, backlog_threshold=backlog_threshold, pipeline_run_id=actual_run_id, logger=log)
+            count("retention_rows_seen", retention_generation.rows_seen)
+            mutation_count("retention_leads_created", "planned_retention_leads_created", retention_generation.leads_created)
+            count("retention_leads_reused", retention_generation.leads_reused)
+            count("retention_rows_skipped", retention_generation.rows_skipped)
+            add_warnings(retention_generation.warnings)
+            await session.flush()
 
             # 11. Select due follow-ups, carry-forward, TD, external, and fresh retention rows.
             selections = await select_workbook_leads_for_active_stores(session, run_date=actual_run_date, backlog_threshold=backlog_threshold, logger=log, run_id=actual_run_id, phase="workbook", pipeline="customer_retention_pipeline")
