@@ -79,6 +79,9 @@ async def test_pipeline_passes_configured_backlog_threshold(monkeypatch) -> None
     async def fake_generate(*_args, **_kwargs):
         return type("Generation", (), {"rows_seen": 0, "leads_created": 0, "leads_reused": 0, "rows_skipped": 0, "warnings": []})()
 
+    async def fake_convert_external(*_args, **_kwargs):
+        return type("ExternalConversion", (), {"rows_seen": 0, "leads_created": 0, "leads_existing": 0, "rows_skipped": 0, "warnings": []})()
+
     async def fake_load_active_retention_stores(*_args, **_kwargs):
         return ("A100",)
 
@@ -102,6 +105,7 @@ async def test_pipeline_passes_configured_backlog_threshold(monkeypatch) -> None
     monkeypatch.setattr(pipeline, "detect_recoveries", fake_detect_recoveries)
     monkeypatch.setattr(pipeline, "build_customer_retention_snapshot", fake_snapshot)
     monkeypatch.setattr(pipeline, "allocate_and_generate_retention_leads", fake_generate)
+    monkeypatch.setattr(pipeline, "convert_capped_external_leads_for_store", fake_convert_external)
     monkeypatch.setattr(pipeline, "select_workbook_leads_for_active_stores", fake_select)
     monkeypatch.setattr(pipeline, "generate_workbooks", lambda **kwargs: type("WorkbookResult", (), {"outputs": []})())
     monkeypatch.setattr(pipeline, "build_management_summary_payload", fake_summary)
