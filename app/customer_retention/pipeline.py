@@ -242,18 +242,35 @@ async def run_customer_retention_pipeline(
                     notification = await send_owner_summary(session, payload=summary_payload, env=env, skip_email=skip_email, logger=log)
                 except Exception as exc:
                     failure_code = "email_delivery_failed_after_commit"
-                    notification = NotificationResult(planned=1, sent=0, skipped=False, reason=failure_code)
+                    notification = NotificationResult(planned=1, sent=0, skipped=False, reason=failure_code, error=str(exc))
+                    email_status = notification.__dict__ | {"error": str(exc)}
+                else:
+                    email_status = notification.__dict__
+                    expected_send_failed = (
+                        not notification.skipped
+                        and notification.planned > 0
+                        and notification.sent < notification.planned
+                    )
+                    if not expected_send_failed:
+                        email_status = email_status | {"committed": True}
+                    else:
+                        failure_code = notification.reason or "email_delivery_failed_after_commit"
+
+                if not dry_run and not (notification.skipped or notification.sent >= notification.planned):
+                    failure_code = "email_delivery_failed_after_commit"
+                    email_error = email_status.get("error") or email_status.get("reason") or "owner summary email was not sent"
                     log_event(
                         logger=log,
                         phase="email",
                         status="error",
                         message="customer_retention_success_notification_failed_after_commit",
                         run_id=actual_run_id,
-                        error=str(exc),
-                        extras={"generated_files": generated_files, "archived_files": archived_files},
+                        error=str(email_error),
+                        extras={"generated_files": generated_files, "archived_files": archived_files, "email_status": email_status},
                     )
-                    email_status = notification.__dict__ | {
-                        "error": str(exc),
+                    email_status = email_status | {
+                        "reason": email_status.get("reason") or failure_code,
+                        "error": str(email_error),
                         "committed": True,
                         "generated_files": generated_files,
                         "archived_files": archived_files,
@@ -271,9 +288,7 @@ async def run_customer_retention_pipeline(
                     raise CustomerRetentionNotificationError(
                         "customer retention owner summary email delivery failed after commit",
                         run_result=failure_result,
-                    ) from exc
-                else:
-                    email_status = notification.__dict__ | {"committed": True}
+                    )
             else:
                 # Enforce dry-run read-only semantics at the transaction boundary.
                 await session.rollback()
