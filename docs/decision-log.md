@@ -16,10 +16,15 @@
 - **Context:** Operators need one report to support either sales-value target tracking or actual-collections target tracking without changing the visible Collections FTD/MTD/LMTD columns.
 - **Evidence:** `TARGET_COMPUTE_TYPE` is read from `system_config`; accepted values are case-insensitive. `sales` resolves to `SALES`, while `collection` and `collections` resolve to `COLLECTIONS`. Missing, blank, or invalid values resolve to `SALES`.
 - **Implications:**
-  - In `SALES` mode, the Daily Sales Target subsection remains titled `Target`, target values come from `cost_center_targets.sale_target`, and achieved values come from current-MTD `vw_orders.order_amount`.
-  - In `COLLECTIONS` mode, the Daily Sales Target subsection is titled `Target (actual collections)`, target values come from `cost_center_targets.collection_target`, and achieved values come from allocated `payment_collections.amount` for orders created in the report MTD window.
-  - For this target computation only, `payment_collections.payment_date` and `payment_collections.source_type` are ignored. This is intentionally different from APNF, Short Payment, and payment-proof reconciliation, which still use qualifying proof semantics where only currently supported proof source types qualify.
-  - Existing visible Collections FTD/MTD/LMTD columns are unchanged by this toggle.
+  - Exact Daily Sales Target subsection behavior:
+
+    | `TARGET_COMPUTE_TYPE` | Subsection header | `Target` value | `Achieved` value | `TTD` / `Delta` / `Reqd/Day` basis | Other visible columns |
+    | --- | --- | --- | --- | --- | --- |
+    | `SALES` | `Target` | `cost_center_targets.sale_target` | Current MTD `sum(vw_orders.order_amount)` | Sales achieved | No change to existing Collections FTD/MTD/LMTD columns. |
+    | `COLLECTIONS` | `Target (actual collections)` | `cost_center_targets.collection_target` | Allocated verified collections for orders created in the report MTD window | Collections achieved | Existing Collections FTD/MTD/LMTD columns are not changed by this toggle. |
+
+  - Child column headers stay unchanged in both modes: `Target`, `Achieved`, `TTD`, `Delta`, `Reqd/Day`.
+  - For the `COLLECTIONS` target computation only, `payment_collections.payment_date` and `payment_collections.source_type` are ignored. This is intentionally different from APNF, Short Payment, and payment-proof reconciliation, which still use qualifying proof semantics where only currently supported proof source types qualify.
   - The toggle affects only the Daily Sales report top summary table's Target subsection; email subjects, email bodies, and DB notification templates are unchanged.
   - `DailySalesReportData` carries the selected target mode and subsection title so the HTML template can render the correct Target header without changing notification text.
   - Do not reuse APNF/Short Payment source-type filtering for the collections-target achievement query; `source_type` remains audit/provenance data for that target computation, not an eligibility filter.
