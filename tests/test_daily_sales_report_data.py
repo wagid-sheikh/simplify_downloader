@@ -1286,13 +1286,17 @@ async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_coll
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "daily_sales_report_targets_update.db"
+@pytest.mark.parametrize("target_compute_type", ["SALES", "COLLECTIONS"])
+async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(
+    tmp_path, monkeypatch, target_compute_type
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_targets_update_{target_compute_type.lower()}.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type=target_compute_type))
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
@@ -1300,7 +1304,9 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
             sa.text(
                 """
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
-                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                VALUES
+                    ('CC-SALES-MET', 'Sales Met Cost Center', 'value', 1),
+                    ('CC-COLL-MET', 'Collection Met Cost Center', 'value', 1)
                 """
             )
         )
@@ -1309,17 +1315,21 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
                 """
                 INSERT INTO cost_center_targets (
                     month, year, cost_center, sale_target, collection_target
-                ) VALUES (1, 2026, 'CC-TD', 150, 90)
+                ) VALUES
+                    (1, 2026, 'CC-SALES-MET', 150, 90),
+                    (1, 2026, 'CC-COLL-MET', 100, 100)
                 """
             )
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders (cost_center, order_number, order_date, net_amount, source_system)
+                INSERT INTO orders (cost_center, order_number, order_date, net_amount, gross_amount, source_system)
                 VALUES
-                    ('CC-TD', 'ORD-1', '2026-01-05 10:00:00', 100, 'TumbleDry'),
-                    ('CC-TD', 'ORD-2', '2026-01-10 11:00:00', 60, 'TumbleDry')
+                    ('CC-SALES-MET', 'SALE-1', '2026-01-05 10:00:00', 100, 100, 'TumbleDry'),
+                    ('CC-SALES-MET', 'SALE-2', '2026-01-10 11:00:00', 60, 60, 'TumbleDry'),
+                    ('CC-COLL-MET', 'COLL-1', '2026-01-06 10:00:00', 70, 70, 'TumbleDry'),
+                    ('CC-COLL-MET', 'COLL-OLD', '2025-12-31 10:00:00', 500, 500, 'TumbleDry')
                 """
             )
         )
@@ -1327,30 +1337,54 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
             sa.text(
                 """
                 INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
-                VALUES ('CC-TD', '2026-01-12 12:00:00', 120, 0, 'ORD-1', 0)
+                VALUES
+                    ('CC-SALES-MET', '2026-01-12 12:00:00', 999, 0, 'SALE-1', 0),
+                    ('CC-COLL-MET', '2026-01-12 12:00:00', 5, 0, 'COLL-1', 0)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+                VALUES
+                    ('CC-SALES-MET', 'SALE-1', 80, 'google_sheet'),
+                    ('CC-COLL-MET', 'COLL-OLD/COLL-1', 620, 'google_sheet')
                 """
             )
         )
         await session.commit()
 
-    await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report_rows = {row.cost_center: row for row in report.rows}
 
     async with session_scope(database_url) as session:
         updated = await session.execute(
             sa.text(
                 """
-                SELECT sales_mtd, collection_mtd, sales_target_met, collection_target_met
+                SELECT cost_center, sales_mtd, collection_mtd, sales_target_met, collection_target_met
                 FROM cost_center_targets
-                WHERE month = 1 AND year = 2026 AND cost_center = 'CC-TD'
+                WHERE month = 1 AND year = 2026
+                ORDER BY cost_center
                 """
             )
         )
-        row = updated.mappings().one()
+        rows = {row["cost_center"]: row for row in updated.mappings()}
 
-    assert row["sales_mtd"] == 160
-    assert row["collection_mtd"] == 120
-    assert bool(row["sales_target_met"]) is True
-    assert bool(row["collection_target_met"]) is True
+    assert report.target_compute_type == target_compute_type
+    assert report_rows["CC-SALES-MET"].sales_mtd == Decimal("160")
+    assert report_rows["CC-SALES-MET"].collections_mtd == Decimal("999")
+    assert rows["CC-SALES-MET"]["sales_mtd"] == 160
+    assert rows["CC-SALES-MET"]["collection_mtd"] == 80
+    assert bool(rows["CC-SALES-MET"]["sales_target_met"]) is True
+    assert bool(rows["CC-SALES-MET"]["collection_target_met"]) is False
+
+    assert report_rows["CC-COLL-MET"].sales_mtd == Decimal("70")
+    assert report_rows["CC-COLL-MET"].collections_mtd == Decimal("5")
+    assert rows["CC-COLL-MET"]["sales_mtd"] == 70
+    assert rows["CC-COLL-MET"]["collection_mtd"] == 120
+    assert bool(rows["CC-COLL-MET"]["sales_target_met"]) is False
+    assert bool(rows["CC-COLL-MET"]["collection_target_met"]) is True
 
 
 @pytest.mark.asyncio

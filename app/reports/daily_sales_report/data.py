@@ -1380,17 +1380,13 @@ async def fetch_daily_sales_report(
             )
             for entry in report_day_orders_result.mappings()
         ]
-        target_achieved_by_cost_center = (
-            await _fetch_allocated_collections_for_current_mtd_orders(
-                session=session,
-                orders=orders,
-                sales=sales,
-                payment_collections=payment_collections,
-                start_datetime=ranges["start_month"],
-                end_datetime=ranges["next_day"],
-            )
-            if target_compute_type == "COLLECTIONS"
-            else {}
+        collection_target_achieved_by_cost_center = await _fetch_allocated_collections_for_current_mtd_orders(
+            session=session,
+            orders=orders,
+            sales=sales,
+            payment_collections=payment_collections,
+            start_datetime=ranges["start_month"],
+            end_datetime=ranges["next_day"],
         )
         target_updates: list[dict[str, object]] = []
         for entry in result.mappings():
@@ -1409,7 +1405,7 @@ async def fetch_daily_sales_report(
             collections_count_lmtd = int(entry["collections_count_lmtd"] or 0)
             if target_compute_type == "COLLECTIONS":
                 target = _decimal(entry["collection_target"])
-                achieved = target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
+                achieved = collection_target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
             else:
                 target = _decimal(entry["sale_target"])
                 achieved = sales_mtd
@@ -1450,8 +1446,9 @@ async def fetch_daily_sales_report(
                 _decimal(entry["collection_target"]) if entry["collection_target"] is not None else None
             )
             sales_target_met = None if sale_target is None else bool(sales_mtd >= sale_target)
+            collection_mtd = collection_target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
             collection_target_met = (
-                None if collection_target is None else bool(collections_mtd >= collection_target)
+                None if collection_target is None else bool(collection_mtd >= collection_target)
             )
             target_updates.append(
                 {
@@ -1459,7 +1456,7 @@ async def fetch_daily_sales_report(
                     "b_year": report_date.year,
                     "b_cost_center": str(entry["cost_center"]),
                     "sales_mtd": str(sales_mtd),
-                    "collection_mtd": str(collections_mtd),
+                    "collection_mtd": str(collection_mtd),
                     "sales_target_met": sales_target_met,
                     "collection_target_met": collection_target_met,
                 }
