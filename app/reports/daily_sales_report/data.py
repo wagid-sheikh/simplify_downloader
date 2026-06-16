@@ -16,7 +16,11 @@ from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
 from app.common.order_recovery import transition_order_recovery_status
 from app.reports.shared.line_items_summary import summarize_line_items
-from app.reports.shared.payment_reconciliation import reconcile_payments
+from app.reports.shared.payment_reconciliation import (
+    normalize_order_number,
+    reconcile_payments,
+    split_payment_order_numbers,
+)
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
 from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
 
@@ -733,13 +737,51 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
     start_datetime: datetime,
     end_datetime: datetime,
 ) -> dict[str, Decimal]:
-    """Return verified payment-proof allocations for orders created in current MTD.
+    """Return payment-collection allocations for orders created in current MTD.
 
-    This is deliberately separate from the visible Collections FTD/MTD/LMTD
-    columns, which continue to be based on ``sales.payment_date``. The target
-    mode uses payment proof allocated through the canonical reconciliation
-    helper so grouped proof rows are apportioned to current-MTD orders.
+    Target achievement intentionally uses ``payment_collections`` proof rows,
+    not ``sales.payment_date`` collections. Proof dates and source types are not
+    part of this contract: each payment row is matched to ``vw_orders`` by cost
+    center plus exact normalized order tokens, then grouped amounts are allocated
+    to older matched orders first. Unmatched tokens are ignored because their
+    order dates cannot prove whether the amount belongs in the current MTD.
     """
+
+    del sales  # Sales rows are irrelevant for collections-based target achievement.
+
+    payment_rows = (
+        (
+            await session.execute(
+                sa.select(
+                    payment_collections.c.payment_id,
+                    payment_collections.c.cost_center,
+                    payment_collections.c.order_number,
+                    payment_collections.c.amount,
+                )
+                .order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    tokenized_payment_rows: list[dict[str, object]] = []
+    tokens_by_cost_center: dict[str, set[str]] = {}
+    for payment_row in payment_rows:
+        cost_center = str(payment_row["cost_center"] or "")
+        tokens = split_payment_order_numbers(payment_row["order_number"])
+        if not cost_center or not tokens:
+            continue
+        tokenized_payment_rows.append(
+            {
+                "cost_center": cost_center,
+                "tokens": tokens,
+                "amount": _decimal(payment_row["amount"]),
+            }
+        )
+        tokens_by_cost_center.setdefault(cost_center, set()).update(tokens)
+
+    if not tokens_by_cost_center:
+        return {}
 
     order_rows = (
         (
@@ -749,62 +791,67 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
                     orders.c.order_number,
                     orders.c.order_date,
                     orders.c.order_amount,
-                    orders.c.recovery_status,
-                    orders.c.recovery_category,
                 )
-                .where(orders.c.order_date >= start_datetime)
-                .where(orders.c.order_date < end_datetime)
+                .where(orders.c.cost_center.in_(tokens_by_cost_center.keys()))
                 .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
             )
         )
         .mappings()
         .all()
     )
-    cost_centers = sorted({str(row["cost_center"] or "") for row in order_rows if row["cost_center"]})
-    if not cost_centers:
-        return {}
 
-    sales_rows = (
-        (
-            await session.execute(
-                sa.select(
-                    sales.c.cost_center,
-                    sales.c.order_number,
-                    sales.c.payment_received,
-                )
-                .where(sales.c.cost_center.in_(cost_centers))
-                .order_by(sales.c.cost_center, sales.c.order_number, sales.c.id)
-            )
-        )
-        .mappings()
-        .all()
-    )
-    payment_evidence_rows = (
-        (
-            await session.execute(
-                sa.select(
-                    payment_collections.c.payment_id,
-                    payment_collections.c.cost_center,
-                    payment_collections.c.order_number,
-                    payment_collections.c.amount,
-                    payment_collections.c.source_type,
-                )
-                .where(payment_collections.c.cost_center.in_(cost_centers))
-                .order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
-            )
-        )
-        .mappings()
-        .all()
-    )
+    matched_orders: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for order_row in order_rows:
+        cost_center = str(order_row["cost_center"] or "")
+        normalized_order_number = normalize_order_number(order_row["order_number"])
+        if (
+            not cost_center
+            or not normalized_order_number
+            or normalized_order_number not in tokens_by_cost_center.get(cost_center, set())
+        ):
+            continue
+        matched_orders.setdefault((cost_center, normalized_order_number), []).append(dict(order_row))
 
-    reconciliation = reconcile_payments(
-        order_rows=order_rows,
-        sales_rows=sales_rows,
-        payment_evidence_rows=payment_evidence_rows,
-    )
+    report_tz = get_timezone()
+    fallback_datetime = datetime.min.replace(tzinfo=report_tz)
     totals: dict[str, Decimal] = {}
-    for order in reconciliation.orders:
-        totals[order.cost_center] = totals.get(order.cost_center, Decimal("0")) + order.allocated_payment_amount
+    for payment_row in tokenized_payment_rows:
+        cost_center = str(payment_row["cost_center"])
+        amount = payment_row["amount"]
+        if not isinstance(amount, Decimal):
+            amount = _decimal(amount)
+        ordered_matches: list[dict[str, object]] = []
+        seen_orders: set[tuple[str, str]] = set()
+        for token in payment_row["tokens"]:  # type: ignore[index]
+            for order_row in matched_orders.get((cost_center, str(token)), []):
+                order_key = (str(order_row.get("order_number") or ""), str(order_row.get("order_date") or ""))
+                if order_key in seen_orders:
+                    continue
+                seen_orders.add(order_key)
+                ordered_matches.append(order_row)
+        if not ordered_matches:
+            continue
+
+        ordered_matches.sort(
+            key=lambda row: (
+                _parse_orders_sync_timestamp(row.get("order_date"), tz=report_tz) or fallback_datetime,
+                str(row.get("order_number") or ""),
+            )
+        )
+        remaining = amount
+        for index, order_row in enumerate(ordered_matches):
+            if remaining <= 0:
+                allocated = Decimal("0")
+            elif index == len(ordered_matches) - 1:
+                # The newest matched order receives any overpayment left after older orders are covered.
+                allocated = remaining
+            else:
+                allocated = min(remaining, _decimal(order_row.get("order_amount")))
+            remaining -= allocated
+
+            order_datetime = _parse_orders_sync_timestamp(order_row.get("order_date"), tz=report_tz)
+            if order_datetime is not None and start_datetime <= order_datetime < end_datetime:
+                totals[cost_center] = totals.get(cost_center, Decimal("0")) + allocated
     return totals
 
 def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:

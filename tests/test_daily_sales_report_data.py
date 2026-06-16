@@ -279,6 +279,7 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     order_number TEXT,
                     amount NUMERIC DEFAULT 0,
+                    payment_date TIMESTAMP,
                     source_type TEXT DEFAULT 'google_sheet'
                 )
                 """
@@ -1140,6 +1141,69 @@ async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_a
     assert td_row.latest_orders_sync_outcome == latest_status
     assert td_row.orders_sync_warning is expected_warning
 
+
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_collections_target_uses_payment_collections_order_dates(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_collections_target_allocations.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type="COLLECTIONS"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO cost_center (cost_center, description, target_type, is_active)
+            VALUES ('CC1', 'Store 1', 'value', 1)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO cost_center_targets (month, year, cost_center, sale_target, collection_target)
+            VALUES (4, 2026, 'CC1', 0, 5000)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, order_number, order_date, net_amount, gross_amount, source_system, recovery_status)
+            VALUES
+                ('CC1', 'CURR-SINGLE', '2026-04-02 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'OLD-SINGLE', '2026-03-31 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'DATE-IGNORED', '2026-04-03 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'SOURCE-IGNORED', '2026-04-04 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'ZERO-AMOUNT', '2026-04-05 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'DUPLICATE', '2026-04-06 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'GROUP-A', '2026-04-07 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'GROUP-B', '2026-04-08 10:00:00', 200, 200, 'TumbleDry', 'NONE'),
+                ('CC1', 'OLD-GROUP', '2026-03-15 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'CURR-GROUP', '2026-04-09 10:00:00', 200, 200, 'TumbleDry', 'NONE'),
+                ('CC1', 'OLD-OVER', '2026-03-16 10:00:00', 50, 50, 'TumbleDry', 'NONE'),
+                ('CC1', 'CURR-OVER', '2026-04-10 10:00:00', 100, 100, 'TumbleDry', 'NONE')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, payment_date, source_type)
+            VALUES
+                ('CC1', 'CURR-SINGLE', 100, '2026-04-02 12:00:00', 'google_sheet'),
+                ('CC1', 'OLD-SINGLE', 100, '2026-04-03 12:00:00', 'google_sheet'),
+                ('CC1', 'DATE-IGNORED', 70, '2026-03-01 12:00:00', 'google_sheet'),
+                ('CC1', 'SOURCE-IGNORED', 80, '2026-04-04 12:00:00', 'bank_upload'),
+                ('CC1', 'ZERO-AMOUNT', 0, '2026-04-05 12:00:00', 'google_sheet'),
+                ('CC1', 'DUPLICATE', 10, '2026-04-06 12:00:00', 'google_sheet'),
+                ('CC1', 'DUPLICATE', 15, '2026-04-06 12:05:00', 'google_sheet'),
+                ('CC1', ' group-a / group-b ', 300, '2026-04-08 12:00:00', 'google_sheet'),
+                ('CC1', 'OLD-GROUP,CURR-GROUP', 250, '2026-04-09 12:00:00', 'google_sheet'),
+                ('CC1', 'OLD-OVER/CURR-OVER', 200, '2026-04-10 12:00:00', 'google_sheet'),
+                ('CC1', 'MISSING-TOKEN', 999, '2026-04-10 12:00:00', 'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    cc1 = next(row for row in report.rows if row.cost_center == "CC1")
+    assert cc1.achieved == Decimal("875")
+    assert report.totals.achieved == Decimal("875")
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
