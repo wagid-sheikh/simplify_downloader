@@ -14,12 +14,14 @@
 - **Status:** Active
 - **Decision:** Daily Sales target achievement is controlled by the DB-backed `TARGET_COMPUTE_TYPE` setting, with `SALES` as the safe default.
 - **Context:** Operators need one report to support either sales-value target tracking or actual-collections target tracking without changing the visible Collections FTD/MTD/LMTD columns.
-- **Evidence:** `TARGET_COMPUTE_TYPE` is read from `system_config`; accepted values are case-insensitive. `sales` resolves to `SALES`, while `collection` and `collections` resolve to `COLLECTIONS`. Missing or invalid values resolve to `SALES`.
+- **Evidence:** `TARGET_COMPUTE_TYPE` is read from `system_config`; accepted values are case-insensitive. `sales` resolves to `SALES`, while `collection` and `collections` resolve to `COLLECTIONS`. Missing, blank, or invalid values resolve to `SALES`.
 - **Implications:**
   - In `SALES` mode, the Daily Sales Target subsection remains titled `Target`, target values come from `cost_center_targets.sale_target`, and achieved values come from current-MTD `vw_orders.order_amount`.
   - In `COLLECTIONS` mode, the Daily Sales Target subsection is titled `Target (actual collections)`, target values come from `cost_center_targets.collection_target`, and achieved values come from allocated `payment_collections.amount` for orders created in the report MTD window.
   - For this target computation only, `payment_collections.payment_date` and `payment_collections.source_type` are ignored.
   - Existing visible Collections FTD/MTD/LMTD columns are unchanged by this toggle.
+  - The toggle affects only the Daily Sales report top summary table's Target subsection; email subjects, email bodies, and DB notification templates are unchanged.
+  - `DailySalesReportData` carries the selected target mode and subsection title so the HTML template can render the correct Target header without changing notification text.
   - When a `payment_collections.order_number` row references grouped orders, allocate payment to older orders first using `vw_orders.order_date ASC, order_number ASC`, then count only the amount allocated to current-MTD orders.
 - **Follow-up:** Keep report code, tests, and canonical documentation aligned if additional target-computation modes are introduced.
 
