@@ -39,6 +39,12 @@ Use this before requesting review.
 - [ ] For payment/recovery report changes, I preserved or explicitly changed the current/open contract: `Actual Payments Not Found` and `Short Payments` are all-date current/open; `To Be Recovered` is all-date current/open by recovery-workflow status; none of these are constrained by Daily/MTD report date windows.
 - [ ] For Daily Sales artifact changes, I verified the notification attachment set still includes the main PDF and all additive run artifacts (for example APNF PDF/XLSX, Short Payments PDF, and optional MTD Same-Day PDF) without changing recipient/profile/template routing.
 - [ ] For Daily Sales target/config changes, I verified `TARGET_COMPUTE_TYPE` behavior: DB `system_config` lookup, missing/blank/invalid default to `SALES`, case-insensitive accepted values, unchanged Collections FTD/MTD/LMTD columns, and correct grouped-payment allocation for `COLLECTIONS` mode.
+- [ ] If Daily Sales Target metrics changed, I verified both `TARGET_COMPUTE_TYPE='SALES'` and `TARGET_COMPUTE_TYPE='COLLECTIONS'`.
+- [ ] For Daily Sales Target metrics, I verified the Target subsection header is `Target` for sales mode and `Target (actual collections)` for collections mode.
+- [ ] For Daily Sales Target metrics, I verified `sale_target`/`collection_target` source selection.
+- [ ] For Daily Sales Target metrics, I verified `sales_mtd` and `collection_mtd` persistence sources.
+- [ ] For Daily Sales Target metrics, I verified grouped `payment_collections.order_number` allocation for collections mode.
+- [ ] For Daily Sales Target metrics, I verified `payment_collections.payment_date` and `source_type` are ignored for collections-target achievement.
 - [ ] For payment comparisons, I applied tolerance `1`, treated overpayments as paid in full, excluded zero-value orders from missing-payment/pending-payment/recovery action checks, and used `Order Amount` as the user-facing label.
 - [ ] For ingest/sync changes, any use of raw order amount columns is limited to source synchronization, reconciliation, or raw-payload audit purposes—not business reporting or payment decisions.
 
