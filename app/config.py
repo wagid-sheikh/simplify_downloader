@@ -265,6 +265,16 @@ def _clean_optional_path_config(value: str | None, *, default: str) -> str:
     raw = str(value or "").strip()
     return raw or default
 
+
+def _normalize_target_compute_type(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "sales":
+        return "SALES"
+    if normalized in {"collection", "collections"}:
+        return "COLLECTIONS"
+    return "SALES"
+
+
 def _warn_non_interactive_override(
     original_etl_headless: bool, original_pdf_render_headless: bool
 ) -> None:
@@ -413,6 +423,7 @@ class Config:
     customer_followup_archive_dir: str
     customer_followup_output_dir: str
     customer_followup_backlog_warning_threshold: int
+    target_compute_type: str
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -570,6 +581,9 @@ class Config:
             ),
             key="CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD",
         )
+        target_compute_type = _normalize_target_compute_type(
+            db_values.get("TARGET_COMPUTE_TYPE", "SALES")
+        )
         td_storage_state_filename = _clean_text(
             db_values["TD_STORAGE_STATE_FILENAME"], key="TD_STORAGE_STATE_FILENAME"
         )
@@ -655,6 +669,7 @@ class Config:
             customer_followup_archive_dir=customer_followup_archive_dir,
             customer_followup_output_dir=customer_followup_output_dir,
             customer_followup_backlog_warning_threshold=customer_followup_backlog_warning_threshold,
+            target_compute_type=target_compute_type,
         )
 
 

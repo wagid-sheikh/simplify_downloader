@@ -240,6 +240,47 @@ def test_customer_followup_backlog_threshold_defaults_to_srs_value(monkeypatch, 
     assert DEFAULT_CUSTOMER_FOLLOWUP_BACKLOG_WARNING_THRESHOLD == 20
     assert cfg.customer_followup_backlog_warning_threshold == 20
 
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (None, "SALES"),
+        ("", "SALES"),
+        ("   ", "SALES"),
+        ("invalid", "SALES"),
+        ("sales", "SALES"),
+        ("Sales", "SALES"),
+        ("SALES", "SALES"),
+        ("collection", "COLLECTIONS"),
+        ("collections", "COLLECTIONS"),
+        ("Collection", "COLLECTIONS"),
+        ("CoLlEcTiOnS", "COLLECTIONS"),
+    ],
+)
+def test_target_compute_type_defaults_and_normalizes(monkeypatch, tmp_path, raw_value, expected):
+    db_path = tmp_path / "config.sqlite"
+    rows = _base_rows("unit-test-secret")
+    if raw_value is not None:
+        rows["TARGET_COMPUTE_TYPE"] = raw_value
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    log_file = tmp_path / "logs" / "test.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(log_file),
+        },
+    )
+
+    cfg = Config.load_from_env_and_db()
+
+    assert cfg.target_compute_type == expected
+
+
 def test_missing_system_config_key(monkeypatch, tmp_path):
     db_path = tmp_path / "config.sqlite"
     rows = _base_rows("unit-test-secret")
