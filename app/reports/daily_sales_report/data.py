@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from app.common.date_utils import get_timezone
+from app.config import config
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
 from app.common.order_recovery import transition_order_recovery_status
@@ -153,6 +154,8 @@ class SameDayFulfillmentRow:
 @dataclass
 class DailySalesReportData:
     report_date: date
+    target_compute_type: str
+    target_section_title: str
     rows: List[DailySalesRow]
     totals: DailySalesRow
     edited_orders: List[EditedOrderRow]
@@ -717,6 +720,93 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
     )
 
 
+def _target_section_title(target_compute_type: str) -> str:
+    return "Collections Target" if target_compute_type == "COLLECTIONS" else "Sales Target"
+
+
+async def _fetch_allocated_collections_for_current_mtd_orders(
+    *,
+    session,
+    orders,
+    sales,
+    payment_collections,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> dict[str, Decimal]:
+    """Return verified payment-proof allocations for orders created in current MTD.
+
+    This is deliberately separate from the visible Collections FTD/MTD/LMTD
+    columns, which continue to be based on ``sales.payment_date``. The target
+    mode uses payment proof allocated through the canonical reconciliation
+    helper so grouped proof rows are apportioned to current-MTD orders.
+    """
+
+    order_rows = (
+        (
+            await session.execute(
+                sa.select(
+                    orders.c.cost_center,
+                    orders.c.order_number,
+                    orders.c.order_date,
+                    orders.c.order_amount,
+                    orders.c.recovery_status,
+                    orders.c.recovery_category,
+                )
+                .where(orders.c.order_date >= start_datetime)
+                .where(orders.c.order_date < end_datetime)
+                .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    cost_centers = sorted({str(row["cost_center"] or "") for row in order_rows if row["cost_center"]})
+    if not cost_centers:
+        return {}
+
+    sales_rows = (
+        (
+            await session.execute(
+                sa.select(
+                    sales.c.cost_center,
+                    sales.c.order_number,
+                    sales.c.payment_received,
+                )
+                .where(sales.c.cost_center.in_(cost_centers))
+                .order_by(sales.c.cost_center, sales.c.order_number, sales.c.id)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    payment_evidence_rows = (
+        (
+            await session.execute(
+                sa.select(
+                    payment_collections.c.payment_id,
+                    payment_collections.c.cost_center,
+                    payment_collections.c.order_number,
+                    payment_collections.c.amount,
+                    payment_collections.c.source_type,
+                )
+                .where(payment_collections.c.cost_center.in_(cost_centers))
+                .order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    reconciliation = reconcile_payments(
+        order_rows=order_rows,
+        sales_rows=sales_rows,
+        payment_evidence_rows=payment_evidence_rows,
+    )
+    totals: dict[str, Decimal] = {}
+    for order in reconciliation.orders:
+        totals[order.cost_center] = totals.get(order.cost_center, Decimal("0")) + order.allocated_payment_amount
+    return totals
+
 def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
     totals = DailySalesRow(
         cost_center="TOTAL",
@@ -880,6 +970,8 @@ async def fetch_daily_sales_report(
     day_of_month = report_date.day
     days_in_month = _days_in_month(report_date)
     report_run_id = f"daily_sales_report:{report_date.isoformat()}"
+    target_compute_type = config.target_compute_type
+    target_section_title = _target_section_title(target_compute_type)
     customer_type_fallback_logged = False
 
     cost_center = sa.table(
@@ -1241,6 +1333,18 @@ async def fetch_daily_sales_report(
             )
             for entry in report_day_orders_result.mappings()
         ]
+        target_achieved_by_cost_center = (
+            await _fetch_allocated_collections_for_current_mtd_orders(
+                session=session,
+                orders=orders,
+                sales=sales,
+                payment_collections=payment_collections,
+                start_datetime=ranges["start_month"],
+                end_datetime=ranges["next_day"],
+            )
+            if target_compute_type == "COLLECTIONS"
+            else {}
+        )
         target_updates: list[dict[str, object]] = []
         for entry in result.mappings():
             target_type = (entry["target_type"] or "value").lower()
@@ -1256,8 +1360,12 @@ async def fetch_daily_sales_report(
             collections_count_ftd = int(entry["collections_count_ftd"] or 0)
             collections_count_mtd = int(entry["collections_count_mtd"] or 0)
             collections_count_lmtd = int(entry["collections_count_lmtd"] or 0)
-            target = _decimal(entry["sale_target"])
-            achieved = sales_mtd
+            if target_compute_type == "COLLECTIONS":
+                target = _decimal(entry["collection_target"])
+                achieved = target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
+            else:
+                target = _decimal(entry["sale_target"])
+                achieved = sales_mtd
             if target_type == "none":
                 target = Decimal("0")
                 achieved = Decimal("0")
@@ -1909,6 +2017,8 @@ async def fetch_daily_sales_report(
 
     return DailySalesReportData(
         report_date=report_date,
+        target_compute_type=target_compute_type,
+        target_section_title=target_section_title,
         rows=rows,
         totals=totals,
         edited_orders=edited_rows,
