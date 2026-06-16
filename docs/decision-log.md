@@ -28,7 +28,10 @@
   - The toggle affects only the Daily Sales report top summary table's Target subsection; email subjects, email bodies, and DB notification templates are unchanged.
   - `DailySalesReportData` carries the selected target mode and subsection title so the HTML template can render the correct Target header without changing notification text.
   - Do not reuse APNF/Short Payment source-type filtering for the collections-target achievement query; `source_type` remains audit/provenance data for that target computation, not an eligibility filter.
-  - When a `payment_collections.order_number` row references grouped orders, allocate payment to older orders first using `vw_orders.order_date ASC, order_number ASC`, then count only the amount allocated to current-MTD orders.
+  - `payment_collections.order_number` may contain a single order or grouped orders split on comma or slash. Matching remains exact normalized token matching within the same `cost_center`; unmatched tokens are ignored for target achievement because their `vw_orders.order_date` cannot be proven in-scope.
+  - Duplicate payment rows are summed with no order-number deduplication. Single-order payment rows count their actual `payment_collections.amount`, including overpayments.
+  - When a `payment_collections.order_number` row references grouped orders, allocate payment to older matched orders first using `vw_orders.order_date ASC, order_number ASC`, then count only the allocated amount belonging to orders inside the report MTD order-date window. If all grouped orders are current-month orders, count the grouped `payment_collections.amount` once. If a group spans prior-month and current-month orders, prior/older orders consume payment first and only the remaining allocation counts for current-month orders.
+  - Examples: prior order `600`, current order `400`, grouped payment `800` contributes `200`; prior order `600`, current order `400`, grouped payment `1200` contributes `600`; both grouped orders current-month with payment `900` contributes `900`.
 - **Follow-up:** Keep report code, tests, and canonical documentation aligned if additional target-computation modes are introduced.
 
 ### DL-028

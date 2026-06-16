@@ -63,7 +63,16 @@ This table is the verified payment evidence table for current payment reconcilia
 - This target computation is intentionally different from APNF, Short Payment, and payment-proof reconciliation: it ignores `payment_collections.payment_date` completely and also ignores `payment_collections.source_type`.
 - Do not reuse APNF/Short Payment source-type filtering for the collections-target achievement query.
 - For collections-target achievement, `source_type` remains audit/provenance data, not an eligibility filter.
-- The order-date scope is the same report MTD window used by current sales MTD logic. A payment allocated to a prior-month order is excluded from current-month target achievement even if the payment row was captured in the current month. A payment allocated to a current-month order can count even if `payment_collections.payment_date` is outside the current month, because the metric is actual collections allocated to orders created in the report month.
+- `payment_collections.order_number` may contain a single order or grouped orders split on comma or slash. Matching remains exact normalized token matching within the same `cost_center`; unmatched tokens are ignored for target achievement because their `vw_orders.order_date` cannot be proven in-scope.
+- Duplicate payment rows are summed; no deduplication by order number is performed.
+- Single-order payment rows contribute their actual `payment_collections.amount`, including overpayments.
+- For grouped rows, allocate the grouped `payment_collections.amount` to older matched orders first using `vw_orders.order_date ASC, order_number ASC`.
+- Only the allocated amount belonging to orders inside the report MTD order-date window contributes to collections target achievement. A payment allocated to a prior-month order is excluded from current-month target achievement even if the payment row was captured in the current month. A payment allocated to a current-month order can count even if `payment_collections.payment_date` is outside the current month, because the metric is actual collections allocated to orders created in the report month.
+- If all grouped orders are current-month orders, count the grouped `payment_collections.amount` once. If a group spans prior-month and current-month orders, prior/older orders consume payment first and only the remaining allocation counts for current-month orders.
+- Examples:
+  - Prior order amount `600`, current-month order amount `400`, grouped payment `800` => current-month achieved contribution `200`.
+  - Prior order amount `600`, current-month order amount `400`, grouped payment `1200` => current-month achieved contribution `600`.
+  - Both grouped orders are current-month orders with grouped payment `900` => achieved contribution `900`.
 
 ## Recommended manual upsert pattern
 
