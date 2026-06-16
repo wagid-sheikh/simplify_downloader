@@ -17,6 +17,7 @@ from app.dashboard_downloader.json_logger import get_logger
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 
 
@@ -1138,6 +1139,86 @@ async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_a
     assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
     assert td_row.latest_orders_sync_outcome == latest_status
     assert td_row.orders_sync_warning is expected_warning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_compute_type", "expected_title", "expected_targets", "expected_achieved"),
+    [
+        (
+            "SALES",
+            "Sales Target",
+            {"CC1": Decimal("1000"), "CC2": Decimal("2000")},
+            {"CC1": Decimal("400"), "CC2": Decimal("300")},
+        ),
+        (
+            "COLLECTIONS",
+            "Collections Target",
+            {"CC1": Decimal("700"), "CC2": Decimal("900")},
+            {"CC1": Decimal("250"), "CC2": Decimal("200")},
+        ),
+    ],
+)
+async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_collections(
+    tmp_path, monkeypatch, target_compute_type, expected_title, expected_targets, expected_achieved
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_target_{target_compute_type.lower()}.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type=target_compute_type))
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO cost_center (cost_center, description, target_type, is_active)
+            VALUES ('CC1', 'Store 1', 'value', 1), ('CC2', 'Store 2', 'value', 1)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO cost_center_targets (month, year, cost_center, sale_target, collection_target)
+            VALUES (1, 2026, 'CC1', 1000, 700), (1, 2026, 'CC2', 2000, 900)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, order_number, order_date, net_amount, gross_amount, source_system, recovery_status)
+            VALUES
+                ('CC1', 'CC1-MTD-1', '2026-01-05 10:00:00', 300, 300, 'TumbleDry', 'NONE'),
+                ('CC1', 'CC1-MTD-2', '2026-01-19 10:00:00', 100, 100, 'TumbleDry', 'NONE'),
+                ('CC1', 'CC1-OLD', '2025-12-31 10:00:00', 500, 500, 'TumbleDry', 'NONE'),
+                ('CC2', 'CC2-MTD-1', '2026-01-10 10:00:00', 300, 300, 'TumbleDry', 'NONE')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
+            VALUES
+                ('CC1', '2026-01-05 11:00:00', 999, 0, 'CC1-MTD-1', 0),
+                ('CC1', '2026-01-19 11:00:00', 100, 0, 'CC1-MTD-2', 0),
+                ('CC1', '2026-01-19 12:00:00', 500, 0, 'CC1-OLD', 0),
+                ('CC2', '2026-01-10 11:00:00', 300, 0, 'CC2-MTD-1', 0)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES
+                ('CC1', 'CC1-MTD-1/CC1-MTD-2', 250, 'google_sheet'),
+                ('CC1', 'CC1-OLD', 500, 'google_sheet'),
+                ('CC2', 'CC2-MTD-1', 200, 'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    rows = {row.cost_center: row for row in report.rows}
+
+    assert report.target_compute_type == target_compute_type
+    assert report.target_section_title == expected_title
+    for cost_center, expected_target in expected_targets.items():
+        assert rows[cost_center].target == expected_target
+        assert rows[cost_center].achieved == expected_achieved[cost_center]
+        assert rows[cost_center].delta == expected_achieved[cost_center] - expected_target
+    assert report.totals.target == sum(expected_targets.values(), Decimal("0"))
+    assert report.totals.achieved == sum(expected_achieved.values(), Decimal("0"))
+    assert report.totals.delta == sum(expected_achieved.values(), Decimal("0")) - sum(expected_targets.values(), Decimal("0"))
+    assert rows["CC1"].sales_mtd == Decimal("400")
+    assert rows["CC1"].collections_mtd == Decimal("1599")
 
 
 @pytest.mark.asyncio
