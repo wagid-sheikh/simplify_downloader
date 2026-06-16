@@ -100,8 +100,15 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 ### 5) Reporting pipelines
 - Daily sales: `app/reports/daily_sales_report/`.
 - Daily Sales target computation is controlled by `TARGET_COMPUTE_TYPE` from `system_config`. Missing, blank, or invalid values default to `SALES`; accepted values are case-insensitive: `sales` => `SALES`, and `collection` / `collections` => `COLLECTIONS`.
-- In `SALES` mode, the Daily Sales Target subsection title remains `Target`, target values come from `cost_center_targets.sale_target`, and achieved values come from current-MTD `vw_orders.order_amount`.
-- In `COLLECTIONS` mode, the Target subsection title is `Target (actual collections)`, target values come from `cost_center_targets.collection_target`, and achieved values come from allocated `payment_collections.amount` for orders created in the report MTD window. This target computation is deliberately different from APNF, Short Payment, and payment-proof reconciliation: it intentionally ignores `payment_collections.payment_date` and `payment_collections.source_type`; existing visible Collections FTD/MTD/LMTD columns are unchanged by the toggle.
+- Exact Daily Sales Target subsection behavior:
+
+  | `TARGET_COMPUTE_TYPE` | Subsection header | `Target` value | `Achieved` value | `TTD` / `Delta` / `Reqd/Day` basis | Other visible columns |
+  | --- | --- | --- | --- | --- | --- |
+  | `SALES` | `Target` | `cost_center_targets.sale_target` | Current MTD `sum(vw_orders.order_amount)` | Sales achieved | No change to existing Collections FTD/MTD/LMTD columns. |
+  | `COLLECTIONS` | `Target (actual collections)` | `cost_center_targets.collection_target` | Allocated verified collections for orders created in the report MTD window | Collections achieved | Existing Collections FTD/MTD/LMTD columns are not changed by this toggle. |
+
+- Child column headers stay unchanged in both modes: `Target`, `Achieved`, `TTD`, `Delta`, `Reqd/Day`.
+- In `COLLECTIONS` mode, target computation is deliberately different from APNF, Short Payment, and payment-proof reconciliation: it intentionally ignores `payment_collections.payment_date` and `payment_collections.source_type`.
 - The toggle affects only the Daily Sales report top summary table's Target subsection. Email subjects, email bodies, and DB notification templates stay unchanged; `DailySalesReportData` carries the selected mode/title for the HTML template header.
 - Do not reuse APNF/Short Payment source-type filtering in the collections-target achievement query; for this target computation, `source_type` is audit/provenance data, not an eligibility filter.
 - For grouped `payment_collections.order_number` rows used by collection-target achievement, allocate payment to older orders first using `vw_orders.order_date ASC, order_number ASC`, then count only the amount allocated to current-MTD orders.
