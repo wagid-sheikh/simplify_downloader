@@ -99,6 +99,10 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 
 ### 5) Reporting pipelines
 - Daily sales: `app/reports/daily_sales_report/`.
+- Daily Sales target computation is controlled by `TARGET_COMPUTE_TYPE` from `system_config`. Missing or invalid values default to `SALES`; accepted values are case-insensitive: `sales` => `SALES`, and `collection` / `collections` => `COLLECTIONS`.
+- In `SALES` mode, the Daily Sales Target subsection title remains `Target`, target values come from `cost_center_targets.sale_target`, and achieved values come from current-MTD `vw_orders.order_amount`.
+- In `COLLECTIONS` mode, the Target subsection title is `Target (actual collections)`, target values come from `cost_center_targets.collection_target`, and achieved values come from allocated `payment_collections.amount` for orders created in the report MTD window. This target computation intentionally ignores `payment_collections.payment_date` and `payment_collections.source_type`; existing visible Collections FTD/MTD/LMTD columns are unchanged by the toggle.
+- For grouped `payment_collections.order_number` rows used by collection-target achievement, allocate payment to older orders first using `vw_orders.order_date ASC, order_number ASC`, then count only the amount allocated to current-MTD orders.
 - Pending deliveries: `app/reports/pending_deliveries/` (existing PDF output plus additive XLSX artifact attached in the same notification send path).
 - Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
 - PDF rendering centralized through report renderer wrappers.
