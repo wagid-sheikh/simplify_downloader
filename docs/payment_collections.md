@@ -59,10 +59,11 @@ This table is the verified payment evidence table for current payment reconcilia
 
 ## Daily Sales collections-target exception
 
-- The Daily Sales top summary Target subsection can run with `TARGET_COMPUTE_TYPE = 'COLLECTIONS'`. In that mode, target achievement is computed from allocated `payment_collections.amount` for orders created in the report MTD window.
-- This target computation is intentionally different from APNF, Short Payment, and payment-proof reconciliation: it ignores `payment_collections.source_type`.
+- The Daily Sales top summary Target subsection can run with `TARGET_COMPUTE_TYPE = 'COLLECTIONS'`. In that mode, target achievement is computed from allocated `payment_collections.amount` for orders created in the report MTD window, scoped by matched `vw_orders.order_date`.
+- This target computation is intentionally different from APNF, Short Payment, and payment-proof reconciliation: it ignores `payment_collections.payment_date` completely and also ignores `payment_collections.source_type`.
 - Do not reuse APNF/Short Payment source-type filtering for the collections-target achievement query.
 - For collections-target achievement, `source_type` remains audit/provenance data, not an eligibility filter.
+- The order-date scope is the same report MTD window used by current sales MTD logic. A payment allocated to a prior-month order is excluded from current-month target achievement even if the payment row was captured in the current month. A payment allocated to a current-month order can count even if `payment_collections.payment_date` is outside the current month, because the metric is actual collections allocated to orders created in the report month.
 
 ## Recommended manual upsert pattern
 
