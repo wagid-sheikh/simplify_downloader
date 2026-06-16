@@ -158,8 +158,6 @@ class SameDayFulfillmentRow:
 @dataclass
 class DailySalesReportData:
     report_date: date
-    target_compute_type: str
-    target_section_title: str
     rows: List[DailySalesRow]
     totals: DailySalesRow
     edited_orders: List[EditedOrderRow]
@@ -171,6 +169,8 @@ class DailySalesReportData:
     completed_today_leads: List[Mapping[str, object]]
     td_leads_sync_metrics: Mapping[str, object]
     td_leads_sync_lead_changes: Mapping[str, object]
+    target_compute_type: str = "SALES"
+    target_section_title: str = "Target"
     to_be_recovered: List[RecoveryOrderRow] = field(default_factory=list)
     to_be_compensated: List[RecoveryOrderRow] = field(default_factory=list)
     to_be_recovered_total_order_value: Decimal = Decimal("0")

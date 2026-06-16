@@ -338,6 +338,29 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "Payment Received" in html
 
 
+def test_daily_sales_report_manual_object_defaults_target_header() -> None:
+    report_data = DailySalesReportData(
+        report_date=date(2026, 1, 19),
+        rows=[],
+        totals=_totals_row([]),
+        edited_orders=[],
+        edited_orders_totals=None,
+        edited_orders_summary=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        completed_today_leads=[],
+        td_leads_sync_metrics={},
+        td_leads_sync_lead_changes={},
+    )
+
+    html = _render_html(_build_context(report_data, "prod"))
+
+    assert report_data.target_compute_type == "SALES"
+    assert report_data.target_section_title == "Target"
+    assert '<th class="group-header" colspan="5">Target</th>' in html
+
+
 def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
     report_date = date(2026, 1, 19)
     rows = []
@@ -452,6 +475,7 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
         to_be_compensated_total_order_value=Decimal("0"),
         same_day_fulfillment_rows=[
             SameDayFulfillmentRow(
+                cost_center="TD01",
                 store_code="TD01",
                 order_number="ORD-1",
                 order_date=datetime(2026, 4, 29, 9, 5),
