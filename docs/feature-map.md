@@ -122,6 +122,7 @@ Practical map of where to work for major capabilities.
 ## 8) Daily/weekly/monthly/pending reporting
 
 - **Purpose:** Generate PDFs and persist/send report artifacts.
+- **Daily Sales target mode:** `TARGET_COMPUTE_TYPE` is read from `system_config`. Missing or invalid values default to `SALES`; accepted values are case-insensitive: `sales` => `SALES`, and `collection` / `collections` => `COLLECTIONS`. In `SALES` mode, the Target subsection title remains `Target`, targets use `cost_center_targets.sale_target`, and achievement uses current-MTD `vw_orders.order_amount`. In `COLLECTIONS` mode, the subsection title is `Target (actual collections)`, targets use `cost_center_targets.collection_target`, and achievement uses allocated `payment_collections.amount` for orders created in the report MTD window. This target computation ignores `payment_collections.payment_date` and `payment_collections.source_type`, does not change the visible Collections FTD/MTD/LMTD columns, and allocates grouped `payment_collections.order_number` rows to older orders first by `vw_orders.order_date ASC, order_number ASC` before counting only current-MTD order allocations.
 - **Primary paths:**
   - `app/reports/daily_sales_report/*`
   - `app/reports/mtd_same_day_fulfillment/*`
