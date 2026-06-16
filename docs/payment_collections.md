@@ -17,7 +17,7 @@ This table is the verified payment evidence table for current payment reconcilia
 
 ### 2) Required semantics
 
-- `source_type` identifies the verified evidence source. For current reconciliation, `source_type = 'google_sheet'` and `source_type = 'legacy_sales'` are equivalent verified payment evidence.
+- `source_type` identifies the verified evidence source. For APNF (`Actual Payments Not Found`), Short Payment, and payment-proof reconciliation, only currently supported proof source types qualify: `source_type = 'google_sheet'` and `source_type = 'legacy_sales'` are equivalent verified payment evidence.
 - `bank_row_id` is reserved for future bank-reconciliation work and is ignored by current business reports and payment reconciliation.
 - `payment_timestamp` is the event timestamp captured from operator source.
 - `payment_date` should match business-local date derived from `payment_timestamp` unless deliberately corrected.
@@ -56,6 +56,13 @@ This table is the verified payment evidence table for current payment reconcilia
 - Short Payment still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
 - Short Payment requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
 - Show `source_type` in audit/reconciliation reports so analysts can trace evidence provenance. Do not add it to every normal business report by default.
+
+## Daily Sales collections-target exception
+
+- The Daily Sales top summary Target subsection can run with `TARGET_COMPUTE_TYPE = 'COLLECTIONS'`. In that mode, target achievement is computed from allocated `payment_collections.amount` for orders created in the report MTD window.
+- This target computation is intentionally different from APNF, Short Payment, and payment-proof reconciliation: it ignores `payment_collections.source_type`.
+- Do not reuse APNF/Short Payment source-type filtering for the collections-target achievement query.
+- For collections-target achievement, `source_type` remains audit/provenance data, not an eligibility filter.
 
 ## Recommended manual upsert pattern
 
