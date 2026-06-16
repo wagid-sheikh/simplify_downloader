@@ -1376,6 +1376,13 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(
         rows = {row["cost_center"]: row for row in updated.mappings()}
 
     assert report.target_compute_type == target_compute_type
+    if target_compute_type == "SALES":
+        # Persisted collection progress must refresh even when the rendered Target subsection uses sales.
+        assert report_rows["CC-SALES-MET"].target == Decimal("150")
+        assert report_rows["CC-SALES-MET"].achieved == Decimal("160")
+    else:
+        assert report_rows["CC-SALES-MET"].target == Decimal("90")
+        assert report_rows["CC-SALES-MET"].achieved == Decimal("80")
     assert report_rows["CC-SALES-MET"].sales_mtd == Decimal("160")
     assert report_rows["CC-SALES-MET"].collections_mtd == Decimal("999")
     assert rows["CC-SALES-MET"]["sales_mtd"] == 160

@@ -736,6 +736,7 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
     payment_collections,
     start_datetime: datetime,
     end_datetime: datetime,
+    cost_centers: Iterable[str] | None = None,
 ) -> dict[str, Decimal]:
     """Return payment-collection allocations for orders created in current MTD.
 
@@ -749,21 +750,23 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
 
     del sales  # Sales rows are irrelevant for collections-based target achievement.
 
-    payment_rows = (
-        (
-            await session.execute(
-                sa.select(
-                    payment_collections.c.payment_id,
-                    payment_collections.c.cost_center,
-                    payment_collections.c.order_number,
-                    payment_collections.c.amount,
-                )
-                .order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
-            )
-        )
-        .mappings()
-        .all()
+    scoped_cost_centers = tuple(sorted({str(cost_center) for cost_center in (cost_centers or ()) if cost_center}))
+    if cost_centers is not None and not scoped_cost_centers:
+        return {}
+
+    payment_stmt = sa.select(
+        payment_collections.c.payment_id,
+        payment_collections.c.cost_center,
+        payment_collections.c.order_number,
+        payment_collections.c.amount,
     )
+    if scoped_cost_centers:
+        # Daily Sales only renders active cost centers. Keep the mandatory collections refresh,
+        # but avoid scanning payment evidence for inactive/unreported stores.
+        payment_stmt = payment_stmt.where(payment_collections.c.cost_center.in_(scoped_cost_centers))
+    payment_stmt = payment_stmt.order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
+
+    payment_rows = ((await session.execute(payment_stmt)).mappings().all())
     tokenized_payment_rows: list[dict[str, object]] = []
     tokens_by_cost_center: dict[str, set[str]] = {}
     for payment_row in payment_rows:
@@ -793,6 +796,9 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
                     orders.c.order_amount,
                 )
                 .where(orders.c.cost_center.in_(tokens_by_cost_center.keys()))
+                # Future orders cannot contribute to the report MTD and cannot consume older
+                # allocation before in-scope orders, so keep this index-friendly upper bound.
+                .where(orders.c.order_date < end_datetime)
                 .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
             )
         )
@@ -1352,6 +1358,8 @@ async def fetch_daily_sales_report(
             dialect_name,
         )
         result = await session.execute(stmt)
+        result_entries = result.mappings().all()
+        active_cost_centers = tuple(str(entry["cost_center"]) for entry in result_entries)
         report_day_orders_result = await session.execute(report_day_orders_stmt)
         report_day_population_result = await session.execute(
             sa.select(
@@ -1387,9 +1395,10 @@ async def fetch_daily_sales_report(
             payment_collections=payment_collections,
             start_datetime=ranges["start_month"],
             end_datetime=ranges["next_day"],
+            cost_centers=active_cost_centers,
         )
         target_updates: list[dict[str, object]] = []
-        for entry in result.mappings():
+        for entry in result_entries:
             target_type = (entry["target_type"] or "value").lower()
             sales_ftd = _decimal(entry["sales_ftd"])
             sales_mtd = _decimal(entry["sales_mtd"])
