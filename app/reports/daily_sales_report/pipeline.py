@@ -230,6 +230,7 @@ def _build_context(
         "orders_sync_warning_text": orders_sync_upstream.warning_text,
         "integrity_findings": integrity_findings,
         "integrity_has_errors": integrity_has_errors,
+        "target_section_title": data.target_section_title,
         "rows": data.rows,
         "totals": data.totals,
         "edited_orders": data.edited_orders,

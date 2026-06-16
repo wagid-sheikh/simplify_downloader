@@ -725,7 +725,7 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
 
 
 def _target_section_title(target_compute_type: str) -> str:
-    return "Collections Target" if target_compute_type == "COLLECTIONS" else "Sales Target"
+    return "Target (actual collections)" if target_compute_type == "COLLECTIONS" else "Target"
 
 
 async def _fetch_allocated_collections_for_current_mtd_orders(

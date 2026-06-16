@@ -5,6 +5,8 @@ from zoneinfo import ZoneInfo
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql, sqlite
+
+from app.reports.daily_sales_report.pipeline import _build_context, _render_html
 from app.reports.same_day_fulfillment import same_day_date_expr
 
 from app.common.db import session_scope
@@ -1211,13 +1213,13 @@ async def test_fetch_daily_sales_report_collections_target_uses_payment_collecti
     [
         (
             "SALES",
-            "Sales Target",
+            "Target",
             {"CC1": Decimal("1000"), "CC2": Decimal("2000")},
             {"CC1": Decimal("400"), "CC2": Decimal("300")},
         ),
         (
             "COLLECTIONS",
-            "Collections Target",
+            "Target (actual collections)",
             {"CC1": Decimal("700"), "CC2": Decimal("900")},
             {"CC1": Decimal("250"), "CC2": Decimal("200")},
         ),
@@ -1274,6 +1276,8 @@ async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_coll
 
     assert report.target_compute_type == target_compute_type
     assert report.target_section_title == expected_title
+    rendered_html = _render_html(_build_context(report, "test"))
+    assert f'<th class="group-header" colspan="5">{expected_title}</th>' in rendered_html
     for cost_center, expected_target in expected_targets.items():
         assert rows[cost_center].target == expected_target
         assert rows[cost_center].achieved == expected_achieved[cost_center]
