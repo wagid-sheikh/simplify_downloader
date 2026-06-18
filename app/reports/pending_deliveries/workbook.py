@@ -14,13 +14,17 @@ from .data import PendingDeliveriesReportData, PendingDeliveryRow
 DATETIME_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
 
-def workbook_output_path(*, output_root: Path, pipeline_name: str, report_date: date) -> Path:
+def workbook_output_path(
+    *, output_root: Path, pipeline_name: str, report_date: date
+) -> Path:
     return output_root / f"{pipeline_name}_{report_date.isoformat()}.xlsx"
 
 
 def _sanitize_worksheet_name(value: str, used_names: set[str]) -> str:
     trimmed = (value or "Unknown").strip() or "Unknown"
-    sanitized = "".join("_" if ch in {"[", "]", ":", "*", "?", "/", "\\"} else ch for ch in trimmed)
+    sanitized = "".join(
+        "_" if ch in {"[", "]", ":", "*", "?", "/", "\\"} else ch for ch in trimmed
+    )
     candidate = sanitized[:31] or "Sheet"
     if candidate not in used_names:
         used_names.add(candidate)
@@ -51,6 +55,7 @@ def _sorted_rows(rows: Iterable[PendingDeliveryRow]) -> list[PendingDeliveryRow]
     return sorted(
         rows,
         key=lambda row: (
+            row.age_days,
             row.order_date,
             row.order_number,
         ),
@@ -69,19 +74,12 @@ def build_pending_deliveries_workbook(
 
     headers = [
         "Cost Center",
-        "Store Code",
         "Order Number",
         "Customer Name",
         "Order Date",
         "Due Date",
         "Age (Days)",
         "Order Amount",
-        "Paid Amount",
-        "Pending Amount",
-        "Adjustments",
-        "Is Edited Order",
-        "Is Duplicate",
-        "Source System",
     ]
 
     grouped: dict[str, list[PendingDeliveryRow]] = defaultdict(list)
@@ -96,25 +94,28 @@ def build_pending_deliveries_workbook(
         rows = _sorted_rows(grouped[cost_center])
         if not rows:
             continue
-        worksheet = workbook.create_sheet(title=_sanitize_worksheet_name(cost_center, used_sheet_names))
+        worksheet = workbook.create_sheet(
+            title=_sanitize_worksheet_name(cost_center, used_sheet_names)
+        )
         worksheet.append(headers)
         sheet_count += 1
         for row in rows:
             values = [
                 row.cost_center,
-                row.store_code,
                 row.order_number,
                 row.customer_name,
-                row.order_date if isinstance(row.order_date, datetime) else datetime.combine(row.order_date, datetime.min.time()),
-                row.default_due_date if isinstance(row.default_due_date, datetime) else datetime.combine(row.default_due_date, datetime.min.time()),
+                (
+                    row.order_date
+                    if isinstance(row.order_date, datetime)
+                    else datetime.combine(row.order_date, datetime.min.time())
+                ),
+                (
+                    row.default_due_date
+                    if isinstance(row.default_due_date, datetime)
+                    else datetime.combine(row.default_due_date, datetime.min.time())
+                ),
                 row.age_days,
                 Decimal(row.order_amount),
-                Decimal(row.paid_amount),
-                Decimal(row.pending_amount),
-                Decimal(row.adjustments),
-                row.is_edited_order,
-                row.is_duplicate,
-                row.source_system,
             ]
             normalized = [
                 _normalize_excel_datetime(value, business_timezone=business_timezone)
@@ -123,8 +124,10 @@ def build_pending_deliveries_workbook(
             worksheet.append(normalized)
             row_count += 1
             current_row = worksheet.max_row
-            for datetime_col in (5, 6):
-                worksheet.cell(row=current_row, column=datetime_col).number_format = DATETIME_FORMAT
+            for datetime_col in (4, 5):
+                worksheet.cell(row=current_row, column=datetime_col).number_format = (
+                    DATETIME_FORMAT
+                )
 
     if not workbook.sheetnames:
         ws = workbook.create_sheet(title="No Data")
