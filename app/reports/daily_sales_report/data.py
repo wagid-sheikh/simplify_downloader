@@ -260,6 +260,8 @@ async def _clear_resolved_to_be_recovered_orders(
                     orders.c.order_number,
                     orders.c.order_date,
                     orders.c.order_amount,
+                    orders.c.recovery_status,
+                    orders.c.recovery_category,
                 )
                 .where(orders.c.cost_center.in_(candidate_cost_centers))
                 .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
