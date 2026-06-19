@@ -2282,10 +2282,10 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
 
 
 @pytest.mark.asyncio
-async def test_auto_clear_keeps_to_be_recovered_when_sales_row_is_missing(
+async def test_auto_clear_recovers_when_sales_row_is_missing_but_full_proof_exists(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "daily_sales_report_missing_sales_recovery_resolution.db"
+    db_path = tmp_path / "daily_sales_report_missing_sales_full_proof_recovery_resolution.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -2312,8 +2312,8 @@ async def test_auto_clear_keeps_to_be_recovered_when_sales_row_is_missing(
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert report.auto_cleared_order_numbers == []
-    assert [row.order_number for row in report.to_be_recovered] == ["NO-SALES"]
+    assert report.auto_cleared_order_numbers == ["NO-SALES"]
+    assert [row.order_number for row in report.to_be_recovered] == []
     async with session_scope(database_url) as session:
         status = (await session.execute(sa.text("""
             SELECT recovery_status, recovery_category, recovery_notes
@@ -2321,13 +2321,18 @@ async def test_auto_clear_keeps_to_be_recovered_when_sales_row_is_missing(
             WHERE order_number = 'NO-SALES'
         """))).mappings().one()
 
-    assert status["recovery_status"] == "TO_BE_RECOVERED"
-    assert status["recovery_category"] == "MISSING_PAYMENT"
-    assert status["recovery_notes"] is None
+    assert status["recovery_status"] == "RECOVERED"
+    assert status["recovery_category"] == "PAYMENT_PROOF_AUTO_RECOVERED"
+    assert status["recovery_notes"] == (
+        "AUTO_CLEARED_PAYMENT_PROOF "
+        "payment_collections.payment_ids=1, source_types=legacy_sales, "
+        "total_paid=500, order_amount=500, sales_payment_received=0, "
+        "evidence_amount=500, sales_evidence_difference=-500, group_key=CC1:NO-SALES"
+    )
 
 
 @pytest.mark.asyncio
-async def test_auto_clear_keeps_to_be_recovered_when_sales_and_proof_mismatch(
+async def test_auto_clear_recovers_when_payment_proof_is_full_even_if_sales_mismatch(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "daily_sales_report_mismatch_recovery_resolution.db"
@@ -2361,8 +2366,8 @@ async def test_auto_clear_keeps_to_be_recovered_when_sales_and_proof_mismatch(
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert report.auto_cleared_order_numbers == []
-    assert [row.order_number for row in report.to_be_recovered] == ["MISMATCH"]
+    assert report.auto_cleared_order_numbers == ["MISMATCH"]
+    assert [row.order_number for row in report.to_be_recovered] == []
     async with session_scope(database_url) as session:
         status = (await session.execute(sa.text("""
             SELECT recovery_status, recovery_category, recovery_notes
@@ -2370,9 +2375,14 @@ async def test_auto_clear_keeps_to_be_recovered_when_sales_and_proof_mismatch(
             WHERE order_number = 'MISMATCH'
         """))).mappings().one()
 
-    assert status["recovery_status"] == "TO_BE_RECOVERED"
-    assert status["recovery_category"] == "MISSING_PAYMENT"
-    assert status["recovery_notes"] is None
+    assert status["recovery_status"] == "RECOVERED"
+    assert status["recovery_category"] == "PAYMENT_PROOF_AUTO_RECOVERED"
+    assert status["recovery_notes"] == (
+        "AUTO_CLEARED_PAYMENT_PROOF "
+        "payment_collections.payment_ids=1, source_types=legacy_sales, "
+        "total_paid=500, order_amount=500, sales_payment_received=450, "
+        "evidence_amount=500, sales_evidence_difference=-50, group_key=CC1:MISMATCH"
+    )
 
 
 @pytest.mark.asyncio
