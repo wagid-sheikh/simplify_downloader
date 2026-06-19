@@ -310,20 +310,14 @@ async def _clear_resolved_to_be_recovered_orders(
     groups_by_order_key = {
         (order.cost_center, order.order_number): group
         for group in reconciliation.groups
-        if group.status == "paid"
         for order in group.orders
     }
-    # Proof-only auto-clear is intentionally disabled. A TO_BE_RECOVERED order
-    # is cleared only when the sales payment row exists, payment proof is
-    # sufficient for vw_orders.order_amount, and the two payment records agree.
-    allow_proof_only_auto_clear = False
     auto_clear_candidates = [
         order
-        for order in reconciliation.recovery_auto_clear_orders
+        for order in reconciliation.orders
         if (order.cost_center, order.order_number) in candidate_keys
+        and order.has_recovery_auto_clear_proof
         and groups_by_order_key.get((order.cost_center, order.order_number)) is not None
-        and (allow_proof_only_auto_clear or order.has_sales_payment_data)
-        and order.sales_evidence_consistent
     ]
     if not auto_clear_candidates:
         return []
