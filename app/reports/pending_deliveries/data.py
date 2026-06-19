@@ -13,7 +13,10 @@ from app.common.order_recovery import (
     transition_order_recovery_status,
 )
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
-from app.reports.shared.payment_reconciliation import reconcile_payments
+from app.reports.shared.payment_reconciliation import (
+    DEFAULT_PAYMENT_TOLERANCE,
+    reconcile_payments,
+)
 from app.reports.shared.short_payments import fetch_payment_rows_for_orders
 
 PENDING_DELIVERY_MAIN_RECOVERY_STATUS = "NONE"
@@ -365,7 +368,13 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
         )
         candidate_keys: list[tuple[str, str]] = []
         for order in reconciliation.orders:
-            if order.status == "paid" and order.has_payment_proof:
+            has_sufficient_payment_proof = (
+                order.order_amount > 0
+                and order.has_payment_proof
+                and order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
+                >= order.order_amount
+            )
+            if has_sufficient_payment_proof:
                 continue
             candidate_keys.append((order.cost_center, order.order_number))
 

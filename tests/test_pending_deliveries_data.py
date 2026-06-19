@@ -910,6 +910,74 @@ async def test_transition_grouped_payment_proof_uses_comma_slash_tokens(
 
 
 @pytest.mark.asyncio
+async def test_transition_mixed_unmatched_grouped_payment_tokens_do_not_block_recovery(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_unmatched_grouped_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    for order_number in ("MATCHED-A", "MATCHED-B"):
+        await _seed_transition_order(
+            database_url=database_url,
+            monkeypatch=monkeypatch,
+            order_number=order_number,
+            age_days=31,
+        )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number="matched-a, unmatched-token / matched-b",
+        amount=Decimal("200.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 2
+    assert metrics.transitioned_count == 2
+    recovery_statuses = {
+        rows[order]["recovery_status"] for order in ("MATCHED-A", "MATCHED-B")
+    }
+    assert recovery_statuses == {"TO_BE_RECOVERED"}
+
+
+@pytest.mark.asyncio
+async def test_transition_proof_only_without_sales_still_requires_sufficient_amount(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_proof_only_short.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="PROOF-ONLY-SHORT",
+        age_days=31,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number="PROOF-ONLY-SHORT",
+        amount=Decimal("98.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["PROOF-ONLY-SHORT"]["recovery_status"] == "TO_BE_RECOVERED"
+
+
+@pytest.mark.asyncio
 async def test_transition_unsupported_payment_source_type_does_not_block_recovery(
     tmp_path, monkeypatch
 ) -> None:
