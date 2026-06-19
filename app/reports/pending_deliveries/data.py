@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List
 
@@ -13,6 +13,8 @@ from app.common.order_recovery import (
     transition_order_recovery_status,
 )
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
+from app.reports.shared.payment_reconciliation import reconcile_payments
+from app.reports.shared.short_payments import fetch_payment_rows_for_orders
 
 PENDING_DELIVERY_MAIN_RECOVERY_STATUS = "NONE"
 
@@ -269,6 +271,13 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
         sa.column("order_amount"),
         sa.column("recovery_status"),
     )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
     sales = _sales_table(metadata)
 
     def _normalized_key(column: sa.ColumnElement[object]) -> sa.ColumnElement[str]:
@@ -290,6 +299,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             orders.c.order_date,
             orders.c.default_due_date,
             orders.c.recovery_status,
+            amount_expr.label("order_amount"),
             matching_sale_exists.label("has_sale"),
         )
         .select_from(orders)
@@ -306,7 +316,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
 
     async with session_scope(database_url) as session:
         results = await session.execute(base_stmt)
-        candidate_keys: list[tuple[str, str]] = []
+        candidate_order_rows: list[dict[str, object]] = []
         for record in results.mappings():
             metrics.scanned_count += 1
             has_sale = bool(record.get("has_sale"))
@@ -334,7 +344,30 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             if not cost_center or not order_number:
                 continue
             metrics.eligible_count += 1
-            candidate_keys.append((cost_center, order_number))
+            candidate_order_rows.append(
+                {
+                    "cost_center": cost_center,
+                    "order_number": order_number,
+                    "order_date": record.get("order_date"),
+                    "order_amount": record.get("order_amount"),
+                    "recovery_status": record.get("recovery_status"),
+                }
+            )
+
+        payment_rows = await fetch_payment_rows_for_orders(
+            session=session,
+            payment_collections=payment_collections,
+            order_rows=candidate_order_rows,
+        )
+        reconciliation = reconcile_payments(
+            order_rows=candidate_order_rows,
+            payment_evidence_rows=payment_rows,
+        )
+        candidate_keys: list[tuple[str, str]] = []
+        for order in reconciliation.orders:
+            if order.status == "paid" and order.has_payment_proof:
+                continue
+            candidate_keys.append((order.cost_center, order.order_number))
 
         for cost_center, order_number in candidate_keys:
             metrics.transitioned_count += await transition_order_recovery_status(

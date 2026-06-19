@@ -44,6 +44,15 @@ def _create_tables(database_url: str) -> None:
         )
         connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_notes TEXT"))
         connection.execute(sa.text("""
+                CREATE TABLE payment_collections (
+                    payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cost_center TEXT,
+                    order_number TEXT,
+                    amount NUMERIC DEFAULT 0,
+                    source_type TEXT DEFAULT 'google_sheet'
+                )
+                """))
+        connection.execute(sa.text("""
                 CREATE VIEW vw_orders AS
                 SELECT
                     cost_center,
@@ -196,6 +205,31 @@ async def _insert_order_and_sale(
                     is_edited_order=False,
                 )
             )
+        await session.commit()
+
+
+async def _insert_payment_collection(
+    *,
+    database_url: str,
+    cost_center: str = "UN3668",
+    order_number: str,
+    amount: Decimal,
+    source_type: str = "google_sheet",
+) -> None:
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO payment_collections "
+                "(cost_center, order_number, amount, source_type) "
+                "VALUES (:cost_center, :order_number, :amount, :source_type)"
+            ),
+            {
+                "cost_center": cost_center,
+                "order_number": order_number,
+                "amount": str(amount),
+                "source_type": source_type,
+            },
+        )
         await session.commit()
 
 
@@ -781,6 +815,131 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
         rows["AGE-31"]["recovery_notes"]
         == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     )
+
+
+@pytest.mark.asyncio
+async def test_transition_no_sales_no_payment_proof_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_no_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="NO-PROOF",
+        age_days=31,
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["NO-PROOF"]["recovery_status"] == "TO_BE_RECOVERED"
+
+
+@pytest.mark.asyncio
+async def test_transition_no_sales_with_full_verified_payment_proof_not_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_verified_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="PAID-PROOF",
+        age_days=31,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" paid-proof ",
+        amount=Decimal("100.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 0
+    assert rows["PAID-PROOF"]["recovery_status"] == "NONE"
+
+
+@pytest.mark.asyncio
+async def test_transition_grouped_payment_proof_uses_comma_slash_tokens(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_grouped_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    for order_number in ("GROUP-A", "GROUP-B", "GROUP-C"):
+        await _seed_transition_order(
+            database_url=database_url,
+            monkeypatch=monkeypatch,
+            order_number=order_number,
+            age_days=31,
+        )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number="group-a, group-b/group-c",
+        amount=Decimal("300.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 3
+    assert metrics.transitioned_count == 0
+    assert {rows[order]["recovery_status"] for order in rows} == {"NONE"}
+
+
+@pytest.mark.asyncio
+async def test_transition_unsupported_payment_source_type_does_not_block_recovery(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_unsupported_source.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="UNSUPPORTED-PROOF",
+        age_days=31,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number="UNSUPPORTED-PROOF",
+        amount=Decimal("100.00"),
+        source_type="manual_upload",
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["UNSUPPORTED-PROOF"]["recovery_status"] == "TO_BE_RECOVERED"
 
 
 @pytest.mark.asyncio
