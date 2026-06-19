@@ -2431,6 +2431,55 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_insufficie
 
 
 @pytest.mark.asyncio
+async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_source_is_unsupported(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_unsupported_source_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'UNSUPPORTED-SOURCE', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
+            VALUES ('CC1', 'UNSUPPORTED-SOURCE', '2026-04-29T10:00:00+05:30', 500, 'UPI')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'UNSUPPORTED-SOURCE', 500, 'bank_upload')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["UNSUPPORTED-SOURCE"]
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'UNSUPPORTED-SOURCE'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
+
+
+@pytest.mark.asyncio
 async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
     tmp_path, monkeypatch
 ) -> None:
