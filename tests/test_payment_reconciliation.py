@@ -79,7 +79,95 @@ def test_single_order_group_is_paid_with_one_rupee_tolerance_and_ignores_bank_ro
     assert group.status == "paid"
     assert group.evidence_amount == Decimal("99")
     assert group.short_amount == Decimal("0")
-    assert result.recovery_auto_clear_orders[0].order_number == "TD 123"
+    assert result.orders[0].status == "paid"
+    assert result.recovery_auto_clear_orders == ()
+
+
+def test_to_be_recovered_full_single_order_proof_is_recovery_auto_clearable_without_paid_status() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[_order("REC-1", "100", recovery_status="TO_BE_RECOVERED")],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("REC-1", "100")],
+    )
+
+    order = result.orders[0]
+    assert order.status == "recovery_excluded"
+    assert order.has_recovery_auto_clear_proof is True
+    assert [
+        candidate.order_number for candidate in result.recovery_auto_clear_orders
+    ] == ["REC-1"]
+
+
+def test_to_be_recovered_grouped_comma_slash_proof_clears_when_allocation_covers_order() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[
+            _order(
+                "REC-1", "100", "2026-05-01T10:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+            _order(
+                "REC-2", "150", "2026-05-01T11:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+            _order(
+                "REC-3", "200", "2026-05-01T12:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+        ],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("REC-1, REC-2 / REC-3", "450")],
+    )
+
+    assert result.groups[0].status == "paid"
+    assert {order.status for order in result.orders} == {"recovery_excluded"}
+    assert [order.order_number for order in result.recovery_auto_clear_orders] == [
+        "REC-1",
+        "REC-2",
+        "REC-3",
+    ]
+
+
+def test_to_be_recovered_insufficient_or_unsupported_proof_is_not_auto_clearable() -> (
+    None
+):
+    insufficient = reconcile_payments(
+        order_rows=[_order("REC-SHORT", "100", recovery_status="TO_BE_RECOVERED")],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("REC-SHORT", "98")],
+    )
+    unsupported = reconcile_payments(
+        order_rows=[_order("REC-BANK", "100", recovery_status="TO_BE_RECOVERED")],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("REC-BANK", "100", source_type="bank_upload")],
+    )
+
+    assert insufficient.orders[0].has_recovery_auto_clear_proof is False
+    assert insufficient.recovery_auto_clear_orders == ()
+    assert len(unsupported.invalid_evidence_rows) == 1
+    assert unsupported.orders[0].has_recovery_auto_clear_proof is False
+    assert unsupported.recovery_auto_clear_orders == ()
+
+
+def test_terminal_recovery_statuses_are_not_auto_cleared_again() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("WRITTEN", "100", recovery_status="WRITE_OFF"),
+            _order("DONE", "100", recovery_status="RECOVERED"),
+        ],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("WRITTEN/DONE", "200")],
+    )
+
+    assert [order.status for order in result.orders] == [
+        "recovery_excluded",
+        "recovery_excluded",
+    ]
+    assert [order.has_recovery_auto_clear_proof for order in result.orders] == [
+        False,
+        False,
+    ]
+    assert result.recovery_auto_clear_orders == ()
 
 
 def test_grouped_payment_sums_each_payment_row_once_for_comma_order_example() -> None:
@@ -159,7 +247,9 @@ def test_exact_order_token_matching_distinguishes_ord1_from_ord10() -> None:
     assert result.short_payment_orders == ()
 
 
-def test_slash_and_comma_grouped_tokens_match_exact_orders_without_ord10_false_positive() -> None:
+def test_slash_and_comma_grouped_tokens_match_exact_orders_without_ord10_false_positive() -> (
+    None
+):
     result = reconcile_payments(
         order_rows=[
             _order("ORD1", "100", "2026-05-01T10:00:00"),
@@ -231,10 +321,7 @@ def test_overlapping_group_and_single_top_up_reconcile_consistently() -> None:
     assert group.expected_order_amount == Decimal("200")
     assert result.actual_payments_not_found == ()
     assert result.short_payment_orders == ()
-    assert [order.order_number for order in result.recovery_auto_clear_orders] == [
-        "ORD1",
-        "ORD2",
-    ]
+    assert result.recovery_auto_clear_orders == ()
 
     audit_rows = build_payment_evidence_audit_rows(
         order_rows=[
@@ -555,8 +642,12 @@ def test_mixed_comma_slash_tokens_match_and_unrelated_tokens_do_not_match() -> N
         ],
     )
 
-    groups_by_tokens = {group.normalized_order_numbers: group for group in result.groups}
+    groups_by_tokens = {
+        group.normalized_order_numbers: group for group in result.groups
+    }
     assert groups_by_tokens[("MIX1", "MIX2", "MIX3")].status == "paid"
     assert groups_by_tokens[("ORD1",)].status == "proof_missing"
     assert ("ORD10",) not in groups_by_tokens
-    assert [order.order_number for order in result.actual_payments_not_found] == ["ORD1"]
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "ORD1"
+    ]

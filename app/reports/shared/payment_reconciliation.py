@@ -98,6 +98,29 @@ class ReconciledOrderPayment:
     recovery_category: str = ""
     raw_order: Any = None
 
+    def has_sufficient_recovery_auto_clear_proof(
+        self, tolerance: Decimal = DEFAULT_PAYMENT_TOLERANCE
+    ) -> bool:
+        """Return whether payment proof can auto-clear an active recovery row.
+
+        Recovery auto-clear is intentionally proof-sufficiency based. It does
+        not depend on the operator-facing reconciliation ``status`` because
+        active recovery rows are excluded from Short Payments / Actual Payments
+        Not Found action lists and can therefore carry ``recovery_excluded``
+        even when valid payment evidence fully covers the order.
+        """
+
+        return (
+            self.recovery_status.strip().upper() == "TO_BE_RECOVERED"
+            and self.order_amount > 0
+            and self.has_payment_proof is True
+            and self.allocated_payment_amount + tolerance >= self.order_amount
+        )
+
+    @property
+    def has_recovery_auto_clear_proof(self) -> bool:
+        return self.has_sufficient_recovery_auto_clear_proof()
+
 
 @dataclass(frozen=True)
 class ReconciledPaymentGroup:
@@ -172,16 +195,7 @@ class PaymentReconciliationResult:
     @property
     def recovery_auto_clear_orders(self) -> tuple[ReconciledOrderPayment, ...]:
         return tuple(
-            order
-            for order in self.orders
-            if (
-                order.status == "paid"
-                and order.has_payment_proof
-                and order.has_sales_payment_data
-                and order.sales_evidence_consistent
-                and order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
-                >= order.order_amount
-            )
+            order for order in self.orders if order.has_recovery_auto_clear_proof
         )
 
     @property
