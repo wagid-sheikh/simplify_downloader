@@ -16,6 +16,25 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+@pytest.fixture(autouse=True)
+def _successful_poetry_for_cron_recovery_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep shell-wrapper tests focused on orchestration, not the real Poetry CLI."""
+    bin_dir = tmp_path / "autouse-bin"
+    bin_dir.mkdir(exist_ok=True)
+    _write_executable(
+        bin_dir / "poetry",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >> "
+        "\"${POETRY_ARGS_LOG:-${TMPDIR:-/tmp}/poetry-args.log}\"\n"
+        "exit 0\n",
+    )
+    current_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{current_path}")
+
+
 def _write_successful_preflight(scripts_dir: Path) -> None:
     _write_executable(
         scripts_dir / "orders_sync_connectivity_preflight.sh",
@@ -208,7 +227,7 @@ def _run_pending_deliveries_wrapper(tmp_path: Path, *args: str) -> list[str]:
     return args_log.read_text(encoding="utf-8").splitlines()
 
 
-def test_pending_deliveries_wrapper_keeps_upstream_flags_out_of_recovery_step(
+def test_pending_deliveries_wrapper_is_read_only_and_forwards_upstream_flags(
     tmp_path: Path,
 ) -> None:
     invocations = _run_pending_deliveries_wrapper(
@@ -220,20 +239,18 @@ def test_pending_deliveries_wrapper_keeps_upstream_flags_out_of_recovery_step(
     )
 
     assert invocations == [
-        "run python -m app recovery mark-aged-pending-deliveries --env prod",
         "run python -m app report pending-deliveries --env prod "
         "--orders-sync-upstream-status success "
         "--orders-sync-upstream-run-id profiler-123",
     ]
 
 
-def test_pending_deliveries_wrapper_runs_with_zero_recovery_args_under_strict_shell_mode(
+def test_pending_deliveries_wrapper_runs_read_only_under_strict_shell_mode(
     tmp_path: Path,
 ) -> None:
     invocations = _run_pending_deliveries_wrapper(tmp_path)
 
     assert invocations == [
-        "run python -m app recovery mark-aged-pending-deliveries --env prod",
         "run python -m app report pending-deliveries --env prod",
     ]
 
@@ -369,10 +386,9 @@ def test_pending_deliveries_wrapper_reaches_async_pipeline_with_cron_upstream_ar
 
     _assert_wrapper_smoke_succeeded(result)
     assert [invocation["pipeline"] for invocation in invocations] == [
-        "recovery",
         "pending-deliveries",
     ]
-    pending_invocation = invocations[1]
+    pending_invocation = invocations[0]
     assert pending_invocation.pop("report_date")
     assert pending_invocation == {
         "pipeline": "pending-deliveries",
@@ -416,8 +432,26 @@ def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() ->
     assert 'run_local_reports_pending_deliveries.sh"' in cron_source
     assert "pending-deliveries --env prod --force" not in local_pending_source
     assert "pending-deliveries --env prod" in local_pending_source
-    assert '${recovery_args[@]+"${recovery_args[@]}"}' in local_pending_source
-    assert '--env prod "${recovery_args[@]}"' not in local_pending_source
+    assert "recovery mark-aged-pending-deliveries" in cron_source
+    assert "recovery mark-aged-pending-deliveries" not in local_pending_source
+
+
+def test_cron_marks_aged_pending_deliveries_before_daily_sales_report() -> None:
+    cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(
+        encoding="utf-8"
+    )
+
+    recovery_index = cron_source.index(
+        'run_step_with_retries "Script 2: recovery.mark-aged-pending-deliveries"'
+    )
+    daily_index = cron_source.index(
+        'run_step_with_retries "Script 3: daily_sales_report"'
+    )
+    pending_index = cron_source.index(
+        'run_step_with_retries "Script 4: pending_deliveries"'
+    )
+
+    assert recovery_index < daily_index < pending_index
 
 
 def test_cron_marks_environment_and_cli_errors_as_deterministic() -> None:
@@ -1369,15 +1403,21 @@ def test_orders_sync_observability_reports_unknown_when_no_profiler_summary_foun
     assert "orders_sync_failed_stores=[]" in log_text
 
 
-def test_pending_deliveries_wrapper_keeps_upstream_args_out_of_recovery(tmp_path: Path) -> None:
+def test_pending_deliveries_wrapper_forwards_upstream_args_to_report_only(
+    tmp_path: Path,
+) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     fake_bin = repo_root / "bin"
     scripts_dir.mkdir(parents=True)
     fake_bin.mkdir()
 
-    wrapper_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(encoding="utf-8")
-    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", wrapper_source)
+    wrapper_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
+        encoding="utf-8"
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh", wrapper_source
+    )
     _write_executable(
         fake_bin / "poetry",
         "#!/usr/bin/env bash\n"
@@ -1411,13 +1451,13 @@ def test_pending_deliveries_wrapper_keeps_upstream_args_out_of_recovery(tmp_path
     )
 
     assert result.returncode == 0
-    args_lines = (tmp_path / "poetry-args.log").read_text(encoding="utf-8").splitlines()
-    assert len(args_lines) == 2
-    recovery_args, report_args = args_lines
-    assert "recovery mark-aged-pending-deliveries" in recovery_args
-    assert "--report-date 2026-04-29" in recovery_args
-    assert "--orders-sync-upstream-status" not in recovery_args
-    assert "--orders-sync-upstream-run-id" not in recovery_args
+    args_lines = (
+        (tmp_path / "poetry-args.log").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(args_lines) == 1
+    report_args = args_lines[0]
+    assert "recovery mark-aged-pending-deliveries" not in report_args
+    assert "--report-date 2026-04-29" in report_args
     assert "report pending-deliveries" in report_args
     assert "--orders-sync-upstream-status failed" in report_args
     assert "--orders-sync-upstream-run-id orders-run-1" in report_args
@@ -1510,7 +1550,11 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     assert "failure_class=step_runtime_timeout" in log_text
     assert "Script 1: orders_sync_run_profiler failed after 1 attempts" in log_text
     assert "orders_sync_run_profiler_rc=124" in log_text
-    assert "Script 2: daily_sales_report: attempt 1/1 succeeded" in log_text
+    assert (
+        "Script 2: recovery.mark-aged-pending-deliveries: attempt 1/1 succeeded"
+        in log_text
+    )
+    assert "Script 3: daily_sales_report: attempt 1/1 succeeded" in log_text
 
 
 def test_cron_preserves_lock_and_aborts_when_timeout_group_verification_fails(
