@@ -179,6 +179,15 @@ Heavy cron wrappers in `scripts/` acquire only their own pipeline lock:
 2. Orders/reports acquires `tmp/cron_run_orders_and_reports.lock`.
 3. Each wrapper executes its own run steps without blocking the other pipeline.
 
+The orders/reports wrapper deliberately marks aged pending-delivery orders after
+orders sync and before Daily Sales report generation. That order keeps the Daily
+Sales To-Be-Recovered attachment current before `reports.daily_sales_report`
+reads recovery workflow state, and leaves the Pending Deliveries wrapper as a
+read-only report step. The production sequence is: orders sync profiler,
+`poetry run python -m app recovery mark-aged-pending-deliveries --env prod`,
+`scripts/run_local_reports_daily_sales.sh`, then
+`scripts/run_local_reports_pending_deliveries.sh`.
+
 Each wrapper uses the same pipeline-specific local-lock recovery state machine.
 It first attempts `mkdir` for its lock directory and writes fresh ownership
 metadata on success. If the directory exists, the wrapper logs the full local

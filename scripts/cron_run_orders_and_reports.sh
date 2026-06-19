@@ -6,8 +6,9 @@ set -euo pipefail
 #
 # macOS Big Sur compatible, production-grade cron wrapper for:
 #   1. orders_sync_run_profiler.sh
-#   2. run_local_reports_daily_sales.sh
-#   3. run_local_reports_pending_deliveries.sh
+#   2. recovery mark-aged-pending-deliveries
+#   3. run_local_reports_daily_sales.sh
+#   4. run_local_reports_pending_deliveries.sh
 #
 # Features:
 # - macOS-safe lock using mkdir
@@ -77,6 +78,8 @@ ORDERS_PREFLIGHT_MAX_ATTEMPTS="${ORDERS_PREFLIGHT_MAX_ATTEMPTS:-3}"
 ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS="${ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS:-10}"
 ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER="${ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER:-2}"
 ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS="${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS:-60}"
+RECOVERY_MAX_ATTEMPTS="${RECOVERY_MAX_ATTEMPTS:-1}"
+RECOVERY_RETRY_DELAY_SECONDS="${RECOVERY_RETRY_DELAY_SECONDS:-10}"
 DAILY_MAX_ATTEMPTS="${DAILY_MAX_ATTEMPTS:-3}"
 DAILY_RETRY_DELAY_SECONDS="${DAILY_RETRY_DELAY_SECONDS:-10}"
 PENDING_MAX_ATTEMPTS="${PENDING_MAX_ATTEMPTS:-3}"
@@ -88,6 +91,7 @@ DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
 ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS="${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS:-1}"
 ORDERS_STEP_TIMEOUT_SECONDS="${ORDERS_STEP_TIMEOUT_SECONDS:-5400}"
+RECOVERY_STEP_TIMEOUT_SECONDS="${RECOVERY_STEP_TIMEOUT_SECONDS:-1800}"
 DAILY_SALES_STEP_TIMEOUT_SECONDS="${DAILY_SALES_STEP_TIMEOUT_SECONDS:-1800}"
 PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS="${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS:-1800}"
 
@@ -115,11 +119,12 @@ fi
 if ! [[ "${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}" =~ ^[0-9]+$ ]]; then
   ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS=60
 fi
-for timeout_var_name in ORDERS_STEP_TIMEOUT_SECONDS DAILY_SALES_STEP_TIMEOUT_SECONDS PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS; do
+for timeout_var_name in ORDERS_STEP_TIMEOUT_SECONDS RECOVERY_STEP_TIMEOUT_SECONDS DAILY_SALES_STEP_TIMEOUT_SECONDS PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS; do
   timeout_var_value="${!timeout_var_name}"
   if ! [[ "${timeout_var_value}" =~ ^[0-9]+$ ]]; then
     case "${timeout_var_name}" in
       ORDERS_STEP_TIMEOUT_SECONDS) ORDERS_STEP_TIMEOUT_SECONDS=5400 ;;
+      RECOVERY_STEP_TIMEOUT_SECONDS) RECOVERY_STEP_TIMEOUT_SECONDS=1800 ;;
       DAILY_SALES_STEP_TIMEOUT_SECONDS) DAILY_SALES_STEP_TIMEOUT_SECONDS=1800 ;;
       PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS) PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS=1800 ;;
     esac
@@ -1133,8 +1138,10 @@ PY
 
 orders_rc=0
 orders_sync_report_args=""
+recovery_cmd="poetry run python -m app recovery mark-aged-pending-deliveries --env prod"
 daily_report_cmd="./scripts/run_local_reports_daily_sales.sh"
 pending_report_cmd="./scripts/run_local_reports_pending_deliveries.sh"
+recovery_rc=0
 daily_rc=0
 pending_rc=0
 daily_rescue_rc=0
@@ -1166,9 +1173,11 @@ if [[ -n "${orders_sync_report_args}" ]]; then
   pending_report_cmd="${pending_report_cmd} ${orders_sync_report_args}"
 fi
 log "orders_sync_downstream_report_args=${orders_sync_report_args:-<none>}"
-run_step_with_retries "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" 0 1 "${DAILY_RETRY_DELAY_SECONDS}" "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rc=$?
+# Mark aged pending-delivery orders before Daily Sales builds its To-Be-Recovered attachment.
+run_step_with_retries "Script 2: recovery.mark-aged-pending-deliveries" "${recovery_cmd}" "${RECOVERY_MAX_ATTEMPTS}" "${RECOVERY_RETRY_DELAY_SECONDS}" 0 1 "${RECOVERY_RETRY_DELAY_SECONDS}" "${RECOVERY_STEP_TIMEOUT_SECONDS}" || recovery_rc=$?
+run_step_with_retries "Script 3: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" 0 1 "${DAILY_RETRY_DELAY_SECONDS}" "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
-run_step_with_retries "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" 0 1 "${PENDING_RETRY_DELAY_SECONDS}" "${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}" || pending_rc=$?
+run_step_with_retries "Script 4: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" 0 1 "${PENDING_RETRY_DELAY_SECONDS}" "${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
@@ -1199,13 +1208,14 @@ section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
 log "orders_sync_preflight_classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}"
 log "orders_sync_profiler_fail_on_failed_status=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
+log "recovery_mark_aged_pending_deliveries_rc=${recovery_rc}"
 log "daily_sales_report_rc=${daily_rc}"
 log "pending_deliveries_rc=${pending_rc}"
 log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
 log "total_duration_seconds=${run_duration_seconds}"
 
-if [[ "${orders_rc}" -ne 0 || "${daily_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: One or more required cron steps failed (orders_sync_run_profiler_rc=${orders_rc}, daily_sales_report_rc=${daily_rc}, pending_deliveries_rc=${pending_rc})."
+if [[ "${orders_rc}" -ne 0 || "${recovery_rc}" -ne 0 || "${daily_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: One or more required cron steps failed (orders_sync_run_profiler_rc=${orders_rc}, recovery_mark_aged_pending_deliveries_rc=${recovery_rc}, daily_sales_report_rc=${daily_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 

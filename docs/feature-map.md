@@ -132,10 +132,11 @@ Practical map of where to work for major capabilities.
   - `app/dashboard_downloader/pipelines/{dashboard_weekly.py,dashboard_monthly.py,reporting.py}`
   - `app/dashboard_downloader/templates/*`
 - **Cron orchestration tail order (production wrapper):**
-  1. `scripts/run_local_reports_daily_sales.sh`
-  2. `scripts/run_local_reports_mtd_same_day_fulfillment.sh`
-  3. `scripts/run_local_reports_pending_deliveries.sh`
-- **Cron regeneration:** Cron report generation always regenerates Daily Sales, MTD Same-Day Fulfillment, and Pending Deliveries by passing `--force`; retries/rescue passes preserve mandatory regeneration and log `pipeline`, `report_date`, and `regenerate=true`.
+  1. `scripts/orders_sync_run_profiler.sh`
+  2. `poetry run python -m app recovery mark-aged-pending-deliveries --env prod`
+  3. `scripts/run_local_reports_daily_sales.sh`
+  4. `scripts/run_local_reports_pending_deliveries.sh`
+- **Cron regeneration:** Cron report generation always regenerates Daily Sales and Pending Deliveries without a `--force` gate; retries/rescue passes preserve mandatory regeneration and log the downstream orders-sync status/run metadata. The recovery marking step is centralized in `scripts/cron_run_orders_and_reports.sh` before Daily Sales so the To-Be-Recovered attachment is built from current recovery workflow state, while `scripts/run_local_reports_pending_deliveries.sh` remains read-only.
 - **Dependencies:** `documents` table, report notification templates/profiles.
 - **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows where `vw_orders.recovery_status = 'NONE'` and no matching `sales` row; recovery-workflow rows are excluded from normal aging buckets/details. Pending Deliveries notification attachments now include both the existing PDF and an additive XLSX workbook artifact grouped by `cost_center`.
 
@@ -183,5 +184,5 @@ Practical map of where to work for major capabilities.
 - Daily and MTD same-day fulfillment outputs now include Order Amount and Payment Received columns (`Order Amount` comes from `vw_orders.order_amount`; `Payment Received` remains collection/payment data, with payment rows summed per order for deterministic multi-payment reporting).
 
 - Query portability: daily same-day line-item/payment-mode concatenation is dialect-aware (`string_agg` on PostgreSQL, `group_concat` on SQLite) while preserving existing same-day grouping and payment sum behavior.
-- Failure propagation policy: `scripts/cron_run_orders_and_reports.sh` must exit non-zero when any required report pipeline fails after retries (daily sales, MTD same-day, pending deliveries), and optional rescue attempts cannot mask a failed required daily run. Orders, Daily Sales, and Pending Deliveries run in dedicated child process groups with separate watchdog limits. After timeout, the wrapper verifies complete non-zombie child process-group disappearance before releasing its local lock; an orders timeout remains retryable and downstream reports still execute only when that verification succeeds. Failed termination verification preserves the local lock for explicit operator recovery and aborts downstream execution safely.
+- Failure propagation policy: `scripts/cron_run_orders_and_reports.sh` must exit non-zero when any required step fails after retries (orders sync, recovery marking, daily sales, pending deliveries), and optional rescue attempts cannot mask a failed required daily run. Orders, recovery marking, Daily Sales, and Pending Deliveries run in dedicated child process groups with separate watchdog limits. After timeout, the wrapper verifies complete non-zombie child process-group disappearance before releasing its local lock; an orders timeout remains retryable and downstream reports still execute only when that verification succeeds. Failed termination verification preserves the local lock for explicit operator recovery and aborts downstream execution safely.
 - Attachment contract: Daily Sales email has two distinct artifacts—(1) in-report same-day section scoped to report date, and (2) tailed MTD same-day attachment scoped from month start through report date, with separate metadata/doc_type.
