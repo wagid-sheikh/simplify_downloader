@@ -540,6 +540,16 @@ def _reconcile_group(
     has_recovery_excluded = bool(recovery_excluded_numbers)
 
     data_quality_exception = bool(unmatched_numbers)
+    # Recovery auto-clear must not let an unmatched token in a grouped proof row
+    # poison valid matched TO_BE_RECOVERED orders. Keep the group flagged for
+    # audit diagnostics, but allow deterministic proof allocation when the
+    # grouped amount covers every matched recovery order.
+    recovery_auto_clear_can_allocate = (
+        data_quality_exception
+        and all_recovery_excluded
+        and bool(evidence_rows)
+        and evidence_amount + tolerance >= expected_amount
+    )
     if data_quality_exception:
         status = "data_quality_exception"
     elif not evidence_rows:
@@ -553,7 +563,11 @@ def _reconcile_group(
     else:
         status = "short"
 
-    remaining = Decimal("0") if data_quality_exception else evidence_amount
+    remaining = (
+        evidence_amount
+        if not data_quality_exception or recovery_auto_clear_can_allocate
+        else Decimal("0")
+    )
     allocation_order = [
         *[
             order
@@ -586,7 +600,7 @@ def _reconcile_group(
         order_sales_evidence_consistent = (
             order_has_sales_payment_data and not order_sales_evidence_mismatch
         )
-        if data_quality_exception:
+        if data_quality_exception and not recovery_auto_clear_can_allocate:
             order_status = "data_quality_exception"
             short_amount = Decimal("0")
         elif order.normalized_order_number in recovery_excluded_numbers:
@@ -615,8 +629,10 @@ def _reconcile_group(
                 has_sales_payment_data=order_has_sales_payment_data,
                 short_amount=short_amount,
                 status=order_status,
-                has_payment_proof=bool(evidence_rows) and not data_quality_exception,
-                data_quality_exception=data_quality_exception,
+                has_payment_proof=bool(evidence_rows)
+                and (not data_quality_exception or recovery_auto_clear_can_allocate),
+                data_quality_exception=data_quality_exception
+                and not recovery_auto_clear_can_allocate,
                 recovery_status=order.recovery_status,
                 recovery_category=order.recovery_category,
                 raw_order=order.raw,

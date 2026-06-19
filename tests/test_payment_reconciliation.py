@@ -651,3 +651,52 @@ def test_mixed_comma_slash_tokens_match_and_unrelated_tokens_do_not_match() -> N
     assert [order.order_number for order in result.actual_payments_not_found] == [
         "ORD1"
     ]
+
+
+def test_to_be_recovered_grouped_proof_ignores_unmatched_token_when_matched_orders_are_covered() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[
+            _order(
+                "T766", "100", "2026-05-01T10:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+            _order(
+                "T767", "150", "2026-05-01T11:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+        ],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("T766, T767, BADTOKEN", "250")],
+    )
+
+    group = result.groups[0]
+    assert group.status == "data_quality_exception"
+    assert group.unmatched_order_numbers == ("BADTOKEN",)
+    assert group.data_quality_exception is True
+    assert [
+        (
+            order.order_number,
+            order.allocated_payment_amount,
+            order.has_recovery_auto_clear_proof,
+        )
+        for order in result.orders
+    ] == [("T766", Decimal("100"), True), ("T767", Decimal("150"), True)]
+    assert [order.order_number for order in result.recovery_auto_clear_orders] == [
+        "T766",
+        "T767",
+    ]
+
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[
+            _order(
+                "T766", "100", "2026-05-01T10:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+            _order(
+                "T767", "150", "2026-05-01T11:00:00", recovery_status="TO_BE_RECOVERED"
+            ),
+        ],
+        sales_rows=[],
+        payment_evidence_rows=[_proof("T766, T767, BADTOKEN", "250")],
+    )
+    assert audit_rows[0].reconciliation_result == "unmatched order token"
+    assert audit_rows[0].normalized_order_tokens_csv == "T766,T767,BADTOKEN"
