@@ -17,6 +17,7 @@ from app.common.lead_rules import resolve_cancelled_flag
 from app.common.order_recovery import transition_order_recovery_status
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.payment_reconciliation import (
+    DEFAULT_PAYMENT_TOLERANCE,
     normalize_order_number,
     reconcile_payments,
     split_payment_order_numbers,
@@ -277,6 +278,11 @@ async def _clear_resolved_to_be_recovered_orders(
                     sales.c.cost_center,
                     sales.c.order_number,
                     sales.c.payment_received,
+                    sales.c.payment_mode,
+                    sales.c.id,
+                    sales.c.get("payment_date")
+                    if hasattr(sales.c, "get") and sales.c.get("payment_date") is not None
+                    else sa.literal(None).label("payment_date"),
                 )
                 .where(sales.c.cost_center.in_(candidate_cost_centers))
                 .order_by(sales.c.cost_center, sales.c.order_number, sales.c.id)
@@ -332,21 +338,43 @@ async def _clear_resolved_to_be_recovered_orders(
 
     for order in sorted_auto_clear_candidates:
         group = groups_by_order_key[(order.cost_center, order.order_number)]
-        recovery_notes = _format_auto_clear_recovery_notes(order=order, group=group)
+        package_only = not (
+            order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
+            >= order.order_amount
+        )
+        recovery_notes = _format_auto_clear_recovery_notes(
+            order=order, group=group, package_only=package_only
+        )
         await transition_order_recovery_status(
             session=session,
             cost_center=order.cost_center,
             order_number=order.order_number,
             from_status="TO_BE_RECOVERED",
             to_status="RECOVERED",
-            recovery_category="PAYMENT_PROOF_AUTO_RECOVERED",
+            recovery_category=(
+                "AUTO_CLEARED_PACKAGE_SALES_PAYMENT"
+                if package_only
+                else "PAYMENT_PROOF_AUTO_RECOVERED"
+            ),
             recovery_note=recovery_notes,
         )
     await session.commit()
     return auto_cleared_order_numbers
 
 
-def _format_auto_clear_recovery_notes(*, order, group) -> str:
+def _format_auto_clear_recovery_notes(*, order, group, package_only: bool = False) -> str:
+    if package_only:
+        group_key = f"{group.cost_center}:{'/'.join(group.normalized_order_numbers)}"
+        return (
+            "AUTO_CLEARED_PACKAGE_SALES_PAYMENT "
+            f"package_sales_total={_format_decimal(order.package_sales_total)}, "
+            f"order_amount={_format_decimal(order.order_amount)}, "
+            f"sales_payment_received={_format_decimal(order.sales_payment_received)}, "
+            f"normalized_cost_center={order.cost_center}, "
+            f"normalized_order_number={order.normalized_order_number}, "
+            f"sales_trace={'|'.join(order.package_sales_trace)}, "
+            f"group_key={group_key}"
+        )
     payment_ids = ",".join(
         _format_evidence_id(evidence.evidence_id)
         for evidence in sorted(

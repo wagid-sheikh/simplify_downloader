@@ -393,9 +393,18 @@ async def _fetch_sales_rows_for_orders(
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
                 "payment_received"
             ),
+            sales.c.payment_mode,
+            sales.c.id,
+            _optional_column(sales, "payment_date"),
         )
         .where(sa.or_(*predicates))
-        .group_by(sales.c.cost_center, sales.c.order_number)
+        .group_by(
+            sales.c.cost_center,
+            sales.c.order_number,
+            sales.c.payment_mode,
+            sales.c.id,
+            _optional_column(sales, "payment_date"),
+        )
     )
     sales_result = await session.execute(sales_stmt)
     return [

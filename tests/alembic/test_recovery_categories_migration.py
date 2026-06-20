@@ -47,3 +47,13 @@ def test_auto_recovered_category_migration_extends_current_head() -> None:
     assignments = _migration_assignments("0124_auto_recovered_category.py")
     assert assignments["revision"] == "0124_auto_recovered_category"
     assert assignments["down_revision"] == "0123_oli_rebuild_progress"
+
+
+def test_active_recovery_category_constraint_includes_package_sales_auto_clear() -> (
+    None
+):
+    assignments = _migration_assignments("0137_package_sales_proof.py")
+    category_values = set(assignments["_RECOVERY_CATEGORY_VALUES"])
+
+    assert "AUTO_CLEARED_PACKAGE_SALES_PAYMENT" in category_values
+    assert assignments["down_revision"] == "0136_seed_target_compute_type"

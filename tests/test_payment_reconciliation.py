@@ -700,3 +700,101 @@ def test_to_be_recovered_grouped_proof_ignores_unmatched_token_when_matched_orde
     )
     assert audit_rows[0].reconciliation_result == "unmatched order token"
     assert audit_rows[0].normalized_order_tokens_csv == "T766,T767,BADTOKEN"
+
+
+def test_package_sales_proof_suppresses_actual_payments_not_found_without_collection() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[_order("PKG-PAID", "100")],
+        sales_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "PKG-PAID",
+                "payment_received": "100",
+                "payment_mode": " Package ",
+                "id": 10,
+            }
+        ],
+        payment_evidence_rows=[],
+    )
+
+    assert result.actual_payments_not_found == ()
+    assert result.orders[0].status == "paid"
+    assert result.orders[0].package_sales_total == Decimal("100")
+
+
+def test_insufficient_package_sales_proof_remains_actual_payments_not_found() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("PKG-SHORT", "100")],
+        sales_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "PKG-SHORT",
+                "payment_received": "98",
+                "payment_mode": "package",
+            }
+        ],
+        payment_evidence_rows=[],
+    )
+
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "PKG-SHORT"
+    ]
+
+
+def test_non_package_sales_does_not_suppress_actual_payments_not_found() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("CASH", "100")],
+        sales_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "CASH",
+                "payment_received": "100",
+                "payment_mode": "Cash",
+            }
+        ],
+        payment_evidence_rows=[],
+    )
+
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "CASH"
+    ]
+
+
+def test_package_sales_auto_clears_to_be_recovered_within_tolerance() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("PKG-REC", "100", recovery_status="TO_BE_RECOVERED")],
+        sales_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "PKG-REC",
+                "payment_received": "99",
+                "payment_mode": "package",
+                "id": 44,
+            }
+        ],
+        payment_evidence_rows=[],
+    )
+
+    assert [order.order_number for order in result.recovery_auto_clear_orders] == [
+        "PKG-REC"
+    ]
+    assert result.orders[0].package_sales_total == Decimal("99")
+
+
+def test_package_sales_short_by_more_than_tolerance_does_not_auto_clear() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("PKG-REC-SHORT", "100", recovery_status="TO_BE_RECOVERED")],
+        sales_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "PKG-REC-SHORT",
+                "payment_received": "98.99",
+                "payment_mode": "package",
+            }
+        ],
+        payment_evidence_rows=[],
+    )
+
+    assert result.recovery_auto_clear_orders == ()

@@ -145,3 +145,9 @@ DO UPDATE SET
 
 - Current analysis is expected from `docs/payment_collections.csv` export.
 - If that file is absent, analysis should be deferred until the CSV is added at that exact path.
+
+## Package sales proof
+
+Package-mode `sales` rows (`TRIM(LOWER(payment_mode)) = 'package'`) are a separate logical payment-proof source used by canonical reconciliation. They are matched by normalized `(cost_center, order_number)` and summed from `sales.payment_received`. When the Package total plus the standard ₹1 tolerance covers `vw_orders.order_amount`, the order is not Actual Payments Not Found even if no physical `payment_collections` row exists.
+
+Package proof is deliberately **not** inserted into `payment_collections`. Recovery auto-clear records Package-only proof with `AUTO_CLEARED_PACKAGE_SALES_PAYMENT`; normal `payment_collections` proof keeps its existing provenance when both proof sources are sufficient.
