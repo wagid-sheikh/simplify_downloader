@@ -473,3 +473,7 @@ Use canonical docs first, then consult legacy docs only for supporting context.
 
 - Some long CRM sync modules contain mixed legacy and current paths; exact source-of-truth flow per source mode should be validated by focused runtime tests.
 - Presence of similarly named migrations (e.g., multiple `0075*`) suggests historical complexity; migration sequence should always be checked from actual revision chain, not filename assumptions.
+
+### Package sales payment proof
+
+Canonical payment reconciliation treats Package-mode `sales` rows (`TRIM(LOWER(payment_mode)) = 'package'`) as a separate logical proof source, matched by normalized `(cost_center, order_number)` and summed from `sales.payment_received`. Sufficient Package proof excludes rows from Actual Payments Not Found and can auto-clear `TO_BE_RECOVERED` rows to `RECOVERED` using `AUTO_CLEARED_PACKAGE_SALES_PAYMENT`. This proof is not materialized as synthetic `payment_collections` rows; if `vw_orders_missing_in_payment_collections` keeps its historical name, it still mirrors Python missing-proof behavior and can exclude Package-proven orders without a physical collection row.
