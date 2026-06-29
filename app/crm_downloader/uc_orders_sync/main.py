@@ -902,6 +902,45 @@ def _archive_ingest_warning_count_for_stage_metrics(
     return warning_count
 
 
+
+def _archive_ingest_warning_details_for_stage_metrics(
+    stage_metrics: Mapping[str, Any] | None,
+) -> tuple[dict[str, int], dict[str, list[str]]]:
+    if not isinstance(stage_metrics, Mapping):
+        return {}, {}
+    archive_ingest = stage_metrics.get("archive_ingest")
+    if not isinstance(archive_ingest, Mapping):
+        return {}, {}
+    files = archive_ingest.get("files")
+    if not isinstance(files, Mapping):
+        return {}, {}
+    categories: dict[str, int] = {}
+    samples_by_category: dict[str, list[str]] = {}
+    for file_metrics in files.values():
+        if not isinstance(file_metrics, Mapping):
+            continue
+        warning_breakdown = file_metrics.get("warning_breakdown")
+        if isinstance(warning_breakdown, Mapping):
+            for category, count in warning_breakdown.items():
+                category_text = str(category).strip()
+                if not category_text or not isinstance(count, int) or count <= 0:
+                    continue
+                categories[category_text] = categories.get(category_text, 0) + count
+        warning_samples = file_metrics.get("warning_samples")
+        if isinstance(warning_samples, Mapping):
+            for category, samples in warning_samples.items():
+                category_text = str(category).strip()
+                if not category_text or not isinstance(samples, Sequence) or isinstance(samples, (str, bytes, Mapping)):
+                    continue
+                sample_bucket = samples_by_category.setdefault(category_text, [])
+                for sample in samples:
+                    if not isinstance(sample, Mapping):
+                        continue
+                    warning_code = str(sample.get("warning_code") or "").strip()
+                    if warning_code and warning_code not in sample_bucket and len(sample_bucket) < 5:
+                        sample_bucket.append(warning_code)
+    return categories, samples_by_category
+
 def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int:
     baseline_total = extract.post_filter_footer_total
     if baseline_total is None:
@@ -1154,8 +1193,17 @@ class UcOrdersDiscoverySummary:
             warning_count = outcome.warning_count if outcome else None
             if warning_count is None or warning_count <= 0:
                 continue
+            archive_categories, archive_samples = _archive_ingest_warning_details_for_stage_metrics(
+                outcome.stage_metrics if outcome else None
+            )
+            detail_parts: list[str] = []
+            for category, count in sorted(archive_categories.items()):
+                samples = archive_samples.get(category) or []
+                sample_text = f": {', '.join(samples)}" if samples else ""
+                detail_parts.append(f"{count} archive {category} warning(s){sample_text}")
+            detail_text = f"; {'; '.join(detail_parts)}" if detail_parts else ""
             warnings.append(
-                f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
+                f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s){detail_text}"
             )
         for store_code, outcome in self.store_outcomes.items():
             classification = outcome.zero_row_export_classification if outcome else None

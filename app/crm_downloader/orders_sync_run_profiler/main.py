@@ -1139,6 +1139,7 @@ def _build_uc_window_log(
     warning_count: int = 0,
     warning_categories: Mapping[str, int] | None = None,
     warning_rows: Sequence[Mapping[str, Any]] | None = None,
+    warning_samples: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     path_payload = _coerce_dict(download_paths.get("gst"))
     if not path_payload:
@@ -1175,6 +1176,11 @@ def _build_uc_window_log(
             for row in (warning_rows or [])
             if isinstance(row, Mapping)
         ][:UC_WARNING_ROW_SAMPLE_LIMIT],
+        "warning_samples": {
+            str(category): [str(sample) for sample in samples[:UC_WARNING_ROW_SAMPLE_LIMIT] if str(sample).strip()]
+            for category, samples in (warning_samples or {}).items()
+            if isinstance(samples, Sequence) and not isinstance(samples, (str, bytes))
+        },
         "ingest_success": ingest_success,
         "ingest_failure_reason": failure_reason,
     }
@@ -1349,7 +1355,7 @@ def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None
 def _extract_uc_warning_details_from_summary(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> dict[str, Any]:
-    details: dict[str, Any] = {"warning_count": 0, "warning_categories": {}, "warning_rows": []}
+    details: dict[str, Any] = {"warning_count": 0, "warning_categories": {}, "warning_rows": [], "warning_samples": {}}
     if not summary:
         return details
     metrics = _coerce_dict(summary.get("metrics_json"))
@@ -1364,6 +1370,31 @@ def _extract_uc_warning_details_from_summary(
     warning_count = summary_store.get("warning_count")
     if isinstance(warning_count, int) and warning_count > 0:
         details["warning_count"] = warning_count
+
+    archive_ingest = _coerce_dict(_coerce_dict(summary_store.get("stage_metrics")).get("archive_ingest"))
+    files = _coerce_dict(archive_ingest.get("files"))
+    archive_categories: dict[str, int] = {}
+    archive_samples: dict[str, list[str]] = {}
+    for file_metrics in files.values():
+        if not isinstance(file_metrics, Mapping):
+            continue
+        for category, count in _coerce_dict(file_metrics.get("warning_breakdown")).items():
+            category_text = str(category).strip()
+            category_count = int(count) if isinstance(count, int) and count > 0 else 0
+            if category_text and category_count:
+                archive_categories[category_text] = archive_categories.get(category_text, 0) + category_count
+        raw_samples = _coerce_dict(file_metrics.get("warning_samples"))
+        for category, samples in raw_samples.items():
+            category_text = str(category).strip()
+            if not category_text or not isinstance(samples, Sequence) or isinstance(samples, (str, bytes, Mapping)):
+                continue
+            sample_codes = archive_samples.setdefault(category_text, [])
+            for sample in samples:
+                if not isinstance(sample, Mapping):
+                    continue
+                warning_code = str(sample.get("warning_code") or "").strip()
+                if warning_code and warning_code not in sample_codes and len(sample_codes) < UC_WARNING_ROW_SAMPLE_LIMIT:
+                    sample_codes.append(warning_code)
 
     rows: list[dict[str, Any]] = []
     candidate_rows = summary_store.get("warning_rows")
@@ -1394,9 +1425,12 @@ def _extract_uc_warning_details_from_summary(
         unique_rows.append(row)
         categories[reason] = categories.get(reason, 0) + 1
     details["warning_rows"] = unique_rows[:UC_WARNING_ROW_SAMPLE_LIMIT]
+    for category, count in archive_categories.items():
+        categories[category] = categories.get(category, 0) + count
     details["warning_categories"] = categories
-    if details["warning_count"] <= 0 and unique_rows:
-        details["warning_count"] = len(unique_rows)
+    details["warning_samples"] = archive_samples
+    if details["warning_count"] <= 0:
+        details["warning_count"] = len(unique_rows) or sum(archive_categories.values())
     return details
 
 
@@ -2531,6 +2565,7 @@ async def _run_store_windows(
         uc_warning_count = 0
         uc_warning_categories: dict[str, int] = {}
         uc_warning_rows: list[dict[str, Any]] = []
+        uc_warning_samples: dict[str, list[str]] = {}
         td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
         td_benign_warning_info: dict[str, Any] | None = None
@@ -2573,6 +2608,10 @@ async def _run_store_windows(
                 uc_warning_count = int(uc_warning_details.get("warning_count", 0) or 0)
                 uc_warning_categories = dict(uc_warning_details.get("warning_categories") or {})
                 uc_warning_rows = [dict(row) for row in (uc_warning_details.get("warning_rows") or [])]
+                uc_warning_samples = {
+                    str(category): [str(sample) for sample in samples]
+                    for category, samples in (uc_warning_details.get("warning_samples") or {}).items()
+                }
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -2699,6 +2738,7 @@ async def _run_store_windows(
                     warning_count=uc_warning_count,
                     warning_categories=uc_warning_categories,
                     warning_rows=uc_warning_rows,
+                    warning_samples=uc_warning_samples,
                 )
             summary_status_note = str(summary_window_context.get("status_note") or "") or None
             summary_skip_reason = str(summary_window_context.get("skip_reason") or "") or None
@@ -2782,6 +2822,7 @@ async def _run_store_windows(
                     ),
                     "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
                     "warning_rows": uc_warning_rows if pipeline_name == "uc_orders_sync" else [],
+                    "warning_samples": uc_warning_samples if pipeline_name == "uc_orders_sync" else {},
                 }
             )
             if not fetched_status:
@@ -2871,6 +2912,11 @@ async def _run_store_windows(
                     uc_payload.get("warning_rows")
                     if pipeline_name == "uc_orders_sync" and uc_payload
                     else []
+                ),
+                "warning_samples": (
+                    uc_payload.get("warning_samples")
+                    if pipeline_name == "uc_orders_sync" and uc_payload
+                    else {}
                 ),
             }
         )
