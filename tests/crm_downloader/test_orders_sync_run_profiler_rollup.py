@@ -2286,3 +2286,47 @@ async def test_profiler_uc_row_warnings_promote_top_level_status_after_aggregati
         for warning in summary["metrics_json"]["notification_payload"]["warnings"]
     )
     assert "Policy: warning windows and UC row-level warnings are non-fatal" in summary["summary_text"]
+
+
+def test_extract_uc_warning_details_uses_archive_ingest_metrics_without_warning_rows() -> None:
+    summary = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "UC567": {
+                        "warning_count": 2,
+                        "warning_rows": [],
+                        "stage_metrics": {
+                            "archive_ingest": {
+                                "files": {
+                                    "base": {
+                                        "warnings": 2,
+                                        "warning_breakdown": {"status_normalized": 2},
+                                        "warning_samples": {
+                                            "status_normalized": [
+                                                {
+                                                    "warning_code": "status_normalized:UPI/Wallet App->UPI_WALLET_APP",
+                                                    "store_code": "UC567",
+                                                    "source_file": "base.xlsx",
+                                                    "row_locator": "row:2",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    details = profiler._extract_uc_warning_details_from_summary(summary, store_code="uc567")
+
+    assert details["warning_count"] == 2
+    assert details["warning_categories"] == {"status_normalized": 2}
+    assert details["warning_samples"] == {
+        "status_normalized": ["status_normalized:UPI/Wallet App->UPI_WALLET_APP"]
+    }
+    assert details["warning_rows"] == []
