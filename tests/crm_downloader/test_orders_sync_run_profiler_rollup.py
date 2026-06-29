@@ -1470,6 +1470,24 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
                     "from_date": "2024-02-01",
                     "to_date": "2024-02-02",
                     "status": "success_with_warnings",
+                    "warning_reason": "TD_GARMENT_DATA_INCOMPLETE: pagination budget exhausted",
+                    "endpoint_errors": {
+                        "/reports/order-report": "auth_context_not_ready",
+                        "/sales-and-deliveries/sales": "http_401",
+                        "/garments/details": "http_401",
+                    },
+                    "td_report_extraction_degraded_warning": {
+                        "code": "TD_REPORT_EXTRACTION_DEGRADED",
+                        "endpoint_summary": {
+                            "orders": "auth_context_not_ready",
+                            "sales": "http_401",
+                            "garments": "http_401",
+                        },
+                        "failed_endpoints": ["orders", "sales", "garments"],
+                        "ui_precursor_message": "Orders container navigation failed after retries",
+                        "final_url": "chrome-error://chromewebdata/",
+                        "step": "orders_iframe",
+                    },
                     "td_garment_warning": {
                         "garments_fetch_completeness": "incomplete",
                         "garments_final_row_count": 17,
@@ -1493,7 +1511,7 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
                         "garments_retry_count": 2,
                         "is_incomplete": True,
                     },
-                    "warning_count": 1,
+                    "warning_count": 2,
                     "ingestion_counts": {},
                 }
             ],
@@ -1532,10 +1550,10 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
             "status": "success_with_warnings",
             "status_note": "",
             "status_message": "",
-            "warning_reason": "",
+            "warning_reason": "TD_GARMENT_DATA_INCOMPLETE: pagination budget exhausted",
             "error_message": "",
             "attempt_no": None,
-            "warning_count": 1,
+            "warning_count": 2,
         }
     ]
     assert store["td_garment_warning_count"] == 1
@@ -1567,6 +1585,17 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
         }
     ]
     assert any("TD_GARMENT_DATA_INCOMPLETE: TD01" in warning for warning in payload["warnings"])
+    degraded_warning = next(
+        warning for warning in payload["warnings"] if warning.startswith("TD_REPORT_EXTRACTION_DEGRADED: TD01")
+    )
+    assert "orders=auth_context_not_ready" in degraded_warning
+    assert "sales=http_401" in degraded_warning
+    assert "garments=http_401" in degraded_warning
+    assert "Orders container navigation failed after retries" in degraded_warning
+    assert "final_url=chrome-error://chromewebdata/" in degraded_warning
+    assert "step=orders_iframe" in degraded_warning
+    assert store["td_report_extraction_degraded_warning_count"] == 1
+    assert "TD_GARMENT_DATA_INCOMPLETE" in store["warning_windows"][0]["warning_reason"]
     assert "final_garment_rows=17" in summary["summary_text"]
     assert "reason=pagination budget exhausted" in summary["summary_text"]
     assert "stop_reason=max_pages" in summary["summary_text"]

@@ -1246,6 +1246,11 @@ class StoreReport:
     compare_metrics: dict[str, Any] = field(default_factory=dict)
     api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
+    endpoint_errors: dict[str, Any] = field(default_factory=dict)
+    endpoint_health_summary: dict[str, Any] = field(default_factory=dict)
+    source_fetch_status: str | None = None
+    source_fetch_error_class: str | None = None
+    source_fetch_failed_endpoints: list[str] = field(default_factory=list)
     source_mode: str = "api_only"
     decision_log: dict[str, str] = field(default_factory=dict)
     gate_verdict: dict[str, Any] = field(default_factory=dict)
@@ -1292,6 +1297,11 @@ class StoreReport:
             "compare_metrics": dict(self.compare_metrics),
             "api_request_metadata": list(self.api_request_metadata),
             "auth_diagnostics": dict(self.auth_diagnostics),
+            "endpoint_errors": dict(self.endpoint_errors),
+            "endpoint_health_summary": dict(self.endpoint_health_summary),
+            "source_fetch_status": self.source_fetch_status,
+            "source_fetch_error_class": self.source_fetch_error_class,
+            "source_fetch_failed_endpoints": list(self.source_fetch_failed_endpoints),
             "source_mode": self.source_mode,
             "decision_log": dict(self.decision_log),
             "message": self.message,
@@ -1980,6 +1990,11 @@ class TdOrdersDiscoverySummary:
                 "garments_fetch_completeness": None,
                 "garments_final_row_count": None,
                 "garments_budget_state": None,
+                "endpoint_errors": {},
+                "endpoint_health_summary": {},
+                "source_fetch_status": None,
+                "source_fetch_error_class": None,
+                "source_fetch_failed_endpoints": [],
                 "warnings": [],
                 "warning_rows": [],
                 "dropped_rows": [],
@@ -2016,6 +2031,11 @@ class TdOrdersDiscoverySummary:
             "garments_expected_page_count": report.garments_expected_page_count,
             "garments_timeout_count": report.garments_timeout_count,
             "garments_retry_count": report.garments_retry_count,
+            "endpoint_errors": dict(report.endpoint_errors),
+            "endpoint_health_summary": dict(report.endpoint_health_summary),
+            "source_fetch_status": report.source_fetch_status,
+            "source_fetch_error_class": report.source_fetch_error_class,
+            "source_fetch_failed_endpoints": list(report.source_fetch_failed_endpoints),
             "message": report.message,
             "error_message": report.error_message,
             "warnings": list(report.warnings),
@@ -8059,6 +8079,11 @@ async def _execute_api_primary_ingestion(
         final_rows=(api_orders_ingest_result.final_rows if api_orders_ingest_result else len(api_fetch_result.orders_rows)),
         warnings=(api_orders_ingest_result.warnings if api_orders_ingest_result else []),
         amount_metrics=(api_orders_ingest_result.amount_metrics if api_orders_ingest_result else {}),
+        endpoint_errors=dict(api_fetch_result.endpoint_errors or {}),
+        endpoint_health_summary=dict(api_fetch_result.endpoint_health or {}),
+        source_fetch_status=api_fetch_result.source_fetch_status,
+        source_fetch_error_class=api_fetch_result.source_fetch_error_class,
+        source_fetch_failed_endpoints=list(api_fetch_result.source_fetch_failed_endpoints or []),
         source_mode=source_mode,
     )
     sales_report = StoreReport(
@@ -8075,6 +8100,11 @@ async def _execute_api_primary_ingestion(
         staging_rows=(api_sales_ingest_result.staging_rows if api_sales_ingest_result else None),
         final_rows=(api_sales_ingest_result.final_rows if api_sales_ingest_result else len(api_fetch_result.sales_rows)),
         warnings=(api_sales_ingest_result.warnings if api_sales_ingest_result else []),
+        endpoint_errors=dict(api_fetch_result.endpoint_errors or {}),
+        endpoint_health_summary=dict(api_fetch_result.endpoint_health or {}),
+        source_fetch_status=api_fetch_result.source_fetch_status,
+        source_fetch_error_class=api_fetch_result.source_fetch_error_class,
+        source_fetch_failed_endpoints=list(api_fetch_result.source_fetch_failed_endpoints or []),
         source_mode=source_mode,
     )
     for artifact_warning in artifact_warnings:
