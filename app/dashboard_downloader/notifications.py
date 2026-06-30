@@ -1303,6 +1303,16 @@ def _uc_warning_details_from_profiler_payload(stores: Sequence[Mapping[str, Any]
             if isinstance(window_categories, Mapping):
                 for reason, count in window_categories.items():
                     add_category(str(reason), _coerce_int(count) or 0)
+            raw_samples = window.get("warning_samples") or {}
+            if isinstance(raw_samples, Mapping):
+                for reason, samples in raw_samples.items():
+                    if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes, Mapping)):
+                        continue
+                    sample_bucket = samples_by_category.setdefault(str(reason), [])
+                    for sample in samples:
+                        sample_text = str(sample).strip()
+                        if sample_text and sample_text not in sample_bucket and len(sample_bucket) < 5:
+                            sample_bucket.append(sample_text)
             rows = _clean_uc_rows_for_reporting(window.get("warning_rows"), drop_empty=True)
             for row in rows:
                 reason = _uc_warning_reason_from_row(row)

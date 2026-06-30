@@ -60,6 +60,14 @@ FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
 TD_GARMENT_INCOMPLETE_COMPLETENESS = "incomplete"
 TD_GARMENT_INCOMPLETE_STATUS = "success_with_warnings"
 TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX = "TD_GARMENT_DATA_INCOMPLETE"
+TD_REPORT_EXTRACTION_DEGRADED_WARNING_PREFIX = "TD_REPORT_EXTRACTION_DEGRADED"
+TD_ENDPOINT_ERROR_LABELS = {
+    "/reports/order-report": "orders",
+    "/sales-and-deliveries/sales": "sales",
+    "/garments/details": "garments",
+}
+TD_ENDPOINT_ERROR_ALIASES = {value: value for value in TD_ENDPOINT_ERROR_LABELS.values()}
+TD_ENDPOINT_ERROR_ALIASES.update(TD_ENDPOINT_ERROR_LABELS)
 PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON = "profiler_store_lock_timeout"
 PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE = (
     "All stores failed before window planning due to profiler store locks"
@@ -1139,6 +1147,7 @@ def _build_uc_window_log(
     warning_count: int = 0,
     warning_categories: Mapping[str, int] | None = None,
     warning_rows: Sequence[Mapping[str, Any]] | None = None,
+    warning_samples: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     path_payload = _coerce_dict(download_paths.get("gst"))
     if not path_payload:
@@ -1175,6 +1184,11 @@ def _build_uc_window_log(
             for row in (warning_rows or [])
             if isinstance(row, Mapping)
         ][:UC_WARNING_ROW_SAMPLE_LIMIT],
+        "warning_samples": {
+            str(category): [str(sample) for sample in samples[:UC_WARNING_ROW_SAMPLE_LIMIT] if str(sample).strip()]
+            for category, samples in (warning_samples or {}).items()
+            if isinstance(samples, Sequence) and not isinstance(samples, (str, bytes))
+        },
         "ingest_success": ingest_success,
         "ingest_failure_reason": failure_reason,
     }
@@ -1249,6 +1263,35 @@ def _extract_ingestion_counts_from_summary(
     }
 
 
+
+def _extract_td_store_endpoint_context(summary: Mapping[str, Any] | None, *, store_code: str) -> dict[str, Any]:
+    if not summary:
+        return {}
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    normalized_code = store_code.upper()
+    orders_store = _coerce_dict(
+        _coerce_dict(_coerce_dict(metrics.get("orders")).get("stores")).get(normalized_code)
+    )
+    if not orders_store:
+        return {}
+    return {
+        key: orders_store.get(key)
+        for key in (
+            "endpoint_errors",
+            "endpoint_health_summary",
+            "source_fetch_status",
+            "source_fetch_error_class",
+            "source_fetch_failed_endpoints",
+            "ui_precursor",
+            "ui_precursor_message",
+            "navigation_failure",
+            "navigation_failure_message",
+            "final_url",
+            "step",
+        )
+        if orders_store.get(key) not in (None, "", [], {})
+    }
+
 def _extract_td_garment_warning_from_summary(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> dict[str, Any] | None:
@@ -1293,6 +1336,64 @@ def _extract_td_garment_warning_from_summary(
         "is_incomplete": completeness == TD_GARMENT_INCOMPLETE_COMPLETENESS,
     }
 
+
+
+def _td_endpoint_error_summary(endpoint_errors: Mapping[str, Any] | None) -> dict[str, str]:
+    errors = _coerce_dict(endpoint_errors)
+    summary: dict[str, str] = {}
+    for source_key, label in TD_ENDPOINT_ERROR_ALIASES.items():
+        value = errors.get(source_key)
+        if value not in (None, ""):
+            summary[label] = str(value)
+    return summary
+
+
+def _td_report_extraction_degraded_warning(window: Mapping[str, Any]) -> dict[str, Any] | None:
+    endpoint_summary = _td_endpoint_error_summary(_coerce_dict(window.get("endpoint_errors")))
+    failed_labels = [label for label in ("orders", "sales", "garments") if endpoint_summary.get(label)]
+    # A garment-only endpoint failure is already represented by the garment-completeness
+    # warning. Surface a separate warning when core report extraction is degraded too.
+    if "garments" not in failed_labels or not ({"orders", "sales"} & set(failed_labels)):
+        return None
+
+    precursor = _coerce_dict(window.get("ui_precursor") or window.get("navigation_failure") or window.get("auth_precursor"))
+    message = str(
+        precursor.get("message")
+        or window.get("ui_precursor_message")
+        or window.get("navigation_failure_message")
+        or ""
+    ).strip()
+    final_url = str(precursor.get("final_url") or window.get("final_url") or "").strip()
+    step = str(precursor.get("step") or window.get("step") or "").strip()
+    return {
+        "code": TD_REPORT_EXTRACTION_DEGRADED_WARNING_PREFIX,
+        "endpoint_summary": endpoint_summary,
+        "failed_endpoints": failed_labels,
+        "ui_precursor_message": message or None,
+        "final_url": final_url or None,
+        "step": step or None,
+    }
+
+
+def _format_td_report_extraction_degraded_warning(store_code: str, warning: Mapping[str, Any]) -> str:
+    endpoint_summary = _coerce_dict(warning.get("endpoint_summary"))
+    endpoint_text = ", ".join(
+        f"{label}={endpoint_summary[label]}"
+        for label in ("orders", "sales", "garments")
+        if endpoint_summary.get(label)
+    )
+    parts = [f"{TD_REPORT_EXTRACTION_DEGRADED_WARNING_PREFIX}: {store_code} endpoint health degraded"]
+    if endpoint_text:
+        parts.append(f"endpoints: {endpoint_text}")
+    precursor_bits = [str(warning.get("ui_precursor_message") or "").strip()]
+    if warning.get("final_url"):
+        precursor_bits.append(f"final_url={warning['final_url']}")
+    if warning.get("step"):
+        precursor_bits.append(f"step={warning['step']}")
+    precursor_text = "; ".join(bit for bit in precursor_bits if bit)
+    if precursor_text:
+        parts.append(f"ui_precursor: {precursor_text}")
+    return "; ".join(parts)
 
 def _td_garment_incomplete_reason_message(window: Mapping[str, Any]) -> str:
     reason = _coerce_dict(window.get("garments_incomplete_reason"))
@@ -1349,7 +1450,7 @@ def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None
 def _extract_uc_warning_details_from_summary(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> dict[str, Any]:
-    details: dict[str, Any] = {"warning_count": 0, "warning_categories": {}, "warning_rows": []}
+    details: dict[str, Any] = {"warning_count": 0, "warning_categories": {}, "warning_rows": [], "warning_samples": {}}
     if not summary:
         return details
     metrics = _coerce_dict(summary.get("metrics_json"))
@@ -1364,6 +1465,31 @@ def _extract_uc_warning_details_from_summary(
     warning_count = summary_store.get("warning_count")
     if isinstance(warning_count, int) and warning_count > 0:
         details["warning_count"] = warning_count
+
+    archive_ingest = _coerce_dict(_coerce_dict(summary_store.get("stage_metrics")).get("archive_ingest"))
+    files = _coerce_dict(archive_ingest.get("files"))
+    archive_categories: dict[str, int] = {}
+    archive_samples: dict[str, list[str]] = {}
+    for file_metrics in files.values():
+        if not isinstance(file_metrics, Mapping):
+            continue
+        for category, count in _coerce_dict(file_metrics.get("warning_breakdown")).items():
+            category_text = str(category).strip()
+            category_count = int(count) if isinstance(count, int) and count > 0 else 0
+            if category_text and category_count:
+                archive_categories[category_text] = archive_categories.get(category_text, 0) + category_count
+        raw_samples = _coerce_dict(file_metrics.get("warning_samples"))
+        for category, samples in raw_samples.items():
+            category_text = str(category).strip()
+            if not category_text or not isinstance(samples, Sequence) or isinstance(samples, (str, bytes, Mapping)):
+                continue
+            sample_codes = archive_samples.setdefault(category_text, [])
+            for sample in samples:
+                if not isinstance(sample, Mapping):
+                    continue
+                warning_code = str(sample.get("warning_code") or "").strip()
+                if warning_code and warning_code not in sample_codes and len(sample_codes) < UC_WARNING_ROW_SAMPLE_LIMIT:
+                    sample_codes.append(warning_code)
 
     rows: list[dict[str, Any]] = []
     candidate_rows = summary_store.get("warning_rows")
@@ -1394,9 +1520,12 @@ def _extract_uc_warning_details_from_summary(
         unique_rows.append(row)
         categories[reason] = categories.get(reason, 0) + 1
     details["warning_rows"] = unique_rows[:UC_WARNING_ROW_SAMPLE_LIMIT]
+    for category, count in archive_categories.items():
+        categories[category] = categories.get(category, 0) + count
     details["warning_categories"] = categories
-    if details["warning_count"] <= 0 and unique_rows:
-        details["warning_count"] = len(unique_rows)
+    details["warning_samples"] = archive_samples
+    if details["warning_count"] <= 0:
+        details["warning_count"] = len(unique_rows) or sum(archive_categories.values())
     return details
 
 
@@ -2531,6 +2660,7 @@ async def _run_store_windows(
         uc_warning_count = 0
         uc_warning_categories: dict[str, int] = {}
         uc_warning_rows: list[dict[str, Any]] = []
+        uc_warning_samples: dict[str, list[str]] = {}
         td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
         td_benign_warning_info: dict[str, Any] | None = None
@@ -2573,6 +2703,10 @@ async def _run_store_windows(
                 uc_warning_count = int(uc_warning_details.get("warning_count", 0) or 0)
                 uc_warning_categories = dict(uc_warning_details.get("warning_categories") or {})
                 uc_warning_rows = [dict(row) for row in (uc_warning_details.get("warning_rows") or [])]
+                uc_warning_samples = {
+                    str(category): [str(sample) for sample in samples]
+                    for category, samples in (uc_warning_details.get("warning_samples") or {}).items()
+                }
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -2623,6 +2757,11 @@ async def _run_store_windows(
                     from_date=window_start,
                     to_date=window_end,
                 )
+                if pipeline_name == "td_orders_sync":
+                    summary_window_context = {
+                        **_extract_td_store_endpoint_context(summary, store_code=store.store_code),
+                        **summary_window_context,
+                    }
             resolved_status, resolved_note = _resolve_window_outcome_status(
                 raw_status=status,
                 summary_overall_status=summary_overall_status,
@@ -2699,9 +2838,16 @@ async def _run_store_windows(
                     warning_count=uc_warning_count,
                     warning_categories=uc_warning_categories,
                     warning_rows=uc_warning_rows,
+                    warning_samples=uc_warning_samples,
                 )
             summary_status_note = str(summary_window_context.get("status_note") or "") or None
             summary_skip_reason = str(summary_window_context.get("skip_reason") or "") or None
+            endpoint_errors = _coerce_dict(summary_window_context.get("endpoint_errors"))
+            td_extraction_degraded_warning = (
+                _td_report_extraction_degraded_warning(summary_window_context)
+                if pipeline_name == "td_orders_sync"
+                else None
+            )
             retryable_timeout_status = _should_promote_retryable_status_to_failed(
                 status=status,
                 error_message=error_message,
@@ -2730,7 +2876,15 @@ async def _run_store_windows(
             error_message = message_fields["error_message"]
             status_message = message_fields["status_message"]
             warning_reason = message_fields["warning_reason"]
-            td_window_warning_count = 1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0
+            td_window_warning_count = (
+                (1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0)
+                + (1 if td_extraction_degraded_warning else 0)
+            )
+            if td_extraction_degraded_warning:
+                degraded_reason = _format_td_report_extraction_degraded_warning(
+                    store.store_code, td_extraction_degraded_warning
+                )
+                warning_reason = f"{warning_reason}; {degraded_reason}" if warning_reason else degraded_reason
             if td_garment_warning and td_garment_warning.get("is_incomplete") and not warning_reason:
                 warning_reason = (
                     f"{TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX}: "
@@ -2776,12 +2930,15 @@ async def _run_store_windows(
                     "ingestion_counts": ingestion_counts,
                     "orders_sync_log_id": log_row.get("id") if log_row else None,
                     "td_garment_warning": td_garment_warning,
+                    "td_report_extraction_degraded_warning": td_extraction_degraded_warning,
+                    "endpoint_errors": endpoint_errors,
                     "td_benign_warning_info": td_benign_warning_info,
                     "warning_count": (
                         uc_warning_count if pipeline_name == "uc_orders_sync" else td_window_warning_count
                     ),
                     "warning_categories": uc_warning_categories if pipeline_name == "uc_orders_sync" else {},
                     "warning_rows": uc_warning_rows if pipeline_name == "uc_orders_sync" else [],
+                    "warning_samples": uc_warning_samples if pipeline_name == "uc_orders_sync" else {},
                 }
             )
             if not fetched_status:
@@ -2859,6 +3016,8 @@ async def _run_store_windows(
                 "attempt_run_id": attempt_run_id,
                 "orders_sync_log_id": log_row.get("id") if log_row else None,
                 "attempts": attempt_audit,
+                "endpoint_errors": endpoint_errors,
+                "td_report_extraction_degraded_warning": td_extraction_degraded_warning,
                 "td_garment_warning": td_garment_warning,
                 "td_benign_warning_info": td_benign_warning_info,
                 "warning_count": (
@@ -2871,6 +3030,11 @@ async def _run_store_windows(
                     uc_payload.get("warning_rows")
                     if pipeline_name == "uc_orders_sync" and uc_payload
                     else []
+                ),
+                "warning_samples": (
+                    uc_payload.get("warning_samples")
+                    if pipeline_name == "uc_orders_sync" and uc_payload
+                    else {}
                 ),
             }
         )
@@ -3287,6 +3451,11 @@ async def main(
             if window.get("status_conflict")
         ]
         td_garment_warnings = _td_garment_warning_entries(result.window_audit)
+        td_extraction_degraded_warnings = [
+            _coerce_dict(window.get("td_report_extraction_degraded_warning"))
+            for window in result.window_audit
+            if _coerce_dict(window.get("td_report_extraction_degraded_warning"))
+        ]
         store_totals[result.store_code] = {
             "pipeline_group": result.pipeline_group,
             "pipeline_name": result.pipeline_name,
@@ -3299,12 +3468,19 @@ async def main(
             "ingestion_totals": result.ingestion_totals,
             "td_garment_warning_count": len(td_garment_warnings),
             "td_garment_incomplete_windows": td_garment_warnings,
+            "td_report_extraction_degraded_warning_count": len(td_extraction_degraded_warnings),
+            "td_report_extraction_degraded_windows": td_extraction_degraded_warnings,
         }
         for warning in td_garment_warnings:
             warning["store_code"] = result.store_code
         if status_conflicts:
             warning_messages.append(
                 f"{result.store_code}: {len(status_conflicts)} window(s) skipped but rows present"
+            )
+        if td_extraction_degraded_warnings:
+            warning_messages.extend(
+                _format_td_report_extraction_degraded_warning(result.store_code, warning)
+                for warning in td_extraction_degraded_warnings
             )
         if td_garment_warnings:
             warning_messages.append(
@@ -3347,6 +3523,8 @@ async def main(
                 "warning_windows": warning_windows,
                 "td_garment_warning_count": len(td_garment_warnings),
                 "td_garment_incomplete_windows": td_garment_warnings,
+                "td_report_extraction_degraded_warning_count": len(td_extraction_degraded_warnings),
+                "td_report_extraction_degraded_windows": td_extraction_degraded_warnings,
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
             }
