@@ -239,12 +239,8 @@ async def _set_view_default_due_date_null_for_order(
 ) -> None:
     escaped_order_number = order_number.replace("'", "''")
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text("DROP VIEW IF EXISTS vw_orders")
-        )
-        await session.execute(
-            sa.text(
-                f"""
+        await session.execute(sa.text("DROP VIEW IF EXISTS vw_orders"))
+        await session.execute(sa.text(f"""
                 CREATE VIEW vw_orders AS
                 SELECT
                     cost_center,
@@ -319,9 +315,7 @@ async def _set_view_default_due_date_null_for_order(
                         )
                     END AS order_amount
                 FROM orders
-                """
-            )
-        )
+                """))
         await session.commit()
 
 
@@ -336,7 +330,7 @@ async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
-    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
@@ -369,7 +363,7 @@ async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row
     )
     assert included_row.paid_amount == Decimal("0.00")
     assert included_row.pending_amount == Decimal("2165.00")
-    assert included_row.default_due_date == date(2025, 5, 10)
+    assert included_row.default_due_date == date(2025, 5, 18)
 
 
 @pytest.mark.asyncio
@@ -383,7 +377,7 @@ async def test_fetch_pending_deliveries_includes_non_pending_order_status_when_u
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
-    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
@@ -427,7 +421,7 @@ async def test_fetch_pending_deliveries_excludes_sufficient_payment_collection_p
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
-    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
@@ -507,7 +501,7 @@ async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_two_days_w
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
-    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
@@ -541,8 +535,8 @@ async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_two_days_w
         for row in bucket.rows
         if row.order_number == "NO-DUE-DATE"
     )
-    assert included_row.default_due_date == date(2025, 5, 12)
-    assert included_row.age_days == 8
+    assert included_row.default_due_date == date(2025, 5, 20)
+    assert included_row.age_days == 2
 
 
 @pytest.mark.asyncio
@@ -557,8 +551,8 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
-    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
-    default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
+    default_due_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
         database_url=database_url,
@@ -612,6 +606,92 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
 
 
 @pytest.mark.asyncio
+async def test_fetch_pending_deliveries_includes_zero_value_order_without_payment_proof(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_zero_no_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="ZERO-NO-PROOF",
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = [
+        row
+        for section in data.summary_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    ]
+    assert {row.order_number for row in rows} == {"ZERO-NO-PROOF"}
+    assert rows[0].order_amount == Decimal("0.00")
+    assert rows[0].pending_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_excludes_zero_value_order_with_zero_amount_proof(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_zero_with_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="ZERO-WITH-PROOF",
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" zero-with-proof ",
+        amount=Decimal("0.00"),
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    assert data.total_count == 0
+    assert data.summary_sections == []
+
+
+@pytest.mark.asyncio
 async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buckets(
     tmp_path, monkeypatch
 ) -> None:
@@ -623,8 +703,8 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
-    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
-    default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
+    default_due_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
 
     excluded_statuses = [
         "IN_PROGRESS",
@@ -718,7 +798,7 @@ async def test_each_recovery_status_is_excluded_from_pending_delivery_action_buc
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
-    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
         database_url=database_url,
@@ -775,7 +855,7 @@ async def test_fetch_pending_deliveries_excludes_orders_with_any_matching_sales_
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
-    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 18, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
         database_url=database_url,
@@ -887,7 +967,6 @@ async def _seed_transition_order(
                 {"notes": recovery_notes, "order_number": order_number},
             )
             await session.commit()
-
 
 
 @pytest.mark.asyncio
@@ -1012,6 +1091,7 @@ async def test_transition_age_at_or_below_threshold_not_marked(
     assert {row["recovery_status"] for row in rows.values()} == {"NONE"}
     assert {row["recovery_category"] for row in rows.values()} == {None}
 
+
 @pytest.mark.asyncio
 async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_transition_age_30.db"
@@ -1039,7 +1119,9 @@ async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_transition_age_31_marked_without_recovery_category(tmp_path, monkeypatch) -> None:
+async def test_transition_age_31_marked_without_recovery_category(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "pending_transition_age_31.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1261,7 +1343,7 @@ async def test_transition_unsupported_payment_source_type_does_not_block_recover
 
 
 @pytest.mark.asyncio
-async def test_fetch_after_transition_keeps_ages_16_and_30_in_16_30_bucket_and_excludes_31(
+async def test_fetch_after_transition_keeps_ages_0_and_3_in_0_3_bucket_and_excludes_4(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_transition_bucket_boundaries.db"
@@ -1269,7 +1351,7 @@ async def test_fetch_after_transition_keeps_ages_16_and_30_in_16_30_bucket_and_e
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
 
-    for age_days in (16, 30, 31):
+    for age_days in (0, 3, 4):
         await _seed_transition_order(
             database_url=database_url,
             monkeypatch=monkeypatch,
@@ -1286,30 +1368,19 @@ async def test_fetch_after_transition_keeps_ages_16_and_30_in_16_30_bucket_and_e
         report_date=date(2025, 5, 20),
     )
 
-    assert transitioned_count == 1
+    assert transitioned_count == 0
     assert [bucket.label for bucket in data.summary_sections[0].buckets] == [
-        "0-5 days",
-        "6-15 days",
-        "16-30 days",
+        "0-3 days",
     ]
-    assert all(
-        bucket.label != ">15 days"
-        for section in data.summary_sections
-        for bucket in section.buckets
-    )
-    age_16_30_bucket = next(
-        bucket
-        for bucket in data.summary_sections[0].buckets
-        if bucket.label == "16-30 days"
-    )
-    assert {row.order_number for row in age_16_30_bucket.rows} == {"AGE-16", "AGE-30"}
-    assert {row.age_days for row in age_16_30_bucket.rows} == {16, 30}
+    pending_bucket = data.summary_sections[0].buckets[0]
+    assert {row.order_number for row in pending_bucket.rows} == {"AGE-0", "AGE-3"}
+    assert {row.age_days for row in pending_bucket.rows} == {0, 3}
     assert {
         row.order_number
         for section in data.cost_center_sections
         for bucket in section.buckets
         for row in bucket.rows
-    } == {"AGE-16", "AGE-30"}
+    } == {"AGE-0", "AGE-3"}
 
 
 @pytest.mark.asyncio
