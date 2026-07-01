@@ -269,7 +269,6 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
         sa.column("order_number"),
         sa.column("order_date"),
         sa.column("default_due_date"),
-        sa.column("order_status"),
         sa.column("order_amount"),
         sa.column("recovery_status"),
     )
@@ -420,7 +419,6 @@ async def fetch_pending_deliveries_report(
         sa.column("default_due_date"),
         sa.column("source_system"),
         sa.column("order_amount"),
-        sa.column("order_status"),
         sa.column("recovery_status"),
     )
     payment_collections = sa.table(
