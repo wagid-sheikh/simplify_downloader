@@ -109,25 +109,35 @@ class ReconciledOrderPayment:
         not depend on the operator-facing reconciliation ``status`` because
         active recovery rows are excluded from Short Payments / Actual Payments
         Not Found action lists and can therefore carry ``recovery_excluded``
-        even when valid payment evidence fully covers the order.
+        even when valid payment evidence fully covers the order. Zero-value
+        recovery rows require an explicit zero-amount collection proof and are
+        not auto-cleared by tolerance math alone.
         """
 
-        return (
-            self.recovery_status.strip().upper() == "TO_BE_RECOVERED"
-            and self.order_amount > 0
-            and (
-                (
-                    self.has_payment_proof is True
-                    and self.allocated_payment_amount + tolerance >= self.order_amount
-                )
-                or self.has_sufficient_package_sales_proof(tolerance)
+        if self.recovery_status.strip().upper() != "TO_BE_RECOVERED":
+            return False
+        if self.order_amount == 0:
+            return self.has_zero_amount_payment_proof
+        return self.order_amount > 0 and (
+            (
+                self.has_payment_proof is True
+                and self.allocated_payment_amount + tolerance >= self.order_amount
             )
+            or self.has_sufficient_package_sales_proof(tolerance)
+        )
+
+    @property
+    def has_zero_amount_payment_proof(self) -> bool:
+        return (
+            self.order_amount == 0
+            and self.has_payment_proof
+            and self.evidence_amount == 0
         )
 
     def has_sufficient_package_sales_proof(
         self, tolerance: Decimal = DEFAULT_PAYMENT_TOLERANCE
     ) -> bool:
-        return self.package_sales_total + tolerance >= self.order_amount
+        return self.order_amount > 0 and self.package_sales_total + tolerance >= self.order_amount
 
     @property
     def has_recovery_auto_clear_proof(self) -> bool:
@@ -448,7 +458,10 @@ def reconcile_payments(
         has_sales_payment_data = sales_row_counts.get(key, 0) > 0
         sales_evidence_mismatch = abs(sales_received) > tolerance_amount
         package_total = package_sales_totals.get(key, Decimal("0"))
-        has_package_proof = package_total + tolerance_amount >= order.order_amount
+        has_package_proof = (
+            order.order_amount > 0
+            and package_total + tolerance_amount >= order.order_amount
+        )
         recovery_excluded = _is_recovery_excluded_status(order.recovery_status)
         status = (
             "recovery_excluded"
@@ -590,7 +603,13 @@ def _reconcile_group(
         status = "data_quality_exception"
     elif not evidence_rows:
         status = "recovery_excluded" if all_recovery_excluded else "proof_missing"
-    elif evidence_amount + tolerance >= expected_amount:
+    elif _group_has_sufficient_payment_proof(
+        orders=sorted_orders,
+        evidence_rows=evidence_rows,
+        allocated_amount=evidence_amount,
+        expected_amount=expected_amount,
+        tolerance=tolerance,
+    ):
         status = "paid"
     elif all_recovery_excluded:
         status = "recovery_excluded"
@@ -645,9 +664,12 @@ def _reconcile_group(
             short_amount = Decimal("0")
         elif not evidence_rows:
             order_status = "proof_missing"
-        elif (
-            allocated + tolerance >= order.order_amount
-            or order_package_sales_total + tolerance >= order.order_amount
+        elif _order_has_sufficient_payment_proof(
+            order_amount=order.order_amount,
+            evidence_rows=evidence_rows,
+            allocated_amount=allocated,
+            package_sales_total=order_package_sales_total,
+            tolerance=tolerance,
         ):
             order_status = "paid"
             short_amount = Decimal("0")
@@ -672,10 +694,15 @@ def _reconcile_group(
                 short_amount=short_amount,
                 status=order_status,
                 has_payment_proof=(
-                    bool(evidence_rows)
-                    and (not data_quality_exception or recovery_auto_clear_can_allocate)
-                )
-                or order_package_sales_total + tolerance >= order.order_amount,
+                    (
+                        bool(evidence_rows)
+                        and (not data_quality_exception or recovery_auto_clear_can_allocate)
+                    )
+                    or (
+                        order.order_amount > 0
+                        and order_package_sales_total + tolerance >= order.order_amount
+                    )
+                ),
                 data_quality_exception=data_quality_exception
                 and not recovery_auto_clear_can_allocate,
                 recovery_status=order.recovery_status,
@@ -742,6 +769,41 @@ def _reconcile_group(
         ),
     )
 
+
+
+def _has_explicit_zero_amount_evidence(
+    evidence_rows: Sequence[ReconciliationPaymentEvidence],
+) -> bool:
+    return any(row.amount == 0 for row in evidence_rows)
+
+
+def _order_has_sufficient_payment_proof(
+    *,
+    order_amount: Decimal,
+    evidence_rows: Sequence[ReconciliationPaymentEvidence],
+    allocated_amount: Decimal,
+    package_sales_total: Decimal,
+    tolerance: Decimal,
+) -> bool:
+    if order_amount == 0:
+        return _has_explicit_zero_amount_evidence(evidence_rows)
+    return order_amount > 0 and (
+        allocated_amount + tolerance >= order_amount
+        or package_sales_total + tolerance >= order_amount
+    )
+
+
+def _group_has_sufficient_payment_proof(
+    *,
+    orders: Sequence[ReconciliationOrder],
+    evidence_rows: Sequence[ReconciliationPaymentEvidence],
+    allocated_amount: Decimal,
+    expected_amount: Decimal,
+    tolerance: Decimal,
+) -> bool:
+    if all(order.order_amount == 0 for order in orders):
+        return _has_explicit_zero_amount_evidence(evidence_rows)
+    return expected_amount > 0 and allocated_amount + tolerance >= expected_amount
 
 def _is_recovery_excluded_status(status: str) -> bool:
     return status.strip().upper() in RECOVERY_EXCLUDED_STATUSES
