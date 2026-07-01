@@ -932,6 +932,8 @@ async def _seed_transition_order(
     insert_sale: bool = False,
     recovery_notes: str | None = None,
     order_status: str = "Pending",
+    gross_amount: Decimal = Decimal("100.00"),
+    net_amount: Decimal = Decimal("100.00"),
 ) -> None:
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
@@ -949,8 +951,8 @@ async def _seed_transition_order(
         default_due_date=due_date,
         source_system="TumbleDry",
         order_number=order_number,
-        gross_amount=Decimal("100.00"),
-        net_amount=Decimal("100.00"),
+        gross_amount=gross_amount,
+        net_amount=net_amount,
         payment_received=Decimal("0.00"),
         adjustments=Decimal("0.00"),
         recovery_status=recovery_status,
@@ -1063,7 +1065,7 @@ async def test_transition_aged_order_with_matching_sales_row_not_marked(
 
 
 @pytest.mark.asyncio
-async def test_transition_age_at_or_below_threshold_not_marked(
+async def test_transition_age_3_does_not_transition(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_transition_age_threshold.db"
@@ -1071,7 +1073,7 @@ async def test_transition_age_at_or_below_threshold_not_marked(
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
 
-    for age_days in (29, 30):
+    for age_days in (3,):
         await _seed_transition_order(
             database_url=database_url,
             monkeypatch=monkeypatch,
@@ -1085,16 +1087,16 @@ async def test_transition_age_at_or_below_threshold_not_marked(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    assert metrics.scanned_count == 2
-    assert metrics.skipped_due_to_age == 2
+    assert metrics.scanned_count == 1
+    assert metrics.skipped_due_to_age == 1
     assert metrics.transitioned_count == 0
     assert {row["recovery_status"] for row in rows.values()} == {"NONE"}
     assert {row["recovery_category"] for row in rows.values()} == {None}
 
 
 @pytest.mark.asyncio
-async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "pending_transition_age_30.db"
+async def test_transition_age_3_not_marked(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "pending_transition_age_3.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
@@ -1102,8 +1104,8 @@ async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
     await _seed_transition_order(
         database_url=database_url,
         monkeypatch=monkeypatch,
-        order_number="AGE-30",
-        age_days=30,
+        order_number="AGE-3",
+        age_days=3,
     )
 
     transitioned_count = await transition_aged_pending_deliveries_to_recovery(
@@ -1113,16 +1115,16 @@ async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
 
     rows = await _fetch_recovery_rows(database_url)
     assert transitioned_count == 0
-    assert rows["AGE-30"]["recovery_status"] == "NONE"
-    assert rows["AGE-30"]["recovery_category"] is None
-    assert rows["AGE-30"]["recovery_notes"] is None
+    assert rows["AGE-3"]["recovery_status"] == "NONE"
+    assert rows["AGE-3"]["recovery_category"] is None
+    assert rows["AGE-3"]["recovery_notes"] is None
 
 
 @pytest.mark.asyncio
-async def test_transition_age_31_marked_without_recovery_category(
+async def test_transition_age_4_marked_without_recovery_category(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "pending_transition_age_31.db"
+    db_path = tmp_path / "pending_transition_age_4.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
@@ -1130,8 +1132,8 @@ async def test_transition_age_31_marked_without_recovery_category(
     await _seed_transition_order(
         database_url=database_url,
         monkeypatch=monkeypatch,
-        order_number="AGE-31",
-        age_days=31,
+        order_number="AGE-4",
+        age_days=4,
     )
 
     transitioned_count = await transition_aged_pending_deliveries_to_recovery(
@@ -1141,12 +1143,77 @@ async def test_transition_age_31_marked_without_recovery_category(
 
     rows = await _fetch_recovery_rows(database_url)
     assert transitioned_count == 1
-    assert rows["AGE-31"]["recovery_status"] == "TO_BE_RECOVERED"
-    assert rows["AGE-31"]["recovery_category"] is None
+    assert rows["AGE-4"]["recovery_status"] == "TO_BE_RECOVERED"
+    assert rows["AGE-4"]["recovery_category"] is None
     assert (
-        rows["AGE-31"]["recovery_notes"]
-        == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
+        rows["AGE-4"]["recovery_notes"]
+        == "Auto marked as TO_BE_RECOVERED by system due to aging beyond delivery due date on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     )
+
+
+@pytest.mark.asyncio
+async def test_transition_age_4_zero_value_order_with_no_proof_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_zero_no_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="ZERO-NO-PROOF-AGE-4",
+        age_days=4,
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["ZERO-NO-PROOF-AGE-4"]["recovery_status"] == "TO_BE_RECOVERED"
+    assert rows["ZERO-NO-PROOF-AGE-4"]["recovery_category"] is None
+
+
+@pytest.mark.asyncio
+async def test_transition_age_4_zero_value_order_with_zero_amount_proof_not_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_zero_with_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="ZERO-WITH-PROOF-AGE-4",
+        age_days=4,
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" zero-with-proof-age-4 ",
+        amount=Decimal("0.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 0
+    assert rows["ZERO-WITH-PROOF-AGE-4"]["recovery_status"] == "NONE"
+    assert rows["ZERO-WITH-PROOF-AGE-4"]["recovery_category"] is None
 
 
 @pytest.mark.asyncio
@@ -1368,7 +1435,7 @@ async def test_fetch_after_transition_keeps_ages_0_and_3_in_0_3_bucket_and_exclu
         report_date=date(2025, 5, 20),
     )
 
-    assert transitioned_count == 0
+    assert transitioned_count == 1
     assert [bucket.label for bucket in data.summary_sections[0].buckets] == [
         "0-3 days",
     ]
@@ -1448,7 +1515,7 @@ async def test_transition_missing_default_due_date_uses_order_date_plus_two_days
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    assert metrics.skipped_due_to_missing_due_date == 1
+    assert metrics.skipped_due_to_missing_due_date == 0
     assert metrics.transitioned_count == 1
     assert rows["AGE-BY-ORDER-DATE"]["recovery_status"] == "TO_BE_RECOVERED"
 
@@ -1507,7 +1574,7 @@ async def test_transition_existing_note_remains_intact_after_auto_marking(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    expected_note = "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
+    expected_note = "Auto marked as TO_BE_RECOVERED by system due to aging beyond delivery due date on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     assert transitioned_count == 1
     assert rows["PRESERVE-NOTE"]["recovery_status"] == "TO_BE_RECOVERED"
     assert (
@@ -1542,7 +1609,7 @@ async def test_transition_repeated_run_does_not_duplicate_notes(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    expected_note = "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
+    expected_note = "Auto marked as TO_BE_RECOVERED by system due to aging beyond delivery due date on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     assert first_count == 1
     assert second_count == 0
     assert rows["IDEMPOTENT"]["recovery_status"] == "TO_BE_RECOVERED"
