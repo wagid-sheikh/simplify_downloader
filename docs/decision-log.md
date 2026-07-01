@@ -215,6 +215,7 @@
 - **Status:** Proposed
 - **Decision:** Add a dedicated same-day fulfillment section in Daily Sales Report for orders created and delivered/paid on the same business day.
 - **Context:** Code review confirms the current Daily Sales Report aggregates orders and collections into KPI totals, but does not expose line-level same-day create+deliver rows. Pending Deliveries intentionally filters only `order_status == "Pending"`, so same-day fulfilled orders never appear there either, creating an operator visibility gap for rapid-turnaround orders.
+- **Supersession note:** This Proposed entry preserves the historical review context, but the Pending Deliveries eligibility model has since been realigned and no longer uses `order_status == "Pending"` as the controlling rule. Treat that wording as superseded; the current canonical contract is maintained in `docs/architecture.md` under the Pending Deliveries canonical contract.
 - **Evidence:** `app/reports/daily_sales_report/data.py` aggregates by date windows via `orders.order_date` and `sales.payment_date` but has no extracted detail dataset for same-day fulfillment rows; template sections currently render KPI totals and recovery/lead blocks only. `app/reports/pending_deliveries/data.py` explicitly restricts dataset to pending orders.
 - **Implications:**
   - Daily Sales PDF can under-communicate high-velocity operational wins where order creation and completion happen on the same day.
