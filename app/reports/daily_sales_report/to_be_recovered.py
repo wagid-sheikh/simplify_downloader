@@ -30,7 +30,7 @@ class RecoveryDetailGroup:
 
 def _row_sort_key(row: RecoveryOrderRow) -> tuple[str, date, str]:
     sort_date = row.order_date or date.min
-    return (row.cost_center, -sort_date.toordinal(), row.order_number)
+    return (row.cost_center, sort_date, row.order_number)
 
 
 def _build_grouped_rows(rows: Iterable[RecoveryOrderRow]) -> list[RecoveryDetailGroup]:

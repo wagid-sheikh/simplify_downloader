@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -21,10 +21,16 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-
-
-_DATA_MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "reports" / "daily_sales_report" / "data.py"
-_spec = importlib.util.spec_from_file_location("daily_sales_report_data_module", _DATA_MODULE_PATH)
+_DATA_MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "app"
+    / "reports"
+    / "daily_sales_report"
+    / "data.py"
+)
+_spec = importlib.util.spec_from_file_location(
+    "daily_sales_report_data_module", _DATA_MODULE_PATH
+)
 if _spec is None or _spec.loader is None:
     raise RuntimeError("Unable to load daily sales report data module")
 _data_module = importlib.util.module_from_spec(_spec)
@@ -36,21 +42,15 @@ fetch_daily_sales_report = _data_module.fetch_daily_sales_report
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     with engine.begin() as conn:
-        conn.execute(
-            sa.text(
-                """
+        conn.execute(sa.text("""
                 CREATE TABLE cost_center (
                     cost_center TEXT PRIMARY KEY,
                     description TEXT,
                     target_type TEXT,
                     is_active BOOLEAN
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE cost_center_targets (
                     month INTEGER,
                     year INTEGER,
@@ -62,12 +62,8 @@ def _create_tables(database_url: str) -> None:
                     sales_target_met BOOLEAN,
                     collection_target_met BOOLEAN
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE orders (
                     cost_center TEXT,
                     order_number TEXT,
@@ -86,12 +82,8 @@ def _create_tables(database_url: str) -> None:
                     recovery_closed_at TIMESTAMP,
                     recovery_expected_resolution_date DATE
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE VIEW vw_orders AS
                 SELECT
                     *,
@@ -158,12 +150,8 @@ def _create_tables(database_url: str) -> None:
                         )
                     END AS order_amount
                 FROM orders
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE orders_sync_log (
                     cost_center TEXT,
                     orders_pulled_at TIMESTAMP,
@@ -171,12 +159,8 @@ def _create_tables(database_url: str) -> None:
                     updated_at TIMESTAMP,
                     created_at TIMESTAMP
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE sales (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cost_center TEXT,
@@ -187,12 +171,8 @@ def _create_tables(database_url: str) -> None:
                     order_number TEXT,
                     is_edited_order BOOLEAN
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE store_master (
                     id INTEGER PRIMARY KEY,
                     cost_center TEXT,
@@ -200,24 +180,16 @@ def _create_tables(database_url: str) -> None:
                     store_name TEXT,
                     sync_group TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE order_line_items (
                     cost_center TEXT,
                     order_number TEXT,
                     service_name TEXT,
                     garment_name TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE store_dashboard_summary (
                     store_id INTEGER,
                     dashboard_date DATE,
@@ -228,12 +200,8 @@ def _create_tables(database_url: str) -> None:
                     pickup_total_conv_pct NUMERIC,
                     delivery_tat_pct NUMERIC
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE missed_leads (
                     store_code TEXT,
                     mobile_number TEXT,
@@ -242,12 +210,8 @@ def _create_tables(database_url: str) -> None:
                     pickup_date DATE,
                     is_order_placed BOOLEAN
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE crm_leads_current (
                     lead_uid TEXT,
                     store_code TEXT,
@@ -259,23 +223,15 @@ def _create_tables(database_url: str) -> None:
                     reason TEXT,
                     cancelled_flag TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE crm_leads_status_events (
                     lead_uid TEXT,
                     status_bucket TEXT,
                     scraped_at TIMESTAMP
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE payment_collections (
                     payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cost_center TEXT,
@@ -284,12 +240,8 @@ def _create_tables(database_url: str) -> None:
                     payment_date TIMESTAMP,
                     source_type TEXT DEFAULT 'google_sheet'
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE pipeline_run_summaries (
                     pipeline_name TEXT,
                     run_id TEXT,
@@ -298,12 +250,8 @@ def _create_tables(database_url: str) -> None:
                     created_at TIMESTAMP,
                     metrics_json JSON
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE VIEW vw_orders_missing_in_payment_collections AS
                 SELECT
                     o.cost_center,
@@ -330,24 +278,21 @@ def _create_tables(database_url: str) -> None:
                     o.customer_name,
                     o.mobile_number,
                     o.order_amount
-                """
-            )
-        )
+                """))
     engine.dispose()
 
 
-
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amount(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amount(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_missing_payments.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     with engine.begin() as conn:
         conn.execute(sa.text("DROP VIEW vw_orders_missing_in_payment_collections"))
-        conn.execute(
-            sa.text(
-                """
+        conn.execute(sa.text("""
                 CREATE VIEW vw_orders_missing_in_payment_collections AS
                 SELECT
                     o.cost_center,
@@ -374,9 +319,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     o.customer_name,
                     o.mobile_number,
                     o.order_amount
-                """
-            )
-        )
+                """))
     engine.dispose()
 
     tz = ZoneInfo("Asia/Kolkata")
@@ -384,25 +327,15 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC1', 'Store 1', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, customer_name, mobile_number,
                     net_amount, gross_amount, source_system, recovery_status
@@ -412,12 +345,8 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                 ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC', 'NONE'),
                 ('CC1', 'OLD-MISSING', '2026-03-20T11:15:00+05:30', 'Omar', '9000000099', 250, 325, 'TumbleDry', 'NONE'),
                 ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry', 'NONE')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (
                     cost_center, order_number, payment_date, payment_received, payment_mode,
                     adjustments, is_edited_order
@@ -427,22 +356,20 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     ('CC1', 'UC-MATCHED', '2026-04-29T13:00:00+05:30', 390, 'CASH', 0, 0),
                     ('CC1', 'OLD-MISSING', '2026-03-20T12:00:00+05:30', 250, 'UPI', 0, 0),
                     ('CC1', 'ZERO-VALUE', '2026-04-29T13:30:00+05:30', 0, 'CASH', 0, 0)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO payment_collections (cost_center, order_number)
                 VALUES ('CC1', ' ignore / uc-matched ,,')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
-    assert [(row.order_number, row.order_amount) for row in report.missing_payment_rows] == [
+    assert [
+        (row.order_number, row.order_amount) for row in report.missing_payment_rows
+    ] == [
         ("OLD-MISSING", Decimal("250")),
         ("TD-MISSING", Decimal("500")),
         ("UC-MISSING", Decimal("910")),
@@ -450,7 +377,9 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_short_payments_separate_from_missing_payments(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_short_payments_separate_from_missing_payments(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_short_payments.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -517,9 +446,14 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
-    assert [(row.order_number, row.paid_amount, row.shortage_amount, row.group_key) for row in report.short_payment_rows] == [
+    assert [
+        (row.order_number, row.paid_amount, row.shortage_amount, row.group_key)
+        for row in report.short_payment_rows
+    ] == [
         ("OLD-SHORT", Decimal("80"), Decimal("20"), None),
         ("SINGLE", Decimal("80"), Decimal("20"), None),
         ("GROUP2", Decimal("50"), Decimal("150"), "GROUP1|GROUP2"),
@@ -531,7 +465,9 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_actual_payments_not_found_requires_sales_payment_record(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_actual_payments_not_found_requires_sales_payment_record(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_actual_payments_not_found_sales.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -572,15 +508,21 @@ async def test_fetch_daily_sales_report_actual_payments_not_found_requires_sales
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
-    assert [(row.order_number, row.order_amount) for row in report.missing_payment_rows] == [
+    assert [
+        (row.order_number, row.order_amount) for row in report.missing_payment_rows
+    ] == [
         ("SALES-NO-PROOF", Decimal("100")),
     ]
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_missed_leads_td_only(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -590,42 +532,34 @@ async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypat
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES
                     ('CC-TD', 'TD Cost Center', 'value', 1),
                     ('CC-NTD', 'Non-TD Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES
                     (1, 'CC-TD', 'S-TD', 'TD Store', 'TD'),
                     (2, 'CC-NTD', 'S-NTD', 'Non-TD Store', 'UC')
-                """
-            )
-        )
+                """))
         await session.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO missed_leads (
                     store_code, mobile_number, customer_name, customer_type, pickup_date, is_order_placed
                 ) VALUES
                     ('S-TD', '9999999999', 'Alice TD', 'New', :report_date, 0),
                     ('S-TD', '8888888888', 'Bob TD', 'New', :report_date, 0),
                     ('S-NTD', '7777777777', 'Charlie NonTD', 'New', :report_date, 0)
-                """
-            ),
+                """),
             {"report_date": report_date},
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.missed_leads == [
         {
@@ -640,7 +574,9 @@ async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_same_day_fulfillment_rows(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_same_day.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -648,8 +584,16 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
     report_date = date(2026, 4, 29)
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(
             sa.text(
                 "INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) "
@@ -673,7 +617,9 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     assert len(report.same_day_fulfillment_rows) == 1
     row = report.same_day_fulfillment_rows[0]
     assert row.store_code == "S1"
@@ -685,10 +631,10 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
     assert str(row.hours) == "4.50"
 
 
-
-
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_same_day_fulfillment_aggregates_multiple_payments(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_same_day_fulfillment_aggregates_multiple_payments(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_same_day_multi.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -696,17 +642,39 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_aggregates_multiple
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
     report_date = date(2026, 4, 29)
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O200', :order_dt, 'Ravi', '9000000000', 500, 500, 'TumbleDry')"), {"order_dt": "2026-04-29T09:00:00+05:30"})
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O200', :p1, 300, 'UPI', 0, 0),('CC1','O200', :p2, 200, 'Cash', 0, 0)"), {"p1": "2026-04-29T11:00:00+05:30", "p2": "2026-04-29T12:00:00+05:30"})
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O200', :order_dt, 'Ravi', '9000000000', 500, 500, 'TumbleDry')"
+            ),
+            {"order_dt": "2026-04-29T09:00:00+05:30"},
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O200', :p1, 300, 'UPI', 0, 0),('CC1','O200', :p2, 200, 'Cash', 0, 0)"
+            ),
+            {"p1": "2026-04-29T11:00:00+05:30", "p2": "2026-04-29T12:00:00+05:30"},
+        )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     row = report.same_day_fulfillment_rows[0]
     assert row.payment_received == 500
     assert "Cash" in row.payment_mode
     assert "UPI" in row.payment_mode
+
+
 @pytest.mark.asyncio
 async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_created_at(
     tmp_path, monkeypatch
@@ -720,29 +688,19 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     report_date = date(2026, 4, 23)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES
                     ('CC-UN', 'Uttam Nagar', 'value', 1),
                     ('CC-KN', 'Kirti Nagar', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES
                     (1, 'CC-UN', ' un ', 'Uttam Nagar', 'TD'),
                     (2, 'CC-KN', ' kn ', 'Kirti Nagar', 'TD')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO crm_leads_current (lead_uid, store_code, status_bucket, pickup_created_at) VALUES
                     ('U1', 'UN', 'completed', '2026-04-01 02:00:00+00:00'),
                     ('U2', ' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
@@ -752,24 +710,24 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
                     ('U5', 'UN', 'completed', '2026-03-31 23:59:00+00:00'),
                     ('U6', 'UN', 'cancelled', '2026-04-24 00:10:00+00:00'),
                     ('U7', 'UN', 'completed', '2026-04-11 00:10:00+00:00')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
                     ('U3', 'cancelled'),
                     ('U7', 'cancelled')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
-    un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
-    kn_summary = next(item for item in report.lead_performance_summary if item["store"] == "KN")
+    un_summary = next(
+        item for item in report.lead_performance_summary if item["store"] == "UN"
+    )
+    kn_summary = next(
+        item for item in report.lead_performance_summary if item["store"] == "KN"
+    )
 
     assert un_summary["period_type"] == "MTD"
     assert un_summary["period_start"] == "2026-04-01"
@@ -778,9 +736,21 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     assert un_summary["completed_leads"] == 3
     assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 2
-    assert un_summary["conversion_pct"] == {"value": 42.86, "color": "RED", "status": "POOR"}
-    assert un_summary["cancelled_pct"] == {"value": 28.57, "color": "RED", "status": "HIGH_LEAKAGE"}
-    assert un_summary["pending_pct"] == {"value": 28.57, "color": "RED", "status": "FOLLOW_UP_GAP"}
+    assert un_summary["conversion_pct"] == {
+        "value": 42.86,
+        "color": "RED",
+        "status": "POOR",
+    }
+    assert un_summary["cancelled_pct"] == {
+        "value": 28.57,
+        "color": "RED",
+        "status": "HIGH_LEAKAGE",
+    }
+    assert un_summary["pending_pct"] == {
+        "value": 28.57,
+        "color": "RED",
+        "status": "FOLLOW_UP_GAP",
+    }
     assert un_summary["benchmark"] == {
         "conversion_target": 85.0,
         "conversion_min": 70.0,
@@ -793,13 +763,27 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     assert un_summary["pending_gap"] == 23.57
 
     assert kn_summary["total_leads"] == 0
-    assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
-    assert kn_summary["cancelled_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
-    assert kn_summary["pending_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
+    assert kn_summary["conversion_pct"] == {
+        "value": 0.0,
+        "color": "NEUTRAL",
+        "status": "NEUTRAL",
+    }
+    assert kn_summary["cancelled_pct"] == {
+        "value": 0.0,
+        "color": "NEUTRAL",
+        "status": "NEUTRAL",
+    }
+    assert kn_summary["pending_pct"] == {
+        "value": 0.0,
+        "color": "NEUTRAL",
+        "status": "NEUTRAL",
+    }
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatting(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatting(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_cancelled_leads.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -809,25 +793,15 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     report_date = date(2026, 4, 23)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC-TD', ' un ', 'Uttam Nagar', 'TD')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO crm_leads_current (
                     lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
                 ) VALUES
@@ -838,21 +812,17 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                     ('L3', 'UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00', NULL, NULL),
                     ('L4', 'UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00', NULL, 'store'),
                     ('L5', 'UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00', NULL, 'store')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
                     ('L2', 'cancelled'),
                     ('L6', 'cancelled')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.cancelled_leads == [
         {
@@ -868,7 +838,9 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
             ],
         }
     ]
-    un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
+    un_summary = next(
+        item for item in report.lead_performance_summary if item["store"] == "UN"
+    )
     assert un_summary["total_leads"] == 5
     assert un_summary["completed_leads"] == 2
     assert un_summary["cancelled_leads"] == 2
@@ -876,7 +848,9 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_uses_customer_type_when_present(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_uses_customer_type_when_present(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_customer_type_present.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -886,9 +860,15 @@ async def test_fetch_daily_sales_report_uses_customer_type_when_present(tmp_path
     report_date = date(2026, 4, 23)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"))
         await session.execute(
-            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')"
+            )
         )
         await session.execute(
             sa.text(
@@ -898,12 +878,21 @@ async def test_fetch_daily_sales_report_uses_customer_type_when_present(tmp_path
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
-    assert report.cancelled_leads[0]["store_cancelled_rows"][0]["is_existing_customer_cancelled"] is True
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+    assert (
+        report.cancelled_leads[0]["store_cancelled_rows"][0][
+            "is_existing_customer_cancelled"
+        ]
+        is True
+    )
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_falls_back_when_customer_type_missing(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_falls_back_when_customer_type_missing(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_customer_type_missing.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -919,9 +908,15 @@ async def test_fetch_daily_sales_report_falls_back_when_customer_type_missing(tm
                 "CREATE TABLE crm_leads_current (lead_uid TEXT, store_code TEXT, status_bucket TEXT, customer_name TEXT, mobile TEXT, pickup_created_at TIMESTAMP, reason TEXT, cancelled_flag TEXT)"
             )
         )
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"))
         await session.execute(
-            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')"
+            )
         )
         await session.execute(
             sa.text(
@@ -931,8 +926,15 @@ async def test_fetch_daily_sales_report_falls_back_when_customer_type_missing(tm
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
-    assert report.cancelled_leads[0]["store_cancelled_rows"][0]["is_existing_customer_cancelled"] is False
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+    assert (
+        report.cancelled_leads[0]["store_cancelled_rows"][0][
+            "is_existing_customer_cancelled"
+        ]
+        is False
+    )
 
 
 def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> None:
@@ -941,7 +943,9 @@ def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> Non
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_orders_sync_uses_successful_refresh_timestamp(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_orders_sync_uses_successful_refresh_timestamp(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_sync_success.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -952,30 +956,34 @@ async def test_fetch_daily_sales_report_orders_sync_uses_successful_refresh_time
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
-        )
-        await session.execute(
             sa.text(
-                """
-                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
-                VALUES ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00')
-                """
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)"
             )
         )
+        await session.execute(sa.text("""
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
+                VALUES ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00')
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
     assert td_row.orders_sync_time == "07:20"
-    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_successful_orders_refresh_at == datetime(
+        2026, 1, 19, 7, 20, tzinfo=tz
+    )
     assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 7, 25, tzinfo=tz)
     assert td_row.latest_orders_sync_outcome == "success"
     assert td_row.orders_sync_warning is False
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_deprecates_td_leads_sync_payload(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_deprecates_td_leads_sync_payload(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_td_leads_sync_metrics.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -985,49 +993,41 @@ async def test_fetch_daily_sales_report_deprecates_td_leads_sync_payload(tmp_pat
     report_date = date(2026, 4, 23)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')
-                """
-            )
-        )
+                """))
         await session.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO pipeline_run_summaries (
                     pipeline_name, run_id, report_date, finished_at, created_at, metrics_json
                 ) VALUES (
                     'td_crm_leads_sync', 'run-td-1', '2026-04-23', '2026-04-23 10:00:00', '2026-04-23 10:00:00',
                     :metrics_json
                 )
-                """
-            ),
-            {
-                "metrics_json": """
+                """),
+            {"metrics_json": """
                 {"stores":[{"store_code":"UN","bucket_write_counts":{"pending":{"created":1,"updated":2},"completed":{"created":3,"updated":4},"cancelled":{"created":5,"updated":6}},"status_transitions":[{"from_status_bucket":"pending","to_status_bucket":"completed"}]}]}
-                """
-            },
+                """},
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.td_leads_sync_metrics == {}
     assert report.td_leads_sync_lead_changes == {}
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payload(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payload(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_td_lead_changes.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1038,31 +1038,33 @@ async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payloa
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
-        )
-        await session.execute(
-            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)"
+            )
         )
         await session.execute(
             sa.text(
-                """
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')"
+            )
+        )
+        await session.execute(
+            sa.text("""
                 INSERT INTO pipeline_run_summaries (
                     pipeline_name, run_id, report_date, finished_at, created_at, metrics_json
                 ) VALUES (
                     'td_crm_leads_sync', 'run-td-2', '2026-04-23', '2026-04-23 11:00:00', '2026-04-23 11:00:00',
                     :metrics_json
                 )
-                """
-            ),
-            {
-                "metrics_json": """
+                """),
+            {"metrics_json": """
                 {"stores":[{"store_code":"UN","lead_change_details":{"cap_per_group":20,"created_by_bucket":[{"status_bucket":"pending","rows":[{"customer_name":"Nia","mobile":"9000000000","action":"created","current_status_bucket":"pending","previous_status_bucket":null}],"overflow_count":1}],"updated_by_bucket":[],"transitions":[]}}]}
-                """
-            },
+                """},
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     assert report.td_leads_sync_metrics == {}
     assert report.td_leads_sync_lead_changes == {}
 
@@ -1082,32 +1084,38 @@ async def test_fetch_daily_sales_report_orders_sync_warns_after_unsuccessful_new
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)"
+            )
         )
         await session.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at) VALUES
                 ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00'),
                 ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
-                """
-            ),
+                """),
             {"latest_status": latest_status},
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
     assert td_row.orders_sync_time == "07:20"
-    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_successful_orders_refresh_at == datetime(
+        2026, 1, 19, 7, 20, tzinfo=tz
+    )
     assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
     assert td_row.latest_orders_sync_outcome == latest_status
     assert td_row.orders_sync_warning is True
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("latest_status", "expected_warning"), [("failed", True), ("success", False)])
+@pytest.mark.parametrize(
+    ("latest_status", "expected_warning"), [("failed", True), ("success", False)]
+)
 async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_attempt_timestamps(
     tmp_path, monkeypatch, latest_status, expected_warning
 ) -> None:
@@ -1121,20 +1129,22 @@ async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_a
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)"
+            )
         )
         await session.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
                 VALUES ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
-                """
-            ),
+                """),
             {"latest_status": latest_status},
         )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
     assert td_row.orders_sync_time is None
@@ -1142,8 +1152,6 @@ async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_a
     assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
     assert td_row.latest_orders_sync_outcome == latest_status
     assert td_row.orders_sync_warning is expected_warning
-
-
 
 
 @pytest.mark.asyncio
@@ -1156,7 +1164,9 @@ async def test_fetch_daily_sales_report_collections_target_uses_payment_collecti
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
-    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type="COLLECTIONS"))
+    monkeypatch.setattr(
+        _data_module, "config", SimpleNamespace(target_compute_type="COLLECTIONS")
+    )
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
@@ -1201,11 +1211,14 @@ async def test_fetch_daily_sales_report_collections_target_uses_payment_collecti
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     cc1 = next(row for row in report.rows if row.cost_center == "CC1")
     assert cc1.achieved == Decimal("875")
     assert report.totals.achieved == Decimal("875")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1226,7 +1239,12 @@ async def test_fetch_daily_sales_report_collections_target_uses_payment_collecti
     ],
 )
 async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_collections(
-    tmp_path, monkeypatch, target_compute_type, expected_title, expected_targets, expected_achieved
+    tmp_path,
+    monkeypatch,
+    target_compute_type,
+    expected_title,
+    expected_targets,
+    expected_achieved,
 ) -> None:
     db_path = tmp_path / f"daily_sales_report_target_{target_compute_type.lower()}.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
@@ -1234,7 +1252,9 @@ async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_coll
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
-    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type=target_compute_type))
+    monkeypatch.setattr(
+        _data_module, "config", SimpleNamespace(target_compute_type=target_compute_type)
+    )
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
@@ -1271,20 +1291,28 @@ async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_coll
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     rows = {row.cost_center: row for row in report.rows}
 
     assert report.target_compute_type == target_compute_type
     assert report.target_section_title == expected_title
     rendered_html = _render_html(_build_context(report, "test"))
-    assert f'<th class="group-header" colspan="5">{expected_title}</th>' in rendered_html
+    assert (
+        f'<th class="group-header" colspan="5">{expected_title}</th>' in rendered_html
+    )
     for cost_center, expected_target in expected_targets.items():
         assert rows[cost_center].target == expected_target
         assert rows[cost_center].achieved == expected_achieved[cost_center]
-        assert rows[cost_center].delta == expected_achieved[cost_center] - expected_target
+        assert (
+            rows[cost_center].delta == expected_achieved[cost_center] - expected_target
+        )
     assert report.totals.target == sum(expected_targets.values(), Decimal("0"))
     assert report.totals.achieved == sum(expected_achieved.values(), Decimal("0"))
-    assert report.totals.delta == sum(expected_achieved.values(), Decimal("0")) - sum(expected_targets.values(), Decimal("0"))
+    assert report.totals.delta == sum(expected_achieved.values(), Decimal("0")) - sum(
+        expected_targets.values(), Decimal("0")
+    )
     assert rows["CC1"].sales_mtd == Decimal("400")
     assert rows["CC1"].collections_mtd == Decimal("1599")
 
@@ -1294,85 +1322,67 @@ async def test_fetch_daily_sales_report_target_mode_uses_sales_or_allocated_coll
 async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(
     tmp_path, monkeypatch, target_compute_type
 ) -> None:
-    db_path = tmp_path / f"daily_sales_report_targets_update_{target_compute_type.lower()}.db"
+    db_path = (
+        tmp_path / f"daily_sales_report_targets_update_{target_compute_type.lower()}.db"
+    )
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
-    monkeypatch.setattr(_data_module, "config", SimpleNamespace(target_compute_type=target_compute_type))
+    monkeypatch.setattr(
+        _data_module, "config", SimpleNamespace(target_compute_type=target_compute_type)
+    )
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES
                     ('CC-SALES-MET', 'Sales Met Cost Center', 'value', 1),
                     ('CC-COLL-MET', 'Collection Met Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO cost_center_targets (
                     month, year, cost_center, sale_target, collection_target
                 ) VALUES
                     (1, 2026, 'CC-SALES-MET', 150, 90),
                     (1, 2026, 'CC-COLL-MET', 100, 100)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (cost_center, order_number, order_date, net_amount, gross_amount, source_system)
                 VALUES
                     ('CC-SALES-MET', 'SALE-1', '2026-01-05 10:00:00', 100, 100, 'TumbleDry'),
                     ('CC-SALES-MET', 'SALE-2', '2026-01-10 11:00:00', 60, 60, 'TumbleDry'),
                     ('CC-COLL-MET', 'COLL-1', '2026-01-06 10:00:00', 70, 70, 'TumbleDry'),
                     ('CC-COLL-MET', 'COLL-OLD', '2025-12-31 10:00:00', 500, 500, 'TumbleDry')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
                 VALUES
                     ('CC-SALES-MET', '2026-01-12 12:00:00', 999, 0, 'SALE-1', 0),
                     ('CC-COLL-MET', '2026-01-12 12:00:00', 5, 0, 'COLL-1', 0)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
                 VALUES
                     ('CC-SALES-MET', 'SALE-1', 80, 'google_sheet'),
                     ('CC-COLL-MET', 'COLL-OLD/COLL-1', 620, 'google_sheet')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     report_rows = {row.cost_center: row for row in report.rows}
 
     async with session_scope(database_url) as session:
-        updated = await session.execute(
-            sa.text(
-                """
+        updated = await session.execute(sa.text("""
                 SELECT cost_center, sales_mtd, collection_mtd, sales_target_met, collection_target_met
                 FROM cost_center_targets
                 WHERE month = 1 AND year = 2026
                 ORDER BY cost_center
-                """
-            )
-        )
+                """))
         rows = {row["cost_center"]: row for row in updated.mappings()}
 
     assert report.target_compute_type == target_compute_type
@@ -1411,35 +1421,25 @@ async def test_fetch_daily_sales_report_order_amount_from_vw_orders_keeps_collec
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-UC', 'UC Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, net_amount, gross_amount, source_system
                 ) VALUES ('CC-UC', 'UC-1', '2026-01-19 10:00:00', 0, 1000, 'UC')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (
                     cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order
                 ) VALUES ('CC-UC', '2026-01-19 12:00:00', 400, 0, 'UC-1', 0)
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     uc_row = next(row for row in report.rows if row.cost_center == "CC-UC")
 
     assert uc_row.sales_ftd == 1000
@@ -1461,35 +1461,25 @@ async def test_fetch_daily_sales_report_edited_loss_uses_standardized_order_amou
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-UC', 'UC Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, net_amount, gross_amount, source_system
                 ) VALUES ('CC-UC', 'UC-EDIT', '2026-01-18 10:00:00', 0, 1000, 'UC')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (
                     cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order
                 ) VALUES ('CC-UC', '2026-01-19 12:00:00', 700, 0, 'UC-EDIT', 1)
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert [
         (row.order_number, row.original_value, row.new_value, row.loss)
@@ -1501,7 +1491,9 @@ async def test_fetch_daily_sales_report_edited_loss_uses_standardized_order_amou
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_order(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_order(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_collections_grain.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1511,17 +1503,11 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
     report_date = date(2026, 1, 19)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
                 VALUES
                     ('CC-TD', '2026-01-19 09:00:00', 100, 0, 'ORD123', 0),
@@ -1531,12 +1517,12 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
                     ('CC-TD', '2026-01-11 14:00:00', 20, 0, 'ORD-200', 0),
                     ('CC-TD', '2026-01-19 15:00:00', 500, 0, '', 0),
                     ('CC-TD', '2026-01-19 16:00:00', 600, 0, NULL, 0)
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
 
     assert td_row.collections_ftd == 175
@@ -1546,7 +1532,9 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_manual_recovery_sections(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_manual_recovery.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1556,17 +1544,11 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
     report_date = date(2026, 4, 25)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC-TD', 'TD Store', 'value', 1), ('CC-UC', 'UC Store', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, customer_name, mobile_number,
                     net_amount, gross_amount, default_due_date, source_system, recovery_status,
@@ -1576,12 +1558,12 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
                     ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 'Ira', '9000000002', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-03-10 10:00:00', NULL, '2026-04-05'),
                     ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 'Meera', '9000000003', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED', '2026-01-10 10:00:00', NULL, '2026-02-15'),
                     ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 'Nia', '9000000004', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED', '2026-04-10 09:00:00', '2026-04-25 11:30:00', '2026-04-22')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == []
     assert report.auto_cleared_order_numbers_text == ""
@@ -1661,12 +1643,17 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
                 value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
                 separator=", ",
             ).label("payment_mode"),
-            sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
+            sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
+                "payment_received"
+            ),
         )
         .select_from(
             orders.join(
                 sales,
-                sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
+                sa.and_(
+                    orders.c.cost_center == sales.c.cost_center,
+                    orders.c.order_number == sales.c.order_number,
+                ),
             )
         )
         .group_by(orders.c.cost_center, orders.c.order_number, orders.c.order_date)
@@ -1681,7 +1668,9 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
     assert "group_concat" not in same_day_sql
 
 
-def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg() -> None:
+def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg() -> (
+    None
+):
     cost_center = sa.table(
         "cost_center",
         sa.column("cost_center"),
@@ -1733,7 +1722,9 @@ def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_same_day_fulfillment_ignores_time_component(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_same_day_fulfillment_ignores_time_component(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_same_day_date_only.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1741,23 +1732,52 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_ignores_time_compon
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
     report_date = date(2026, 4, 29)
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O300', '2026-04-29 23:50:00', 'Ravi', '9000000000', 500, 500, 'TumbleDry')"))
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O300', '2026-04-30 00:05:00', 500, 'UPI', 0, 0)"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O300', '2026-04-29 23:50:00', 'Ravi', '9000000000', 500, 500, 'TumbleDry')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O300', '2026-04-30 00:05:00', 500, 'UPI', 0, 0)"
+            )
+        )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
     assert report.same_day_fulfillment_rows == []
 
 
 def test_same_day_postgres_expression_has_no_strftime() -> None:
-    expr = same_day_date_expr(dialect_name="postgresql", dt_expr=sa.column("order_date"), timezone_name="Asia/Kolkata")
-    compiled = str(expr.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    expr = same_day_date_expr(
+        dialect_name="postgresql",
+        dt_expr=sa.column("order_date"),
+        timezone_name="Asia/Kolkata",
+    )
+    compiled = str(
+        expr.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
     assert "strftime" not in compiled.lower()
 
+
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filtering(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filtering(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_same_day_payment_proof.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1766,19 +1786,48 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filte
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1),('CC2','Store 2','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD'),(2,'CC2','S2','Store Two','TD')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','Ord2', :d1, 'Ravi', '9000000000', 500, 500, 'TumbleDry'),('CC1','OX', :d1, 'Mona', '9000000001', 400, 400, 'TumbleDry'),('CC2','ORD3', :d1, 'Neha', '9000000002', 300, 300, 'TumbleDry')"), {"d1": "2026-04-29T09:00:00+05:30"})
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','Ord2', :p1, 500, 'UPI', 0, 0),('CC1','OX', :p1, 400, 'Cash', 0, 0),('CC2','ORD3', :p1, 300, 'Card', 0, 0)"), {"p1": "2026-04-29T12:00:00+05:30"})
-        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' ORD1, ord2/ORD3 ,,')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1),('CC2','Store 2','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD'),(2,'CC2','S2','Store Two','TD')"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','Ord2', :d1, 'Ravi', '9000000000', 500, 500, 'TumbleDry'),('CC1','OX', :d1, 'Mona', '9000000001', 400, 400, 'TumbleDry'),('CC2','ORD3', :d1, 'Neha', '9000000002', 300, 300, 'TumbleDry')"
+            ),
+            {"d1": "2026-04-29T09:00:00+05:30"},
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','Ord2', :p1, 500, 'UPI', 0, 0),('CC1','OX', :p1, 400, 'Cash', 0, 0),('CC2','ORD3', :p1, 300, 'Card', 0, 0)"
+            ),
+            {"p1": "2026-04-29T12:00:00+05:30"},
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' ORD1, ord2/ORD3 ,,')"
+            )
+        )
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
-    assert {row.order_number for row in report.same_day_fulfillment_rows} == {"OX", "ORD3"}
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+    assert {row.order_number for row in report.same_day_fulfillment_rows} == {
+        "OX",
+        "ORD3",
+    }
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(
+    tmp_path, monkeypatch
+) -> None:
     db_path = tmp_path / "daily_sales_report_day_orders.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -1786,21 +1835,15 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
 
     report_date = date(2026, 4, 29)
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center(cost_center, description, target_type, is_active)
                 VALUES
                     ('AA', 'Alpha', 'value', 1),
                     ('BB', 'Bravo', 'value', 1),
                     ('CC', 'Charlie', 'value', 1),
                     ('ZZ', 'Zulu', 'value', 0)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders(cost_center, order_number, order_date, source_system, gross_amount)
                 VALUES
                     ('AA', 'A-002', '2026-04-29T10:00:00+05:30', 'TumbleDry', 100),
@@ -1809,13 +1852,16 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
                     ('AA', 'A-003', '2026-04-30T09:00:00+05:30', 'TumbleDry', 100),
                     ('BB', 'B-001', '2026-04-29T11:00:00+05:30', 'TumbleDry', 100),
                     ('ZZ', 'Z-001', '2026-04-29T08:00:00+05:30', 'TumbleDry', 100)
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
-    assert [(row.cost_center, row.order_numbers_text) for row in report.report_day_orders_by_cost_center] == [
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+    assert [
+        (row.cost_center, row.order_numbers_text)
+        for row in report.report_day_orders_by_cost_center
+    ] == [
         ("AA", "A-001, A-002, A-ZERO"),
         ("BB", "B-001"),
         ("CC", "-"),
@@ -1829,7 +1875,9 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
 
     # Keep the reporting regression tied to ingestion semantics: a source-supplied
     # zero remains descriptive data, while absent money fields degrade the window.
-    ingest_database_url = f"sqlite+aiosqlite:///{tmp_path / 'daily_sales_missing_amount_ingest.db'}"
+    ingest_database_url = (
+        f"sqlite+aiosqlite:///{tmp_path / 'daily_sales_missing_amount_ingest.db'}"
+    )
     metadata = sa.MetaData()
     _stg_td_orders_table(metadata)
     _td_orders_table(metadata)
@@ -1880,26 +1928,17 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
         "TD-1",
     ]
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC1', 'Store 1', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
-                """
-            )
-        )
+                """))
         for order_number in order_numbers:
             await session.execute(
-                sa.text(
-                    """
+                sa.text("""
                     INSERT INTO orders (
                         cost_center, order_number, order_date, customer_name,
                         mobile_number, net_amount, gross_amount, source_system,
@@ -1909,13 +1948,10 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                         'Customer', '9000000000', 500, 500, 'TumbleDry',
                         'TO_BE_RECOVERED', 'MISSING_PAYMENT'
                     )
-                    """
-                ),
+                    """),
                 {"order_number": order_number},
             )
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
                 VALUES
                     ('CC1', 'SALES-ONLY', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
@@ -1925,12 +1961,8 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                     ('CC1', 'MIXED-4', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'TD-1', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'BOTH-1', '2026-04-29T10:05:00+05:30', 0, 'UPI')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
                 VALUES
                     ('CC1', 'PC-ONLY', 0, 'google_sheet'),
@@ -1940,12 +1972,12 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                     ('CC1', 'NOPE, ALSO-NOPE/MIXED-4', 500, 'legacy_sales'),
                     ('CC1', 'TD-10, TD-11', 500, 'google_sheet'),
                     ('CC1', 'BOTH-1', 0, 'google_sheet')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == ["BOTH-1"]
     assert report.auto_cleared_order_numbers_text == "BOTH-1"
@@ -1965,21 +1997,11 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
     }
 
     async with session_scope(database_url) as session:
-        status_rows = (
-            (
-                await session.execute(
-                    sa.text(
-                        """
+        status_rows = (await session.execute(sa.text("""
                         SELECT order_number, recovery_status, recovery_category, recovery_notes
                         FROM orders
                         ORDER BY order_number
-                        """
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+                        """))).mappings().all()
 
     statuses = {row["order_number"]: row for row in status_rows}
     expected_recovery_notes = {
@@ -2020,25 +2042,15 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC1', 'Store 1', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, customer_name,
                     mobile_number, net_amount, gross_amount, source_system,
@@ -2048,26 +2060,16 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
                     'Customer', '9000000000', 500, 500, 'TumbleDry',
                     'TO_BE_RECOVERED', 'MISSING_PAYMENT'
                 )
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (
                     cost_center, order_number, payment_date, payment_received, payment_mode
                 ) VALUES ('CC1', 'TD123', '2026-04-29T10:00:00+05:30', 500, 'UPI')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
                 VALUES ('CC1', 'TD123', 499, 'legacy_sales')
-                """
-            )
-        )
+                """))
         await session.commit()
 
     report = await fetch_daily_sales_report(
@@ -2079,17 +2081,11 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
     assert [row.order_number for row in report.to_be_recovered] == []
 
     async with session_scope(database_url) as session:
-        recovery_notes = (
-            await session.execute(
-                sa.text(
-                    """
+        recovery_notes = (await session.execute(sa.text("""
                     SELECT recovery_notes
                     FROM orders
                     WHERE order_number = 'TD123'
-                    """
-                )
-            )
-        ).scalar_one()
+                    """))).scalar_one()
 
     assert recovery_notes == (
         "AUTO_CLEARED_PAYMENT_PROOF "
@@ -2111,25 +2107,15 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO cost_center (cost_center, description, target_type, is_active)
                 VALUES ('CC1', 'Store 1', 'value', 1)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO orders (
                     cost_center, order_number, order_date, customer_name,
                     mobile_number, net_amount, gross_amount, source_system,
@@ -2139,42 +2125,28 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
                     'Customer', '9000000000', 500, 500, 'TumbleDry',
                     'TO_BE_COMPENSATED', 'OVER_COLLECTION'
                 )
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
                 VALUES ('CC1', 'COMP-1', '2026-04-29T10:00:00+05:30', 500, 'UPI')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO payment_collections (cost_center, order_number)
                 VALUES ('CC1', 'COMP-1')
-                """
-            )
-        )
+                """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert [row.order_number for row in report.to_be_compensated] == ["COMP-1"]
     async with session_scope(database_url) as session:
-        status = (
-            await session.execute(
-                sa.text(
-                    """
+        status = (await session.execute(sa.text("""
                     SELECT recovery_status, recovery_category, recovery_notes
                     FROM orders
                     WHERE order_number = 'COMP-1'
-                    """
-                )
-            )
-        ).mappings().one()
+                    """))).mappings().one()
 
     assert status["recovery_status"] == "TO_BE_COMPENSATED"
     assert status["recovery_category"] == "OVER_COLLECTION"
@@ -2182,43 +2154,99 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
 
 
 def test_build_manual_recovery_sections_excludes_zero_value_orders() -> None:
-    rows, compensated_rows, total, compensated_total = _data_module._build_manual_recovery_sections(
-        [
-            {
-                "cost_center": "CC1",
-                "order_number": "RECOVERY-ZERO",
-                "order_date": date(2026, 4, 29),
-                "customer_name": "Zero",
-                "mobile_number": "111",
-                "order_amount": Decimal("0"),
-                "recovery_status": "TO_BE_RECOVERED",
-            },
-            {
-                "cost_center": "CC1",
-                "order_number": "RECOVERY-POSITIVE",
-                "order_date": date(2026, 4, 29),
-                "customer_name": "Paid",
-                "mobile_number": "222",
-                "order_amount": Decimal("75"),
-                "recovery_status": "TO_BE_RECOVERED",
-            },
-            {
-                "cost_center": "CC1",
-                "order_number": "COMPENSATION-ZERO",
-                "order_date": date(2026, 4, 29),
-                "customer_name": "Comp Zero",
-                "mobile_number": "333",
-                "order_amount": Decimal("0"),
-                "recovery_status": "TO_BE_COMPENSATED",
-            },
-        ],
-        tz=ZoneInfo("Asia/Kolkata"),
+    rows, compensated_rows, total, compensated_total = (
+        _data_module._build_manual_recovery_sections(
+            [
+                {
+                    "cost_center": "CC1",
+                    "order_number": "RECOVERY-ZERO",
+                    "order_date": date(2026, 4, 29),
+                    "customer_name": "Zero",
+                    "mobile_number": "111",
+                    "order_amount": Decimal("0"),
+                    "recovery_status": "TO_BE_RECOVERED",
+                },
+                {
+                    "cost_center": "CC1",
+                    "order_number": "RECOVERY-POSITIVE",
+                    "order_date": date(2026, 4, 29),
+                    "customer_name": "Paid",
+                    "mobile_number": "222",
+                    "order_amount": Decimal("75"),
+                    "recovery_status": "TO_BE_RECOVERED",
+                },
+                {
+                    "cost_center": "CC1",
+                    "order_number": "COMPENSATION-ZERO",
+                    "order_date": date(2026, 4, 29),
+                    "customer_name": "Comp Zero",
+                    "mobile_number": "333",
+                    "order_amount": Decimal("0"),
+                    "recovery_status": "TO_BE_COMPENSATED",
+                },
+            ],
+            report_date=date(2026, 5, 3),
+            tz=ZoneInfo("Asia/Kolkata"),
+        )
     )
 
     assert [row.order_number for row in rows] == ["RECOVERY-POSITIVE"]
     assert compensated_rows == []
     assert total == Decimal("75")
     assert compensated_total == Decimal("0")
+
+
+def test_build_manual_recovery_sections_assigns_exact_to_be_recovered_age_buckets() -> (
+    None
+):
+    report_date = date(2026, 5, 20)
+    rows, compensated_rows, total, compensated_total = (
+        _data_module._build_manual_recovery_sections(
+            [
+                {
+                    "cost_center": "CC1",
+                    "order_number": f"AGE-{age_days}",
+                    "order_date": datetime.combine(
+                        report_date - timedelta(days=age_days), datetime.min.time()
+                    ),
+                    "customer_name": "Customer",
+                    "mobile_number": "9000000000",
+                    "order_amount": Decimal("10"),
+                    "recovery_status": "TO_BE_RECOVERED",
+                }
+                for age_days in (3, 4, 10, 11, 30, 31, 85, 86, 90, 91)
+            ],
+            report_date=report_date,
+            tz=ZoneInfo("Asia/Kolkata"),
+        )
+    )
+
+    assert compensated_rows == []
+    assert compensated_total == Decimal("0")
+    assert total == Decimal("90")
+    assert {row.order_number for row in rows} == {
+        "AGE-4",
+        "AGE-10",
+        "AGE-11",
+        "AGE-30",
+        "AGE-31",
+        "AGE-85",
+        "AGE-86",
+        "AGE-90",
+        "AGE-91",
+    }
+    assert {row.order_number: row.age_bucket for row in rows} == {
+        "AGE-4": "4-10 days",
+        "AGE-10": "4-10 days",
+        "AGE-11": "11-30 days",
+        "AGE-30": "11-30 days",
+        "AGE-31": "31-85 days",
+        "AGE-85": "31-85 days",
+        "AGE-86": "86-90 days",
+        "AGE-90": "86-90 days",
+        "AGE-91": ">90 days",
+    }
+    assert {row.order_number: row.age_days for row in rows}["AGE-91"] == 91
 
 
 @pytest.mark.asyncio
@@ -2233,8 +2261,16 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2255,7 +2291,9 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == ["GROUP-1", "GROUP-2"]
     assert report.to_be_recovered == []
@@ -2285,7 +2323,9 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
 async def test_auto_clear_recovers_when_sales_row_is_missing_but_full_proof_exists(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "daily_sales_report_missing_sales_full_proof_recovery_resolution.db"
+    db_path = (
+        tmp_path / "daily_sales_report_missing_sales_full_proof_recovery_resolution.db"
+    )
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -2293,8 +2333,16 @@ async def test_auto_clear_recovers_when_sales_row_is_missing_but_full_proof_exis
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2310,7 +2358,9 @@ async def test_auto_clear_recovers_when_sales_row_is_missing_but_full_proof_exis
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == ["NO-SALES"]
     assert [row.order_number for row in report.to_be_recovered] == []
@@ -2343,8 +2393,16 @@ async def test_auto_clear_recovers_when_payment_proof_is_full_even_if_sales_mism
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2364,7 +2422,9 @@ async def test_auto_clear_recovers_when_payment_proof_is_full_even_if_sales_mism
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == ["MISMATCH"]
     assert [row.order_number for row in report.to_be_recovered] == []
@@ -2397,8 +2457,16 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_insufficie
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2414,7 +2482,9 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_insufficie
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == []
     assert [row.order_number for row in report.to_be_recovered] == ["SHORT-PROOF"]
@@ -2442,8 +2512,16 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_source_is_uns
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2463,10 +2541,14 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_source_is_uns
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == []
-    assert [row.order_number for row in report.to_be_recovered] == ["UNSUPPORTED-SOURCE"]
+    assert [row.order_number for row in report.to_be_recovered] == [
+        "UNSUPPORTED-SOURCE"
+    ]
     async with session_scope(database_url) as session:
         status = (await session.execute(sa.text("""
             SELECT recovery_status, recovery_category, recovery_notes
@@ -2491,8 +2573,16 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
     report_date = date(2026, 4, 29)
 
     async with session_scope(database_url) as session:
-        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
-        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
         await session.execute(sa.text("""
             INSERT INTO orders (
                 cost_center, order_number, order_date, customer_name, mobile_number,
@@ -2508,7 +2598,9 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
         """))
         await session.commit()
 
-    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
 
     assert report.auto_cleared_order_numbers == []
     assert [row.order_number for row in report.to_be_recovered] == ["NO-PROOF"]
@@ -2524,7 +2616,6 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
     assert status["recovery_notes"] is None
 
 
-
 def _integrity_daily_row(*, count: int, amount: str):
     row = _data_module._totals_row([])
     row.cost_center = "CC1"
@@ -2534,7 +2625,14 @@ def _integrity_daily_row(*, count: int, amount: str):
     return row
 
 
-def _integrity_findings(*, row_count: int, row_amount: str, order_numbers: list[str], population_amount: str, zero_count: int = 0):
+def _integrity_findings(
+    *,
+    row_count: int,
+    row_amount: str,
+    order_numbers: list[str],
+    population_amount: str,
+    zero_count: int = 0,
+):
     row = _integrity_daily_row(count=row_count, amount=row_amount)
     totals = _data_module._totals_row([row])
     population = _data_module.ReportDayOrdersByCostCenterRow(
@@ -2552,21 +2650,34 @@ def _integrity_findings(*, row_count: int, row_amount: str, order_numbers: list[
 
 def test_daily_sales_integrity_matching_summary_and_order_number_list() -> None:
     findings = _integrity_findings(
-        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+        row_count=2,
+        row_amount="125",
+        order_numbers=["ORD-1", "ORD-2"],
+        population_amount="125",
     )
     assert findings == []
 
 
 def test_daily_sales_integrity_explicit_zero_value_order_remains_listed() -> None:
     findings = _integrity_findings(
-        row_count=1, row_amount="0", order_numbers=["ZERO-1"], population_amount="0", zero_count=1
+        row_count=1,
+        row_amount="0",
+        order_numbers=["ZERO-1"],
+        population_amount="0",
+        zero_count=1,
     )
-    assert [finding.code for finding in findings] == ["ftd_orders_with_zero_total_amount"]
+    assert [finding.code for finding in findings] == [
+        "ftd_orders_with_zero_total_amount"
+    ]
 
 
 def test_daily_sales_integrity_multiple_zero_value_orders_generate_warning() -> None:
     findings = _integrity_findings(
-        row_count=2, row_amount="0", order_numbers=["ZERO-1", "ZERO-2"], population_amount="0", zero_count=2
+        row_count=2,
+        row_amount="0",
+        order_numbers=["ZERO-1", "ZERO-2"],
+        population_amount="0",
+        zero_count=2,
     )
     assert [finding.code for finding in findings] == [
         "ftd_orders_with_zero_total_amount",
@@ -2577,7 +2688,10 @@ def test_daily_sales_integrity_multiple_zero_value_orders_generate_warning() -> 
 
 def test_daily_sales_integrity_count_mismatch_is_hard_error() -> None:
     findings = _integrity_findings(
-        row_count=1, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+        row_count=1,
+        row_amount="125",
+        order_numbers=["ORD-1", "ORD-2"],
+        population_amount="125",
     )
     assert [(finding.code, finding.severity) for finding in findings] == [
         ("store_ftd_count_mismatch", "error")
@@ -2586,7 +2700,10 @@ def test_daily_sales_integrity_count_mismatch_is_hard_error() -> None:
 
 def test_daily_sales_integrity_amount_mismatch_is_hard_error() -> None:
     findings = _integrity_findings(
-        row_count=2, row_amount="124", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+        row_count=2,
+        row_amount="124",
+        order_numbers=["ORD-1", "ORD-2"],
+        population_amount="125",
     )
     assert [(finding.code, finding.severity) for finding in findings] == [
         ("store_ftd_amount_mismatch", "error")
@@ -2595,7 +2712,10 @@ def test_daily_sales_integrity_amount_mismatch_is_hard_error() -> None:
 
 def test_daily_sales_integrity_duplicate_order_number_is_hard_error() -> None:
     findings = _integrity_findings(
-        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-1"], population_amount="125"
+        row_count=2,
+        row_amount="125",
+        order_numbers=["ORD-1", "ORD-1"],
+        population_amount="125",
     )
     assert [(finding.code, finding.severity) for finding in findings] == [
         ("duplicate_ftd_order_number", "error")
@@ -2608,9 +2728,15 @@ def test_daily_sales_integrity_aggregate_total_mismatch_is_hard_error() -> None:
     totals.orders_count_ftd = 2
     totals.sales_ftd = Decimal("126")
     population = _data_module.ReportDayOrdersByCostCenterRow(
-        cost_center="CC1", order_numbers_text="ORD-1", order_numbers=["ORD-1"], orders_count=1, order_amount=Decimal("125")
+        cost_center="CC1",
+        order_numbers_text="ORD-1",
+        order_numbers=["ORD-1"],
+        orders_count=1,
+        order_amount=Decimal("125"),
     )
-    findings = _data_module._build_integrity_findings(rows=[row], totals=totals, report_day_orders_by_cost_center=[population])
+    findings = _data_module._build_integrity_findings(
+        rows=[row], totals=totals, report_day_orders_by_cost_center=[population]
+    )
     assert [(finding.code, finding.severity) for finding in findings] == [
         ("total_ftd_count_mismatch", "error"),
         ("total_ftd_amount_mismatch", "error"),

@@ -138,6 +138,7 @@
           <th class="label">Order Number</th>
           <th>Order Date</th>
           <th>Age (Days)</th>
+          <th>Age Bucket</th>
           <th class="label">Customer Name</th>
           <th class="label">Mobile Number</th>
           <th>Order Amount</th>
@@ -148,7 +149,7 @@
         {% if grouped_rows %}
         {% for group in grouped_rows %}
         <tr class="group-header-row">
-          <td class="label" colspan="9">Cost Center: {{ group.cost_center }}</td>
+          <td class="label" colspan="10">Cost Center: {{ group.cost_center }}</td>
         </tr>
         {% for row in group.rows %}
         <tr>
@@ -156,7 +157,8 @@
           <td class="label">{{ row.cost_center }}</td>
           <td class="label">{{ row.order_number }}</td>
           <td>{{ row.order_date | format_ddmmyyyy }}</td>
-          <td>{% if row.order_date %}{{ (report_date_value - row.order_date).days }}{% else %}--{% endif %}</td>
+          <td>{% if row.age_days is not none %}{{ row.age_days }}{% elif row.order_date %}{{ (report_date_value - row.order_date).days }}{% else %}--{% endif %}</td>
+          <td>{{ row.age_bucket or "--" }}</td>
           <td class="label wrapped-text">{{ row.customer_name or "--" }}</td>
           <td class="label">{{ row.mobile_number or "--" }}</td>
           <td>{{ row.order_amount | format_amount }}</td>
@@ -164,18 +166,18 @@
         </tr>
         {% endfor %}
         <tr class="group-total-row">
-          <td class="label" colspan="7">{{ group.cost_center }} Total</td>
+          <td class="label" colspan="8">{{ group.cost_center }} Total</td>
           <td>{{ group.group_total_order_amount | format_amount }}</td>
           <td>{{ group.group_total_recoverable_amount | format_amount }}</td>
         </tr>
         {% endfor %}
         {% else %}
         <tr>
-          <td class="center" colspan="9">No unresolved TO_BE_RECOVERED orders</td>
+          <td class="center" colspan="10">No unresolved TO_BE_RECOVERED orders</td>
         </tr>
         {% endif %}
         <tr class="totals-row">
-          <td class="label" colspan="8">Total Recoverable</td>
+          <td class="label" colspan="9">Total Recoverable</td>
           <td>{{ total_recoverable | format_amount }}</td>
         </tr>
       </tbody>
