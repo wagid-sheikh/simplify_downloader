@@ -33,15 +33,15 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
 
 
 PENDING_DELIVERY_THRESHOLD_DAYS = 3
-AGED_PENDING_DELIVERY_RECOVERY_STATUS = "TO_BE_RECOVERED"
-AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
+TO_BE_RECOVERED_START_AGE_DAYS = 4
 
 
 def _system_recovery_note(marked_at: datetime) -> str:
     readable_date = marked_at.strftime("%d-%b-%Y")
     technical_timestamp = marked_at.isoformat()
     return (
-        "Auto marked as TO_BE_RECOVERED by system "
+        "Auto marked as TO_BE_RECOVERED by system due to aging beyond "
+        "delivery due date "
         f"on {readable_date} [{technical_timestamp}]"
     )
 
@@ -300,7 +300,6 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             matching_sale_exists.label("has_sale"),
         )
         .select_from(orders)
-        .where(amount_expr > 0)
         .order_by(orders.c.cost_center, orders.c.order_number)
     )
 
@@ -325,19 +324,13 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             ):
                 metrics.skipped_due_to_non_none_status += 1
                 continue
-            default_due_date = _coerce_datetime(record.get("default_due_date"))
-            if default_due_date is None:
-                metrics.skipped_due_to_missing_due_date += 1
-                order_date = _coerce_datetime(record.get("order_date"))
-                default_due_date = (
-                    order_date + timedelta(days=2) if order_date is not None else None
-                )
-            if default_due_date is None:
+            order_date = _coerce_datetime(record.get("order_date"))
+            if order_date is None:
                 metrics.skipped_due_to_age += 1
                 continue
-            default_due_date_local = _resolve_business_date(default_due_date, tz)
-            age_days = max(0, (report_date - default_due_date_local).days)
-            if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+            order_date_local = _resolve_order_date(order_date, tz)
+            age_days = max(0, (report_date - order_date_local).days)
+            if age_days < TO_BE_RECOVERED_START_AGE_DAYS:
                 metrics.skipped_due_to_age += 1
                 continue
             cost_center = str(record.get("cost_center") or "")
@@ -364,15 +357,21 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             order_rows=candidate_order_rows,
             payment_evidence_rows=payment_rows,
         )
+        zero_amount_proof_keys = _zero_amount_payment_proof_keys(payment_rows)
         candidate_keys: list[tuple[str, str]] = []
         for order in reconciliation.orders:
-            has_sufficient_payment_proof = (
+            has_sufficient_positive_proof = (
                 order.order_amount > 0
                 and order.has_payment_proof
                 and order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
                 >= order.order_amount
             )
-            if has_sufficient_payment_proof:
+            has_zero_amount_proof = (
+                order.order_amount == 0
+                and (order.cost_center, order.normalized_order_number)
+                in zero_amount_proof_keys
+            )
+            if has_sufficient_positive_proof or has_zero_amount_proof:
                 continue
             candidate_keys.append((order.cost_center, order.order_number))
 
@@ -382,7 +381,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
                 cost_center=cost_center,
                 order_number=order_number,
                 from_status=PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
-                to_status=AGED_PENDING_DELIVERY_RECOVERY_STATUS,
+                to_status="TO_BE_RECOVERED",
                 recovery_category=None,
                 recovery_note=note,
             )
