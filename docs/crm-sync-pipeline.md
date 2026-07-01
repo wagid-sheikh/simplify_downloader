@@ -241,16 +241,19 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 
 **Data sources & filters**
 
-* Source tables: `orders` and `sales`.
-* Join key: `orders.cost_center = sales.cost_center` **and** `orders.order_number = sales.order_number`.
-* Required filter: `orders.order_status = 'Pending'`.
-* UC exclusion: add `system_config.key = 'SKIP_UC_Pending_Delivery'` (default `true`) and, when `true`, filter out `orders.source_system = 'UClean'`.
-* Pending definition:
-  * `paid_amount = COALESCE(SUM(sales.payment_received), 0)`.
-  * `pending_amount = GREATEST(orders.gross_amount - paid_amount, 0)`.
-  * Include orders where `pending_amount > 0`.
-* Overpaid orders are considered delivered (excluded via `pending_amount` logic).
-* `orders.gross_amount` is never NULL; 0 is valid and should follow the same rules.
+> **Legacy note:** This surrounding document is retained for historical CRM-sync planning context and is not canonical where it conflicts with `/docs/architecture.md`, `/docs/decision-log.md`, `/docs/pr-checklist.md`, or `/docs/feature-map.md`. The pending-delivery eligibility rules below reflect the current contract.
+
+* Source tables/projections: `vw_orders`, `sales`, and qualifying `payment_collections` proof.
+* Matching keys use normalized same-store order identity: `cost_center` plus `order_number`; grouped `payment_collections.order_number` values must be matched using the current whole-token qualifying-proof semantics.
+* Pending Delivery eligibility is controlled by all of the following current rules:
+  * No matching `sales` row exists for the normalized `(cost_center, order_number)`.
+  * No sufficient qualifying `payment_collections` proof exists for the order.
+  * `vw_orders.recovery_status = 'NONE'`.
+  * `vw_orders.order_amount > 0`.
+  * The order is visible in the report based on age/bucket rules below.
+* `order_status` must not control Pending Delivery eligibility. In particular, do not require `orders.order_status = 'Pending'` and do not exclude an otherwise eligible row solely because CRM/order snapshot status changed.
+* Use `vw_orders.order_amount` for user-facing amounts and labels; raw `orders.gross_amount`, `orders.net_amount`, and `orders.adjustment` are source/ingest fields, not report-decision fields.
+* Recovery-workflow rows such as `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal Pending Delivery aging buckets/details by the `vw_orders.recovery_status = 'NONE'` requirement.
 
 **Age and bucketing**
 
