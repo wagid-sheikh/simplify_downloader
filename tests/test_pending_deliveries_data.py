@@ -147,6 +147,7 @@ async def _insert_order_and_sale(
     payment_received: Decimal,
     adjustments: Decimal,
     recovery_status: str | None = _DEFAULT_RECOVERY_STATUS,
+    order_status: str = "Pending",
     insert_sale: bool = True,
     sale_order_number: str | None = None,
     sale_cost_center: str = "UN3668",
@@ -172,7 +173,7 @@ async def _insert_order_and_sale(
             "complete_processing_by": default_due_date,
             "gross_amount": gross_amount,
             "net_amount": net_amount,
-            "order_status": "Pending",
+            "order_status": order_status,
             "created_at": now,
         }
         await session.execute(sa.insert(orders).values(**order_values))
@@ -369,6 +370,130 @@ async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row
     assert included_row.paid_amount == Decimal("0.00")
     assert included_row.pending_amount == Decimal("2165.00")
     assert included_row.default_due_date == date(2025, 5, 10)
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_includes_non_pending_order_status_when_unpaid(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_non_pending_status.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="READY-NO-PROOF",
+        gross_amount=Decimal("2165.00"),
+        net_amount=Decimal("2165.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        order_status="Ready",
+        insert_sale=False,
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    reported_orders = {
+        row.order_number
+        for section in data.summary_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    }
+    assert reported_orders == {"READY-NO-PROOF"}
+    assert data.total_pending_amount == Decimal("2165.00")
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_excludes_sufficient_payment_collection_proof(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_sufficient_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="ENOUGH-PROOF",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" enough-proof ",
+        amount=Decimal("99.00"),
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    assert data.total_count == 0
+    assert data.total_pending_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_excludes_orders_older_than_30_days(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_older_than_30.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    report_date = date(2025, 5, 20)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    old_due_date = datetime(2025, 4, 19, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=old_due_date,
+        default_due_date=old_due_date,
+        source_system="TumbleDry",
+        order_number="AGE-31-FETCH",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=report_date,
+    )
+
+    assert data.total_count == 0
+    assert data.summary_sections == []
 
 
 @pytest.mark.asyncio

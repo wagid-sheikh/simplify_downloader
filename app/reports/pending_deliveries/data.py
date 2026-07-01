@@ -425,6 +425,13 @@ async def fetch_pending_deliveries_report(
         sa.column("order_status"),
         sa.column("recovery_status"),
     )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
     sales = _sales_table(metadata)
 
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
@@ -451,14 +458,11 @@ async def fetch_pending_deliveries_report(
             orders.c.default_due_date,
             orders.c.source_system,
             amount_expr.label("order_amount"),
-            sa.literal(0).label("paid_amount"),
-            amount_expr.label("pending_amount"),
             sa.literal(0).label("adjustments"),
             sa.literal(0).label("is_edited_order"),
             sa.literal(0).label("is_duplicate"),
         )
         .select_from(orders)
-        .where(orders.c.order_status == "Pending")
         .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
         .where(sa.not_(matching_sale_exists))
         .where(amount_expr > 0)
@@ -470,6 +474,8 @@ async def fetch_pending_deliveries_report(
 
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
+        candidate_order_rows: list[dict[str, object]] = []
+        prepared_rows: dict[tuple[str, str], dict[str, object]] = {}
         for record in results.mappings():
             order_date = _coerce_datetime(record.get("order_date"))
             if order_date is None:
@@ -481,21 +487,58 @@ async def fetch_pending_deliveries_report(
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
-            order_amount = _decimal(record.get("order_amount"))
-            paid_amount = _decimal(record.get("paid_amount"))
-            pending_amount = _decimal(record.get("pending_amount"))
+            if age_days > AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+                continue
+
+            row = dict(record)
+            cost_center = str(row.get("cost_center") or "")
+            order_number = str(row.get("order_number") or "")
+            if not cost_center or not order_number:
+                continue
+            key = (cost_center, order_number)
+            row["order_date_local"] = order_date_local
+            row["default_due_date_local"] = default_due_date_local
+            row["age_days"] = age_days
+            prepared_rows[key] = row
+            candidate_order_rows.append(row)
+
+        payment_rows = await fetch_payment_rows_for_orders(
+            session=session,
+            payment_collections=payment_collections,
+            order_rows=candidate_order_rows,
+        )
+        reconciliation = reconcile_payments(
+            order_rows=candidate_order_rows,
+            payment_evidence_rows=payment_rows,
+        )
+
+        for order in reconciliation.orders:
+            if order.order_amount <= 0:
+                continue
+            if (
+                order.has_payment_proof
+                and order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
+                >= order.order_amount
+            ):
+                continue
+            record = prepared_rows.get((order.cost_center, order.order_number))
+            if record is None:
+                continue
+            order_amount = _decimal(order.order_amount)
+            paid_amount = _decimal(order.allocated_payment_amount)
+            pending_amount = max(Decimal("0"), order_amount - paid_amount)
             adjustments = _decimal(record.get("adjustments"))
             is_edited_order = bool(record.get("is_edited_order"))
             is_duplicate = bool(record.get("is_duplicate"))
             rows.append(
                 PendingDeliveryRow(
-                    cost_center=str(record.get("cost_center") or ""),
+                    cost_center=order.cost_center,
                     store_code=str(record.get("store_code") or ""),
-                    order_number=str(record.get("order_number") or ""),
+                    order_number=order.order_number,
                     customer_name=str(record.get("customer_name") or ""),
-                    order_date=order_date_local,
-                    default_due_date=default_due_date_local,
-                    age_days=age_days,
+                    order_date=record["order_date_local"],
+                    default_due_date=record["default_due_date_local"],
+                    age_days=int(record["age_days"]),
                     order_amount=order_amount,
                     paid_amount=paid_amount,
                     pending_amount=pending_amount,
@@ -503,6 +546,7 @@ async def fetch_pending_deliveries_report(
                     is_edited_order=is_edited_order,
                     is_duplicate=is_duplicate,
                     source_system=str(record.get("source_system") or ""),
+                    recovery_status=order.recovery_status,
                 )
             )
 
