@@ -2095,6 +2095,122 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
 
 
 @pytest.mark.asyncio
+async def test_zero_value_to_be_recovered_with_zero_amount_proof_auto_clears(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_zero_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status,
+                recovery_category, recovery_notes
+            ) VALUES (
+                'CC1', 'ZERO-PROOF', '2026-04-29T09:00:00+05:30',
+                'Customer', '9000000001', 0, 0, 'TumbleDry',
+                'TO_BE_RECOVERED', 'MISSING_PAYMENT', 'operator opened note'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'ZERO-PROOF', 0, 'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+
+    assert report.auto_cleared_order_numbers == ["ZERO-PROOF"]
+    assert report.to_be_recovered == []
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'ZERO-PROOF'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "RECOVERED"
+    assert status["recovery_category"] == "PAYMENT_PROOF_AUTO_RECOVERED"
+    assert status["recovery_notes"].startswith("operator opened note\n")
+    assert "AUTO_CLEARED_PAYMENT_PROOF" in status["recovery_notes"]
+    assert "payment_collections.payment_ids=1" in status["recovery_notes"]
+    assert "order_amount=0" in status["recovery_notes"]
+    assert "evidence_amount=0" in status["recovery_notes"]
+
+
+@pytest.mark.asyncio
+async def test_zero_value_to_be_recovered_without_zero_amount_proof_stays_open(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_zero_recovery_no_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"
+            )
+        )
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'ZERO-NO-PROOF', '2026-04-29T09:00:00+05:30',
+                'Customer', '9000000001', 0, 0, 'TumbleDry',
+                'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'ZERO-NO-PROOF', 1, 'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(
+        database_url=database_url, report_date=report_date
+    )
+
+    assert report.auto_cleared_order_numbers == []
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'ZERO-NO-PROOF'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
+
+
+@pytest.mark.asyncio
 async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleared(
     tmp_path, monkeypatch
 ) -> None:
