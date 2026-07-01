@@ -13,7 +13,11 @@ import sqlalchemy as sa
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.common.db import session_scope
-from app.reports.daily_sales_report.data import DailySalesIntegrityFinding, RecoveryOrderRow, _totals_row
+from app.reports.daily_sales_report.data import (
+    DailySalesIntegrityFinding,
+    RecoveryOrderRow,
+    _totals_row,
+)
 from app.reports.daily_sales_report.to_be_recovered import (
     build_context as build_to_be_recovered_context,
 )
@@ -68,7 +72,9 @@ def test_build_context_includes_report_day_orders_by_cost_center() -> None:
         same_day_fulfillment_rows=[],
         missing_payment_rows=[],
         short_payment_rows=[],
-        report_day_orders_by_cost_center=[SimpleNamespace(cost_center="CC1", order_numbers_text="ORD-1")],
+        report_day_orders_by_cost_center=[
+            SimpleNamespace(cost_center="CC1", order_numbers_text="ORD-1")
+        ],
     )
     context = pipeline._build_context(payload, "test")
     assert context["report_day_orders_by_cost_center"][0].order_numbers_text == "ORD-1"
@@ -133,9 +139,7 @@ def test_daily_sales_template_renders_same_day_cost_center_detail_values() -> No
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     with engine.begin() as conn:
-        conn.execute(
-            sa.text(
-                """
+        conn.execute(sa.text("""
                 CREATE TABLE orders (
                     cost_center TEXT,
                     order_number TEXT,
@@ -145,33 +149,21 @@ def _create_tables(database_url: str) -> None:
                     net_amount NUMERIC,
                     recovery_status TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE VIEW vw_orders AS
                 SELECT *, COALESCE(net_amount, 0) AS order_amount
                 FROM orders
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE order_line_items (
                     cost_center TEXT,
                     order_number TEXT,
                     service_name TEXT,
                     garment_name TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE sales (
                     cost_center TEXT,
                     order_number TEXT,
@@ -179,9 +171,7 @@ def _create_tables(database_url: str) -> None:
                     payment_mode TEXT,
                     payment_received NUMERIC
                 )
-                """
-            )
-        )
+                """))
         conn.execute(
             sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)")
         )
@@ -190,9 +180,7 @@ def _create_tables(database_url: str) -> None:
                 "CREATE TABLE payment_collections (cost_center TEXT, order_number TEXT)"
             )
         )
-        conn.execute(
-            sa.text(
-                """
+        conn.execute(sa.text("""
                 CREATE TABLE vw_orders_missing_in_payment_collections (
                     cost_center TEXT,
                     order_number TEXT,
@@ -202,12 +190,8 @@ def _create_tables(database_url: str) -> None:
                     net_amount NUMERIC,
                     recovery_status TEXT
                 )
-                """
-            )
-        )
-        conn.execute(
-            sa.text(
-                """
+                """))
+        conn.execute(sa.text("""
                 CREATE TABLE documents (
                     doc_type TEXT,
                     doc_subtype TEXT,
@@ -226,9 +210,7 @@ def _create_tables(database_url: str) -> None:
                     created_at TIMESTAMP,
                     created_by TEXT
                 )
-                """
-            )
-        )
+                """))
     engine.dispose()
 
 
@@ -373,6 +355,7 @@ def test_to_be_recovered_template_renders_summary_and_grouped_details() -> None:
     assert "Cost Center" in html
     assert "Total Order Amount" in html
     assert "Total Recoverable Amount" in html
+    assert "Age Bucket" in html
 
     summary_table = html[
         html.index('<table class="micro-font summary-table"') : html.index(
@@ -406,22 +389,22 @@ def test_to_be_recovered_template_renders_summary_and_grouped_details() -> None:
 
     assert (
         '<tr class="group-total-row">\n'
-        '          <td class="label" colspan="5">CC1 Total</td>\n'
-        '          <td>75</td>\n'
-        '          <td>75</td>\n'
-        '        </tr>'
+        '          <td class="label" colspan="8">CC1 Total</td>\n'
+        "          <td>75</td>\n"
+        "          <td>75</td>\n"
+        "        </tr>"
     ) in detail_table
     assert (
         '<tr class="group-total-row">\n'
-        '          <td class="label" colspan="5">CC2 Total</td>\n'
-        '          <td>300</td>\n'
-        '          <td>300</td>\n'
-        '        </tr>'
+        '          <td class="label" colspan="8">CC2 Total</td>\n'
+        "          <td>300</td>\n"
+        "          <td>300</td>\n"
+        "        </tr>"
     ) in detail_table
     assert detail_table.count('<tr class="group-total-row">') == 2
     assert (
-        '<td class="label" colspan="6">Total Recoverable</td>\n'
-        '          <td>375</td>'
+        '<td class="label" colspan="9">Total Recoverable</td>\n'
+        "          <td>375</td>"
     ) in detail_table
 
 
@@ -441,39 +424,27 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
                 "INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"
             )
         )
-        await session.execute(
-            sa.text(
-                """
+        await session.execute(sa.text("""
                 INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount)
                 VALUES
                     ('CC1', 'RPT-DATE-1', '2026-04-29T09:00:00+05:30', 'Alice', '9999999999', 900),
                     ('CC1', 'IN-MONTH-1', '2026-04-10T09:00:00+05:30', 'Bob', '8888888888', 800),
                     ('CC1', 'OUT-MONTH-1', '2026-03-31T09:00:00+05:30', 'Cora', '7777777777', 700)
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO order_line_items (cost_center, order_number, service_name, garment_name)
                 VALUES
                     ('CC1', 'RPT-DATE-1', 'Wash', 'Shirt'),
                     ('CC1', 'IN-MONTH-1', 'Iron', 'Pant'),
                     ('CC1', 'OUT-MONTH-1', 'Dry', 'Coat')
-                """
-            )
-        )
-        await session.execute(
-            sa.text(
-                """
+                """))
+        await session.execute(sa.text("""
                 INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received)
                 VALUES
                     ('CC1', 'RPT-DATE-1', '2026-04-29T10:00:00+05:30', 'UPI', 900),
                     ('CC1', 'IN-MONTH-1', '2026-04-10T10:00:00+05:30', 'CARD', 800),
                     ('CC1', 'OUT-MONTH-1', '2026-04-29T10:00:00+05:30', 'CASH', 700)
-                """
-            )
-        )
+                """))
         await session.commit()
 
     monkeypatch.setattr(
@@ -574,7 +545,9 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
         / f"reports.daily_sales_report_actual_payments_not_found_{report_date.isoformat()}.xlsx"
     )
 
-    assert {daily_path, recovered_path, short_payments_path, apnf_path}.issubset(rendered)
+    assert {daily_path, recovered_path, short_payments_path, apnf_path}.issubset(
+        rendered
+    )
     assert Path(apnf_workbook_path).exists()
     assert "RPT-DATE-1" in rendered[daily_path]
     assert "REC-1" in rendered[recovered_path]
@@ -589,21 +562,11 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     assert "Window: 01-Apr-2026 to 29-Apr-2026" in mtd_html
 
     async with session_scope(database_url) as session:
-        rows = (
-            (
-                await session.execute(
-                    sa.text(
-                        """
+        rows = (await session.execute(sa.text("""
                     SELECT doc_type, file_name, reference_id_1, reference_id_3
                     FROM documents
                     ORDER BY file_name
-                    """
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+                    """))).mappings().all()
 
     assert len(rows) == 6
     by_type = {row["doc_type"]: row for row in rows}
@@ -617,20 +580,38 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
         by_type["daily_sales_short_payments_pdf"]["file_name"]
         == f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
     )
-    assert by_type["daily_sales_short_payments_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert by_type["daily_sales_short_payments_pdf"]["reference_id_3"] == report_date.isoformat()
+    assert (
+        by_type["daily_sales_short_payments_pdf"]["reference_id_1"]
+        == pipeline.PIPELINE_NAME
+    )
+    assert (
+        by_type["daily_sales_short_payments_pdf"]["reference_id_3"]
+        == report_date.isoformat()
+    )
     assert (
         by_type["mtd_same_day_fulfillment_pdf"]["file_name"]
         == f"reports.mtd_same_day_fulfillment_{report_date.isoformat()}.pdf"
     )
-    assert by_type["mtd_same_day_fulfillment_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert by_type["mtd_same_day_fulfillment_pdf"]["reference_id_3"] == report_date.isoformat()
+    assert (
+        by_type["mtd_same_day_fulfillment_pdf"]["reference_id_1"]
+        == pipeline.PIPELINE_NAME
+    )
+    assert (
+        by_type["mtd_same_day_fulfillment_pdf"]["reference_id_3"]
+        == report_date.isoformat()
+    )
     assert (
         by_type["to_be_recovered_report_pdf"]["file_name"]
         == f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
     )
-    assert by_type["to_be_recovered_report_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert by_type["to_be_recovered_report_pdf"]["reference_id_3"] == report_date.isoformat()
+    assert (
+        by_type["to_be_recovered_report_pdf"]["reference_id_1"]
+        == pipeline.PIPELINE_NAME
+    )
+    assert (
+        by_type["to_be_recovered_report_pdf"]["reference_id_3"]
+        == report_date.isoformat()
+    )
     workbook = openpyxl.load_workbook(Path(apnf_workbook_path), data_only=True)
     try:
         assert workbook.sheetnames == ["No Data"]
@@ -705,14 +686,16 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
             same_day_fulfillment_rows=[],
             missing_payment_rows=[],
             short_payment_rows=[short_payment_row],
-            integrity_findings=[DailySalesIntegrityFinding(
-                severity="error",
-                code="store_ftd_count_mismatch",
-                cost_center="CC1",
-                message="CC1: FTD count does not match the report-day order population.",
-                expected=2,
-                actual=1,
-            )],
+            integrity_findings=[
+                DailySalesIntegrityFinding(
+                    severity="error",
+                    code="store_ftd_count_mismatch",
+                    cost_center="CC1",
+                    message="CC1: FTD count does not match the report-day order population.",
+                    expected=2,
+                    actual=1,
+                )
+            ],
         )
 
     async def _fake_mtd_rows(*args, **kwargs):
@@ -754,9 +737,18 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
     assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
     assert final_record["metrics_json"]["integrity_error_count"] == 1
     assert final_record["metrics_json"]["integrity_invalid_data_report"] is True
-    assert final_record["metrics_json"]["integrity_findings"][0]["code"] == "store_ftd_count_mismatch"
-    assert "CC1: FTD count does not match the report-day order population." in final_record["summary_text"]
-    assert "Orders sync was degraded before this report; data may be stale or incomplete." in final_record["summary_text"]
+    assert (
+        final_record["metrics_json"]["integrity_findings"][0]["code"]
+        == "store_ftd_count_mismatch"
+    )
+    assert (
+        "CC1: FTD count does not match the report-day order population."
+        in final_record["summary_text"]
+    )
+    assert (
+        "Orders sync was degraded before this report; data may be stale or incomplete."
+        in final_record["summary_text"]
+    )
     assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
     assert final_record["phases_json"]["send_email"]["ok"] == 1
 
@@ -966,21 +958,11 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
     assert mtd_path not in rendered_paths
 
     async with session_scope(database_url) as session:
-        rows = (
-            (
-                await session.execute(
-                    sa.text(
-                        """
+        rows = (await session.execute(sa.text("""
                     SELECT doc_type, file_name
                     FROM documents
                     ORDER BY file_name
-                    """
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+                    """))).mappings().all()
 
     assert len(rows) == 5
     assert {row["doc_type"] for row in rows} == {
@@ -999,7 +981,9 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
     assert final_record["metrics_json"]["short_payment_rows"] == 0
     assert final_record["metrics_json"]["short_payments_pdf_generated"] is True
     assert final_record["metrics_json"]["actual_payments_not_found_rows"] == 0
-    assert final_record["metrics_json"]["actual_payments_not_found_pdf_generated"] is True
+    assert (
+        final_record["metrics_json"]["actual_payments_not_found_pdf_generated"] is True
+    )
     assert (
         "MTD same-day fulfillment attachment was not generated"
         in final_record["summary_text"]
@@ -1035,7 +1019,9 @@ def test_actual_payments_not_found_workbook_groups_and_sorts_rows(tmp_path) -> N
         ),
     ]
 
-    pipeline._build_actual_payments_not_found_workbook(rows=rows, output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata"))
+    pipeline._build_actual_payments_not_found_workbook(
+        rows=rows, output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata")
+    )
 
     workbook = openpyxl.load_workbook(output_path, data_only=True)
     try:
@@ -1049,7 +1035,9 @@ def test_actual_payments_not_found_workbook_groups_and_sorts_rows(tmp_path) -> N
 def test_actual_payments_not_found_workbook_handles_zero_rows(tmp_path) -> None:
     output_path = tmp_path / "apnf-empty.xlsx"
 
-    pipeline._build_actual_payments_not_found_workbook(rows=[], output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata"))
+    pipeline._build_actual_payments_not_found_workbook(
+        rows=[], output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata")
+    )
 
     workbook = openpyxl.load_workbook(output_path, data_only=True)
     try:
@@ -1069,7 +1057,9 @@ def test_actual_payments_not_found_workbook_handles_zero_rows(tmp_path) -> None:
         workbook.close()
 
 
-def test_actual_payments_not_found_workbook_normalizes_tz_aware_datetimes(tmp_path) -> None:
+def test_actual_payments_not_found_workbook_normalizes_tz_aware_datetimes(
+    tmp_path,
+) -> None:
     output_path = tmp_path / "apnf-tz-aware.xlsx"
     rows = [
         SimpleNamespace(
@@ -1108,41 +1098,80 @@ def test_daily_sales_context_and_template_mark_degraded_orders_sync() -> None:
         report_date=date(2026, 4, 29),
         rows=[],
         totals=SimpleNamespace(
-            sales_ftd=Decimal("0"), sales_mtd=Decimal("0"), sales_lmtd=Decimal("0"),
-            orders_count_ftd=0, orders_count_mtd=0, orders_count_lmtd=0,
-            collections_ftd=Decimal("0"), collections_mtd=Decimal("0"), collections_lmtd=Decimal("0"),
-            collections_count_ftd=0, collections_count_mtd=0, collections_count_lmtd=0,
-            target=Decimal("0"), achieved=Decimal("0"), ttd=Decimal("0"),
-            delta=Decimal("0"), reqd_per_day=Decimal("0"),
+            sales_ftd=Decimal("0"),
+            sales_mtd=Decimal("0"),
+            sales_lmtd=Decimal("0"),
+            orders_count_ftd=0,
+            orders_count_mtd=0,
+            orders_count_lmtd=0,
+            collections_ftd=Decimal("0"),
+            collections_mtd=Decimal("0"),
+            collections_lmtd=Decimal("0"),
+            collections_count_ftd=0,
+            collections_count_mtd=0,
+            collections_count_lmtd=0,
+            target=Decimal("0"),
+            achieved=Decimal("0"),
+            ttd=Decimal("0"),
+            delta=Decimal("0"),
+            reqd_per_day=Decimal("0"),
         ),
-        edited_orders=[], edited_orders_summary=None, edited_orders_totals=None,
-        missed_leads=[], cancelled_leads=[], lead_performance_summary=[],
-        to_be_recovered=[], to_be_compensated=[],
+        edited_orders=[],
+        edited_orders_summary=None,
+        edited_orders_totals=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        to_be_recovered=[],
+        to_be_compensated=[],
         to_be_recovered_total_order_value=Decimal("0"),
         to_be_compensated_total_order_value=Decimal("0"),
-        auto_cleared_order_numbers_text="", same_day_fulfillment_rows=[],
-        missing_payment_rows=[], short_payment_rows=[], report_day_orders_by_cost_center=[],
+        auto_cleared_order_numbers_text="",
+        same_day_fulfillment_rows=[],
+        missing_payment_rows=[],
+        short_payment_rows=[],
+        report_day_orders_by_cost_center=[],
     )
-    upstream = pipeline.build_orders_sync_upstream_context(status="failed", run_id="orders-run-1")
+    upstream = pipeline.build_orders_sync_upstream_context(
+        status="failed", run_id="orders-run-1"
+    )
 
     context = pipeline._build_context(payload, "prod", upstream)
     html = pipeline._render_html(context)
 
     assert context["orders_sync_is_degraded"] is True
-    assert "Orders sync was degraded before this report; data may be stale or incomplete." in html
+    assert (
+        "Orders sync was degraded before this report; data may be stale or incomplete."
+        in html
+    )
     assert "Upstream orders sync status: failed; run ID: orders-run-1" in html
 
 
-
 def test_daily_sales_template_renders_invalid_data_integrity_section() -> None:
-    finding = SimpleNamespace(severity="error", message="CC1: FTD count does not match the report-day order population.")
+    finding = SimpleNamespace(
+        severity="error",
+        message="CC1: FTD count does not match the report-day order population.",
+    )
     payload = SimpleNamespace(
-        report_date=date(2026, 4, 29), rows=[], totals=_totals_row([]), edited_orders=[],
-        edited_orders_summary=None, edited_orders_totals=None, missed_leads=[], cancelled_leads=[],
-        lead_performance_summary=[], to_be_recovered=[], to_be_compensated=[],
-        to_be_recovered_total_order_value=Decimal("0"), to_be_compensated_total_order_value=Decimal("0"),
-        auto_cleared_order_numbers_text="", same_day_fulfillment_rows=[], missing_payment_rows=[], short_payment_rows=[],
-        report_day_orders_by_cost_center=[], integrity_findings=[finding],
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=_totals_row([]),
+        edited_orders=[],
+        edited_orders_summary=None,
+        edited_orders_totals=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        to_be_recovered=[],
+        to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        auto_cleared_order_numbers_text="",
+        same_day_fulfillment_rows=[],
+        missing_payment_rows=[],
+        short_payment_rows=[],
+        report_day_orders_by_cost_center=[],
+        integrity_findings=[finding],
     )
     html = pipeline._render_html(pipeline._build_context(payload, "test"))
     assert "INVALID DATA REPORT" in html
@@ -1301,8 +1330,7 @@ async def test_daily_pipeline_emits_diagnostic_timing_logs_in_order(
 
     assert [record["message"] for record in diagnostic_logs] == expected_messages
     assert all(
-        record["report_date"] == report_date.isoformat()
-        for record in diagnostic_logs
+        record["report_date"] == report_date.isoformat() for record in diagnostic_logs
     )
     assert all(record["elapsed_ms"] > 0 for record in diagnostic_logs)
 

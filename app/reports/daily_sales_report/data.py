@@ -22,14 +22,24 @@ from app.reports.shared.payment_reconciliation import (
     reconcile_payments,
     split_payment_order_numbers,
 )
-from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
-from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
+from app.reports.shared.same_day_fulfillment import (
+    fetch_same_day_fulfillment_rows,
+    same_day_date_expr,
+    string_list_agg,
+)
+from app.reports.shared.short_payments import (
+    ShortPaymentRow,
+    fetch_missing_payment_rows_without_proof,
+    fetch_short_payment_rows,
+)
 
 logger = logging.getLogger(__name__)
 
 # TS must advance only after a fully healthy pull; degraded attempts remain visible separately.
 HEALTHY_DATA_BEARING_ORDERS_SYNC_STATUSES = frozenset({"success"})
-ORDERS_SYNC_WARNING_STATUSES = frozenset({"failed", "partial", "skipped", "success_with_warnings", "warning"})
+ORDERS_SYNC_WARNING_STATUSES = frozenset(
+    {"failed", "partial", "skipped", "success_with_warnings", "warning"}
+)
 
 
 @dataclass
@@ -94,6 +104,8 @@ class RecoveryOrderRow:
     customer_name: str
     mobile_number: str
     order_value: Decimal
+    age_days: int | None = None
+    age_bucket: str | None = None
 
     @property
     def order_amount(self) -> Decimal:
@@ -181,7 +193,9 @@ class DailySalesReportData:
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
     short_payment_rows: List[ShortPaymentRow] = field(default_factory=list)
-    report_day_orders_by_cost_center: List[ReportDayOrdersByCostCenterRow] = field(default_factory=list)
+    report_day_orders_by_cost_center: List[ReportDayOrdersByCostCenterRow] = field(
+        default_factory=list
+    )
     integrity_findings: List[DailySalesIntegrityFinding] = field(default_factory=list)
 
 
@@ -194,6 +208,13 @@ LEAD_BENCHMARKS = {
 }
 
 MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
+TO_BE_RECOVERED_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+    ("4-10 days", 4, 10),
+    ("11-30 days", 11, 30),
+    ("31-85 days", 31, 85),
+    ("86-90 days", 86, 90),
+    (">90 days", 91, None),
+)
 
 
 def _normalized_digits_expr(value_expr, *, dialect_name: str):
@@ -265,7 +286,9 @@ async def _clear_resolved_to_be_recovered_orders(
                     orders.c.recovery_category,
                 )
                 .where(orders.c.cost_center.in_(candidate_cost_centers))
-                .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+                .order_by(
+                    orders.c.cost_center, orders.c.order_date, orders.c.order_number
+                )
             )
         )
         .mappings()
@@ -280,9 +303,12 @@ async def _clear_resolved_to_be_recovered_orders(
                     sales.c.payment_received,
                     sales.c.payment_mode,
                     sales.c.id,
-                    sales.c.get("payment_date")
-                    if hasattr(sales.c, "get") and sales.c.get("payment_date") is not None
-                    else sa.literal(None).label("payment_date"),
+                    (
+                        sales.c.get("payment_date")
+                        if hasattr(sales.c, "get")
+                        and sales.c.get("payment_date") is not None
+                        else sa.literal(None).label("payment_date")
+                    ),
                 )
                 .where(sales.c.cost_center.in_(candidate_cost_centers))
                 .order_by(sales.c.cost_center, sales.c.order_number, sales.c.id)
@@ -302,7 +328,9 @@ async def _clear_resolved_to_be_recovered_orders(
                     payment_collections.c.source_type,
                 )
                 .where(payment_collections.c.cost_center.in_(candidate_cost_centers))
-                .order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
+                .order_by(
+                    payment_collections.c.cost_center, payment_collections.c.payment_id
+                )
             )
         )
         .mappings()
@@ -334,7 +362,9 @@ async def _clear_resolved_to_be_recovered_orders(
         auto_clear_candidates,
         key=lambda order: (order.cost_center, order.order_number),
     )
-    auto_cleared_order_numbers = [order.order_number for order in sorted_auto_clear_candidates]
+    auto_cleared_order_numbers = [
+        order.order_number for order in sorted_auto_clear_candidates
+    ]
 
     for order in sorted_auto_clear_candidates:
         group = groups_by_order_key[(order.cost_center, order.order_number)]
@@ -362,7 +392,9 @@ async def _clear_resolved_to_be_recovered_orders(
     return auto_cleared_order_numbers
 
 
-def _format_auto_clear_recovery_notes(*, order, group, package_only: bool = False) -> str:
+def _format_auto_clear_recovery_notes(
+    *, order, group, package_only: bool = False
+) -> str:
     if package_only:
         group_key = f"{group.cost_center}:{'/'.join(group.normalized_order_numbers)}"
         return (
@@ -382,7 +414,9 @@ def _format_auto_clear_recovery_notes(*, order, group, package_only: bool = Fals
             key=lambda evidence: _evidence_id_sort_key(evidence.evidence_id),
         )
     )
-    source_types = ",".join(sorted({evidence.source_type for evidence in group.evidence_rows}))
+    source_types = ",".join(
+        sorted({evidence.source_type for evidence in group.evidence_rows})
+    )
     group_key = f"{group.cost_center}:{'/'.join(group.normalized_order_numbers)}"
     return (
         "AUTO_CLEARED_PAYMENT_PROOF "
@@ -421,9 +455,17 @@ def _to_local_date(value: object | None, tz) -> date | None:
     return parsed_dt.date()
 
 
+def _to_be_recovered_age_bucket(age_days: int) -> str | None:
+    for label, start_days, end_days in TO_BE_RECOVERED_BUCKETS:
+        if age_days >= start_days and (end_days is None or age_days <= end_days):
+            return label
+    return None
+
+
 def _build_manual_recovery_sections(
     records: Iterable[Mapping[str, object]],
     *,
+    report_date: date,
     tz,
 ) -> tuple[list[RecoveryOrderRow], list[RecoveryOrderRow], Decimal, Decimal]:
     recovered_rows: list[RecoveryOrderRow] = []
@@ -437,8 +479,16 @@ def _build_manual_recovery_sections(
 
         cost_center = str(record.get("cost_center") or "")
         order_date = _to_local_date(record.get("order_date"), tz)
+        age_days = (
+            max(0, (report_date - order_date).days) if order_date is not None else None
+        )
+        age_bucket = (
+            _to_be_recovered_age_bucket(age_days) if age_days is not None else None
+        )
         order_value = _decimal(record.get("order_amount"))
         if order_value <= 0:
+            continue
+        if recovery_status == "TO_BE_RECOVERED" and age_bucket is None:
             continue
         order_row = RecoveryOrderRow(
             cost_center=cost_center,
@@ -447,6 +497,8 @@ def _build_manual_recovery_sections(
             customer_name=str(record.get("customer_name") or ""),
             mobile_number=str(record.get("mobile_number") or ""),
             order_value=order_value,
+            age_days=age_days,
+            age_bucket=age_bucket,
         )
         if recovery_status == "TO_BE_RECOVERED":
             recovered_rows.append(order_row)
@@ -454,9 +506,18 @@ def _build_manual_recovery_sections(
         else:
             compensated_rows.append(order_row)
             compensated_total_order_value += order_value
-    recovered_rows.sort(key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number))
-    compensated_rows.sort(key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number))
-    return recovered_rows, compensated_rows, recovered_total_order_value, compensated_total_order_value
+    recovered_rows.sort(
+        key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number)
+    )
+    compensated_rows.sort(
+        key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number)
+    )
+    return (
+        recovered_rows,
+        compensated_rows,
+        recovered_total_order_value,
+        compensated_total_order_value,
+    )
 
 
 def _date_range(report_date: date, tz) -> dict[str, datetime]:
@@ -537,8 +598,12 @@ def _lead_metric_status_color(
     return ("NEUTRAL", "NEUTRAL")
 
 
-def _lead_metric_payload(*, metric: str, value: Decimal, total_leads: int) -> dict[str, object]:
-    status, color = _lead_metric_status_color(metric=metric, value=value, total_leads=total_leads)
+def _lead_metric_payload(
+    *, metric: str, value: Decimal, total_leads: int
+) -> dict[str, object]:
+    status, color = _lead_metric_status_color(
+        metric=metric, value=value, total_leads=total_leads
+    )
     return {
         "value": float(value),
         "color": color,
@@ -546,45 +611,77 @@ def _lead_metric_payload(*, metric: str, value: Decimal, total_leads: int) -> di
     }
 
 
-def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int) -> Decimal:
+def _calculate_ttd(
+    target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int
+) -> Decimal:
     if days_in_month <= 0:
         return Decimal("0")
-    expected_mtd = _truncate_amount((target / Decimal(str(days_in_month))) * Decimal(str(day_of_month)))
+    expected_mtd = _truncate_amount(
+        (target / Decimal(str(days_in_month))) * Decimal(str(day_of_month))
+    )
     return _round_amount(achieved - expected_mtd)
 
 
 def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.order_amount), else_=0)), 0)
+        return sa.func.coalesce(
+            sa.func.sum(sa.case((condition, orders.c.order_amount), else_=0)), 0
+        )
 
     return (
         sa.select(
             orders.c.cost_center.label("cost_center"),
-            _sum_when(sa.and_(orders.c.order_date >= ranges["start_day"], orders.c.order_date < ranges["next_day"]))
-            .label("sales_ftd"),
-            _sum_when(sa.and_(orders.c.order_date >= ranges["start_month"], orders.c.order_date < ranges["next_day"]))
-            .label("sales_mtd"),
-            _sum_when(sa.and_(orders.c.order_date >= ranges["lmt_start"], orders.c.order_date < ranges["lmt_end"]))
-            .label("sales_lmtd"),
+            _sum_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["start_day"],
+                    orders.c.order_date < ranges["next_day"],
+                )
+            ).label("sales_ftd"),
+            _sum_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["start_month"],
+                    orders.c.order_date < ranges["next_day"],
+                )
+            ).label("sales_mtd"),
+            _sum_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["lmt_start"],
+                    orders.c.order_date < ranges["lmt_end"],
+                )
+            ).label("sales_lmtd"),
         )
         .group_by(orders.c.cost_center)
         .subquery()
     )
 
 
-def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
+def _build_orders_count_agg(
+    orders: sa.Table, ranges: dict[str, datetime]
+) -> sa.Subquery:
     def _count_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
         return sa.func.coalesce(sa.func.sum(sa.case((condition, 1), else_=0)), 0)
 
     return (
         sa.select(
             orders.c.cost_center.label("cost_center"),
-            _count_when(sa.and_(orders.c.order_date >= ranges["start_day"], orders.c.order_date < ranges["next_day"]))
-            .label("orders_count_ftd"),
-            _count_when(sa.and_(orders.c.order_date >= ranges["start_month"], orders.c.order_date < ranges["next_day"]))
-            .label("orders_count_mtd"),
-            _count_when(sa.and_(orders.c.order_date >= ranges["lmt_start"], orders.c.order_date < ranges["lmt_end"]))
-            .label("orders_count_lmtd"),
+            _count_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["start_day"],
+                    orders.c.order_date < ranges["next_day"],
+                )
+            ).label("orders_count_ftd"),
+            _count_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["start_month"],
+                    orders.c.order_date < ranges["next_day"],
+                )
+            ).label("orders_count_mtd"),
+            _count_when(
+                sa.and_(
+                    orders.c.order_date >= ranges["lmt_start"],
+                    orders.c.order_date < ranges["lmt_end"],
+                )
+            ).label("orders_count_lmtd"),
         )
         .group_by(orders.c.cost_center)
         .subquery()
@@ -594,31 +691,36 @@ def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa
 def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
     normalized_status = sa.func.lower(sa.func.trim(orders_sync_log.c.status))
     # Attempt time is operational telemetry, not a substitute for a missing successful pull time.
-    attempt_ts = sa.func.coalesce(orders_sync_log.c.updated_at, orders_sync_log.c.created_at)
-    cost_centers = sa.select(orders_sync_log.c.cost_center.label("cost_center")).distinct().subquery()
+    attempt_ts = sa.func.coalesce(
+        orders_sync_log.c.updated_at, orders_sync_log.c.created_at
+    )
+    cost_centers = (
+        sa.select(orders_sync_log.c.cost_center.label("cost_center"))
+        .distinct()
+        .subquery()
+    )
     successful_refreshes = (
         sa.select(
             orders_sync_log.c.cost_center.label("cost_center"),
-            sa.func.max(orders_sync_log.c.orders_pulled_at).label("last_successful_orders_refresh_at"),
+            sa.func.max(orders_sync_log.c.orders_pulled_at).label(
+                "last_successful_orders_refresh_at"
+            ),
         )
         .where(normalized_status.in_(HEALTHY_DATA_BEARING_ORDERS_SYNC_STATUSES))
         .group_by(orders_sync_log.c.cost_center)
         .subquery()
     )
-    ranked_attempts = (
-        sa.select(
-            orders_sync_log.c.cost_center.label("cost_center"),
-            attempt_ts.label("last_orders_sync_attempt_at"),
-            normalized_status.label("latest_orders_sync_outcome"),
-            sa.func.row_number()
-            .over(
-                partition_by=orders_sync_log.c.cost_center,
-                order_by=(attempt_ts.desc(), orders_sync_log.c.created_at.desc()),
-            )
-            .label("attempt_rank"),
+    ranked_attempts = sa.select(
+        orders_sync_log.c.cost_center.label("cost_center"),
+        attempt_ts.label("last_orders_sync_attempt_at"),
+        normalized_status.label("latest_orders_sync_outcome"),
+        sa.func.row_number()
+        .over(
+            partition_by=orders_sync_log.c.cost_center,
+            order_by=(attempt_ts.desc(), orders_sync_log.c.created_at.desc()),
         )
-        .subquery()
-    )
+        .label("attempt_rank"),
+    ).subquery()
     latest_attempts = (
         sa.select(
             ranked_attempts.c.cost_center,
@@ -637,8 +739,12 @@ def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
         )
         .select_from(
             cost_centers.outerjoin(
-                successful_refreshes, successful_refreshes.c.cost_center == cost_centers.c.cost_center
-            ).outerjoin(latest_attempts, latest_attempts.c.cost_center == cost_centers.c.cost_center)
+                successful_refreshes,
+                successful_refreshes.c.cost_center == cost_centers.c.cost_center,
+            ).outerjoin(
+                latest_attempts,
+                latest_attempts.c.cost_center == cost_centers.c.cost_center,
+            )
         )
         .subquery()
     )
@@ -671,9 +777,18 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
         sales.c.order_number.is_not(None),
         normalized_order_number != "",
     )
-    ftd_condition = sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"])
-    mtd_condition = sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"])
-    lmtd_condition = sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"])
+    ftd_condition = sa.and_(
+        sales.c.payment_date >= ranges["start_day"],
+        sales.c.payment_date < ranges["next_day"],
+    )
+    mtd_condition = sa.and_(
+        sales.c.payment_date >= ranges["start_month"],
+        sales.c.payment_date < ranges["next_day"],
+    )
+    lmtd_condition = sa.and_(
+        sales.c.payment_date >= ranges["lmt_start"],
+        sales.c.payment_date < ranges["lmt_end"],
+    )
 
     periodized_sales = sa.union_all(
         sa.select(
@@ -701,7 +816,9 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
             periodized_sales.c.cost_center,
             periodized_sales.c.order_number,
             periodized_sales.c.period_bucket,
-            sa.func.coalesce(sa.func.sum(periodized_sales.c.payment_received), 0).label("collection_amount"),
+            sa.func.coalesce(sa.func.sum(periodized_sales.c.payment_received), 0).label(
+                "collection_amount"
+            ),
         )
         .group_by(
             periodized_sales.c.cost_center,
@@ -728,7 +845,9 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
     def _count_when_period(period_bucket: str) -> sa.ColumnElement:
         return sa.func.coalesce(
             sa.func.sum(
-                sa.case((collections_per_order.c.period_bucket == period_bucket, 1), else_=0)
+                sa.case(
+                    (collections_per_order.c.period_bucket == period_bucket, 1), else_=0
+                )
             ),
             0,
         )
@@ -749,7 +868,11 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
 
 
 def _target_section_title(target_compute_type: str) -> str:
-    return "Target (actual collections)" if target_compute_type == "COLLECTIONS" else "Target"
+    return (
+        "Target (actual collections)"
+        if target_compute_type == "COLLECTIONS"
+        else "Target"
+    )
 
 
 async def _fetch_allocated_collections_for_current_mtd_orders(
@@ -774,7 +897,11 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
 
     del sales  # Sales rows are irrelevant for collections-based target achievement.
 
-    scoped_cost_centers = tuple(sorted({str(cost_center) for cost_center in (cost_centers or ()) if cost_center}))
+    scoped_cost_centers = tuple(
+        sorted(
+            {str(cost_center) for cost_center in (cost_centers or ()) if cost_center}
+        )
+    )
     if cost_centers is not None and not scoped_cost_centers:
         return {}
 
@@ -787,10 +914,14 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
     if scoped_cost_centers:
         # Daily Sales only renders active cost centers. Keep the mandatory collections refresh,
         # but avoid scanning payment evidence for inactive/unreported stores.
-        payment_stmt = payment_stmt.where(payment_collections.c.cost_center.in_(scoped_cost_centers))
-    payment_stmt = payment_stmt.order_by(payment_collections.c.cost_center, payment_collections.c.payment_id)
+        payment_stmt = payment_stmt.where(
+            payment_collections.c.cost_center.in_(scoped_cost_centers)
+        )
+    payment_stmt = payment_stmt.order_by(
+        payment_collections.c.cost_center, payment_collections.c.payment_id
+    )
 
-    payment_rows = ((await session.execute(payment_stmt)).mappings().all())
+    payment_rows = (await session.execute(payment_stmt)).mappings().all()
     tokenized_payment_rows: list[dict[str, object]] = []
     tokens_by_cost_center: dict[str, set[str]] = {}
     for payment_row in payment_rows:
@@ -823,7 +954,9 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
                 # Future orders cannot contribute to the report MTD and cannot consume older
                 # allocation before in-scope orders, so keep this index-friendly upper bound.
                 .where(orders.c.order_date < end_datetime)
-                .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+                .order_by(
+                    orders.c.cost_center, orders.c.order_date, orders.c.order_number
+                )
             )
         )
         .mappings()
@@ -837,10 +970,13 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
         if (
             not cost_center
             or not normalized_order_number
-            or normalized_order_number not in tokens_by_cost_center.get(cost_center, set())
+            or normalized_order_number
+            not in tokens_by_cost_center.get(cost_center, set())
         ):
             continue
-        matched_orders.setdefault((cost_center, normalized_order_number), []).append(dict(order_row))
+        matched_orders.setdefault((cost_center, normalized_order_number), []).append(
+            dict(order_row)
+        )
 
     report_tz = get_timezone()
     fallback_datetime = datetime.min.replace(tzinfo=report_tz)
@@ -854,7 +990,10 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
         seen_orders: set[tuple[str, str]] = set()
         for token in payment_row["tokens"]:  # type: ignore[index]
             for order_row in matched_orders.get((cost_center, str(token)), []):
-                order_key = (str(order_row.get("order_number") or ""), str(order_row.get("order_date") or ""))
+                order_key = (
+                    str(order_row.get("order_number") or ""),
+                    str(order_row.get("order_date") or ""),
+                )
                 if order_key in seen_orders:
                     continue
                 seen_orders.add(order_key)
@@ -864,7 +1003,8 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
 
         ordered_matches.sort(
             key=lambda row: (
-                _parse_orders_sync_timestamp(row.get("order_date"), tz=report_tz) or fallback_datetime,
+                _parse_orders_sync_timestamp(row.get("order_date"), tz=report_tz)
+                or fallback_datetime,
                 str(row.get("order_number") or ""),
             )
         )
@@ -879,10 +1019,16 @@ async def _fetch_allocated_collections_for_current_mtd_orders(
                 allocated = min(remaining, _decimal(order_row.get("order_amount")))
             remaining -= allocated
 
-            order_datetime = _parse_orders_sync_timestamp(order_row.get("order_date"), tz=report_tz)
-            if order_datetime is not None and start_datetime <= order_datetime < end_datetime:
+            order_datetime = _parse_orders_sync_timestamp(
+                order_row.get("order_date"), tz=report_tz
+            )
+            if (
+                order_datetime is not None
+                and start_datetime <= order_datetime < end_datetime
+            ):
                 totals[cost_center] = totals.get(cost_center, Decimal("0")) + allocated
     return totals
+
 
 def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
     totals = DailySalesRow(
@@ -950,71 +1096,85 @@ def _build_integrity_findings(
             cost_center=row.cost_center, order_numbers_text="-"
         )
         if row.orders_count_ftd != population.orders_count:
-            findings.append(DailySalesIntegrityFinding(
-                severity="error",
-                code="store_ftd_count_mismatch",
-                cost_center=row.cost_center,
-                message=f"{row.cost_center}: FTD count does not match the report-day order population.",
-                expected=population.orders_count,
-                actual=row.orders_count_ftd,
-            ))
+            findings.append(
+                DailySalesIntegrityFinding(
+                    severity="error",
+                    code="store_ftd_count_mismatch",
+                    cost_center=row.cost_center,
+                    message=f"{row.cost_center}: FTD count does not match the report-day order population.",
+                    expected=population.orders_count,
+                    actual=row.orders_count_ftd,
+                )
+            )
         if row.sales_ftd != population.order_amount:
-            findings.append(DailySalesIntegrityFinding(
-                severity="error",
-                code="store_ftd_amount_mismatch",
-                cost_center=row.cost_center,
-                message=f"{row.cost_center}: FTD Order Amount does not match the report-day order population.",
-                expected=str(population.order_amount),
-                actual=str(row.sales_ftd),
-            ))
+            findings.append(
+                DailySalesIntegrityFinding(
+                    severity="error",
+                    code="store_ftd_amount_mismatch",
+                    cost_center=row.cost_center,
+                    message=f"{row.cost_center}: FTD Order Amount does not match the report-day order population.",
+                    expected=str(population.order_amount),
+                    actual=str(row.sales_ftd),
+                )
+            )
         duplicate_order_numbers = sorted(
             order_number
             for order_number, count in Counter(population.order_numbers).items()
             if count > 1
         )
         if duplicate_order_numbers:
-            findings.append(DailySalesIntegrityFinding(
-                severity="error",
-                code="duplicate_ftd_order_number",
-                cost_center=row.cost_center,
-                message=f"{row.cost_center}: duplicate report-day order number(s): {', '.join(duplicate_order_numbers)}.",
-                actual=len(duplicate_order_numbers),
-            ))
+            findings.append(
+                DailySalesIntegrityFinding(
+                    severity="error",
+                    code="duplicate_ftd_order_number",
+                    cost_center=row.cost_center,
+                    message=f"{row.cost_center}: duplicate report-day order number(s): {', '.join(duplicate_order_numbers)}.",
+                    actual=len(duplicate_order_numbers),
+                )
+            )
         if row.orders_count_ftd > 0 and row.sales_ftd == 0:
-            findings.append(DailySalesIntegrityFinding(
-                severity="warning",
-                code="ftd_orders_with_zero_total_amount",
-                cost_center=row.cost_center,
-                message=f"{row.cost_center}: {row.orders_count_ftd} FTD order(s) have a zero total Order Amount.",
-                actual=row.orders_count_ftd,
-            ))
+            findings.append(
+                DailySalesIntegrityFinding(
+                    severity="warning",
+                    code="ftd_orders_with_zero_total_amount",
+                    cost_center=row.cost_center,
+                    message=f"{row.cost_center}: {row.orders_count_ftd} FTD order(s) have a zero total Order Amount.",
+                    actual=row.orders_count_ftd,
+                )
+            )
         if population.zero_value_orders_count > 1:
-            findings.append(DailySalesIntegrityFinding(
-                severity="warning",
-                code="multiple_zero_value_ftd_orders",
-                cost_center=row.cost_center,
-                message=f"{row.cost_center}: {population.zero_value_orders_count} zero-value FTD orders require review.",
-                actual=population.zero_value_orders_count,
-            ))
+            findings.append(
+                DailySalesIntegrityFinding(
+                    severity="warning",
+                    code="multiple_zero_value_ftd_orders",
+                    cost_center=row.cost_center,
+                    message=f"{row.cost_center}: {population.zero_value_orders_count} zero-value FTD orders require review.",
+                    actual=population.zero_value_orders_count,
+                )
+            )
 
     expected_total_count = sum((row.orders_count_ftd for row in rows), 0)
     expected_total_amount = sum((row.sales_ftd for row in rows), Decimal("0"))
     if totals.orders_count_ftd != expected_total_count:
-        findings.append(DailySalesIntegrityFinding(
-            severity="error",
-            code="total_ftd_count_mismatch",
-            message="Total FTD count does not equal the sum of store-level FTD counts.",
-            expected=expected_total_count,
-            actual=totals.orders_count_ftd,
-        ))
+        findings.append(
+            DailySalesIntegrityFinding(
+                severity="error",
+                code="total_ftd_count_mismatch",
+                message="Total FTD count does not equal the sum of store-level FTD counts.",
+                expected=expected_total_count,
+                actual=totals.orders_count_ftd,
+            )
+        )
     if totals.sales_ftd != expected_total_amount:
-        findings.append(DailySalesIntegrityFinding(
-            severity="error",
-            code="total_ftd_amount_mismatch",
-            message="Total FTD Order Amount does not equal the sum of store-level FTD amounts.",
-            expected=str(expected_total_amount),
-            actual=str(totals.sales_ftd),
-        ))
+        findings.append(
+            DailySalesIntegrityFinding(
+                severity="error",
+                code="total_ftd_amount_mismatch",
+                message="Total FTD Order Amount does not equal the sum of store-level FTD amounts.",
+                expected=str(expected_total_amount),
+                actual=str(totals.sales_ftd),
+            )
+        )
     return findings
 
 
@@ -1169,22 +1329,19 @@ async def fetch_daily_sales_report(
     )
     previous_day = report_date - timedelta(days=1)
 
-    store_master_candidates = (
-        sa.select(
-            store_master.c.id.label("id"),
-            store_master.c.cost_center.label("cost_center"),
-            store_master.c.store_code.label("store_code"),
-            store_master.c.store_name.label("store_name"),
-            store_master.c.sync_group.label("sync_group"),
-            sa.func.row_number()
-            .over(
-                partition_by=store_master.c.cost_center,
-                order_by=store_master.c.id.asc(),
-            )
-            .label("store_row_number"),
+    store_master_candidates = sa.select(
+        store_master.c.id.label("id"),
+        store_master.c.cost_center.label("cost_center"),
+        store_master.c.store_code.label("store_code"),
+        store_master.c.store_name.label("store_name"),
+        store_master.c.sync_group.label("sync_group"),
+        sa.func.row_number()
+        .over(
+            partition_by=store_master.c.cost_center,
+            order_by=store_master.c.id.asc(),
         )
-        .subquery()
-    )
+        .label("store_row_number"),
+    ).subquery()
 
     store_master_primary = (
         sa.select(
@@ -1203,9 +1360,13 @@ async def fetch_daily_sales_report(
             store_dashboard_summary.c.store_id.label("store_id"),
             store_dashboard_summary.c.dashboard_date.label("dashboard_date"),
             store_dashboard_summary.c.pickup_new_conv_pct.label("pickup_new_conv_pct"),
-            store_dashboard_summary.c.pickup_existing_conv_pct.label("pickup_existing_conv_pct"),
+            store_dashboard_summary.c.pickup_existing_conv_pct.label(
+                "pickup_existing_conv_pct"
+            ),
             store_dashboard_summary.c.pickup_total_count.label("pickup_total_count"),
-            store_dashboard_summary.c.pickup_total_conv_pct.label("pickup_total_conv_pct"),
+            store_dashboard_summary.c.pickup_total_conv_pct.label(
+                "pickup_total_conv_pct"
+            ),
             store_dashboard_summary.c.delivery_tat_pct.label("delivery_tat_pct"),
             sa.func.row_number()
             .over(
@@ -1217,7 +1378,9 @@ async def fetch_daily_sales_report(
             )
             .label("summary_row_number"),
         )
-        .where(store_dashboard_summary.c.dashboard_date.in_([report_date, previous_day]))
+        .where(
+            store_dashboard_summary.c.dashboard_date.in_([report_date, previous_day])
+        )
         .subquery()
     )
 
@@ -1249,7 +1412,9 @@ async def fetch_daily_sales_report(
     stmt = (
         sa.select(
             cost_center.c.cost_center,
-            sa.func.coalesce(store_master_primary.c.store_name, cost_center.c.description).label("description"),
+            sa.func.coalesce(
+                store_master_primary.c.store_name, cost_center.c.description
+            ).label("description"),
             cost_center.c.target_type,
             orders_agg.c.sales_ftd,
             orders_agg.c.sales_mtd,
@@ -1273,41 +1438,71 @@ async def fetch_daily_sales_report(
                     store_master_primary.c.sync_group == "TD",
                     sa.case(
                         (selected_kpi.c.dashboard_date == report_date, sa.literal("D")),
-                        (selected_kpi.c.dashboard_date == previous_day, sa.literal("D-1")),
+                        (
+                            selected_kpi.c.dashboard_date == previous_day,
+                            sa.literal("D-1"),
+                        ),
                         else_=sa.literal("--"),
                     ),
                 ),
                 else_=None,
             ).label("kpi_snapshot_label"),
             sa.case(
-                (store_master_primary.c.sync_group == "TD", selected_kpi.c.pickup_new_conv_pct),
+                (
+                    store_master_primary.c.sync_group == "TD",
+                    selected_kpi.c.pickup_new_conv_pct,
+                ),
                 else_=None,
             ).label("pickup_new_conv_pct"),
             sa.case(
-                (store_master_primary.c.sync_group == "TD", selected_kpi.c.pickup_existing_conv_pct),
+                (
+                    store_master_primary.c.sync_group == "TD",
+                    selected_kpi.c.pickup_existing_conv_pct,
+                ),
                 else_=None,
             ).label("pickup_existing_conv_pct"),
             sa.case(
-                (store_master_primary.c.sync_group == "TD", selected_kpi.c.pickup_total_count),
+                (
+                    store_master_primary.c.sync_group == "TD",
+                    selected_kpi.c.pickup_total_count,
+                ),
                 else_=None,
             ).label("pickup_total_count"),
             sa.case(
-                (store_master_primary.c.sync_group == "TD", selected_kpi.c.pickup_total_conv_pct),
+                (
+                    store_master_primary.c.sync_group == "TD",
+                    selected_kpi.c.pickup_total_conv_pct,
+                ),
                 else_=None,
             ).label("pickup_total_conv_pct"),
             sa.case(
-                (store_master_primary.c.sync_group == "TD", selected_kpi.c.delivery_tat_pct),
+                (
+                    store_master_primary.c.sync_group == "TD",
+                    selected_kpi.c.delivery_tat_pct,
+                ),
                 else_=None,
             ).label("delivery_tat_pct"),
         )
         .select_from(
-            cost_center
-            .outerjoin(store_master_primary, store_master_primary.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(orders_count_agg, orders_count_agg.c.cost_center == cost_center.c.cost_center)
+            cost_center.outerjoin(
+                store_master_primary,
+                store_master_primary.c.cost_center == cost_center.c.cost_center,
+            )
+            .outerjoin(
+                orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center
+            )
+            .outerjoin(
+                orders_count_agg,
+                orders_count_agg.c.cost_center == cost_center.c.cost_center,
+            )
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(orders_sync_agg, orders_sync_agg.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(selected_kpi, selected_kpi.c.store_id == store_master_primary.c.id)
+            .outerjoin(
+                orders_sync_agg,
+                orders_sync_agg.c.cost_center == cost_center.c.cost_center,
+            )
+            .outerjoin(
+                selected_kpi, selected_kpi.c.store_id == store_master_primary.c.id
+            )
             .outerjoin(
                 targets,
                 sa.and_(
@@ -1326,7 +1521,6 @@ async def fetch_daily_sales_report(
     missing_payment_rows: list[MissingPaymentRow] = []
     short_payment_rows: list[ShortPaymentRow] = []
 
-
     report_day_orders_base = (
         sa.select(
             orders.c.cost_center.label("cost_center"),
@@ -1342,7 +1536,11 @@ async def fetch_daily_sales_report(
     report_day_orders_by_cost_center_rows: list[ReportDayOrdersByCostCenterRow] = []
     async with session_scope(database_url) as session:
         bind = session.get_bind()
-        dialect_name = bind.dialect.name if bind is not None else sa.engine.make_url(database_url).get_backend_name()
+        dialect_name = (
+            bind.dialect.name
+            if bind is not None
+            else sa.engine.make_url(database_url).get_backend_name()
+        )
         report_day_orders_stmt = (
             sa.select(
                 cost_center.c.cost_center.label("cost_center"),
@@ -1350,7 +1548,10 @@ async def fetch_daily_sales_report(
                     (
                         sa.func.string_agg(
                             report_day_orders_base.c.order_number,
-                            aggregate_order_by(sa.literal(", "), report_day_orders_base.c.order_number.asc()),
+                            aggregate_order_by(
+                                sa.literal(", "),
+                                report_day_orders_base.c.order_number.asc(),
+                            ),
                         )
                         if dialect_name == "postgresql"
                         else string_list_agg(
@@ -1361,15 +1562,27 @@ async def fetch_daily_sales_report(
                     ),
                     sa.literal("-"),
                 ).label("order_numbers_text"),
-                sa.func.count(report_day_orders_base.c.order_number).label("orders_count"),
-                sa.func.coalesce(sa.func.sum(report_day_orders_base.c.order_amount), 0).label("order_amount"),
-                sa.func.coalesce(sa.func.sum(sa.case((report_day_orders_base.c.order_amount == 0, 1), else_=0)), 0).label("zero_value_orders_count"),
+                sa.func.count(report_day_orders_base.c.order_number).label(
+                    "orders_count"
+                ),
+                sa.func.coalesce(
+                    sa.func.sum(report_day_orders_base.c.order_amount), 0
+                ).label("order_amount"),
+                sa.func.coalesce(
+                    sa.func.sum(
+                        sa.case(
+                            (report_day_orders_base.c.order_amount == 0, 1), else_=0
+                        )
+                    ),
+                    0,
+                ).label("zero_value_orders_count"),
             )
             .select_from(
                 cost_center.outerjoin(
                     report_day_orders_base,
                     sa.and_(
-                        report_day_orders_base.c.cost_center == cost_center.c.cost_center,
+                        report_day_orders_base.c.cost_center
+                        == cost_center.c.cost_center,
                     ),
                 )
             )
@@ -1383,7 +1596,9 @@ async def fetch_daily_sales_report(
         )
         result = await session.execute(stmt)
         result_entries = result.mappings().all()
-        active_cost_centers = tuple(str(entry["cost_center"]) for entry in result_entries)
+        active_cost_centers = tuple(
+            str(entry["cost_center"]) for entry in result_entries
+        )
         report_day_orders_result = await session.execute(report_day_orders_stmt)
         report_day_population_result = await session.execute(
             sa.select(
@@ -1398,28 +1613,32 @@ async def fetch_daily_sales_report(
         for population_entry in report_day_population_result.mappings():
             if population_entry["order_number"] is None:
                 continue
-            report_day_order_numbers.setdefault(str(population_entry["cost_center"]), []).append(
-                str(population_entry["order_number"])
-            )
+            report_day_order_numbers.setdefault(
+                str(population_entry["cost_center"]), []
+            ).append(str(population_entry["order_number"]))
         report_day_orders_by_cost_center_rows = [
             ReportDayOrdersByCostCenterRow(
                 cost_center=str(entry["cost_center"]),
                 order_numbers_text=str(entry["order_numbers_text"] or "-"),
-                order_numbers=report_day_order_numbers.get(str(entry["cost_center"]), []),
+                order_numbers=report_day_order_numbers.get(
+                    str(entry["cost_center"]), []
+                ),
                 orders_count=int(entry["orders_count"] or 0),
                 order_amount=_decimal(entry["order_amount"]),
                 zero_value_orders_count=int(entry["zero_value_orders_count"] or 0),
             )
             for entry in report_day_orders_result.mappings()
         ]
-        collection_target_achieved_by_cost_center = await _fetch_allocated_collections_for_current_mtd_orders(
-            session=session,
-            orders=orders,
-            sales=sales,
-            payment_collections=payment_collections,
-            start_datetime=ranges["start_month"],
-            end_datetime=ranges["next_day"],
-            cost_centers=active_cost_centers,
+        collection_target_achieved_by_cost_center = (
+            await _fetch_allocated_collections_for_current_mtd_orders(
+                session=session,
+                orders=orders,
+                sales=sales,
+                payment_collections=payment_collections,
+                start_datetime=ranges["start_month"],
+                end_datetime=ranges["next_day"],
+                cost_centers=active_cost_centers,
+            )
         )
         target_updates: list[dict[str, object]] = []
         for entry in result_entries:
@@ -1438,7 +1657,9 @@ async def fetch_daily_sales_report(
             collections_count_lmtd = int(entry["collections_count_lmtd"] or 0)
             if target_compute_type == "COLLECTIONS":
                 target = _decimal(entry["collection_target"])
-                achieved = collection_target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
+                achieved = collection_target_achieved_by_cost_center.get(
+                    str(entry["cost_center"]), Decimal("0")
+                )
             else:
                 target = _decimal(entry["sale_target"])
                 achieved = sales_mtd
@@ -1474,14 +1695,26 @@ async def fetch_daily_sales_report(
                 )
             )
 
-            sale_target = _decimal(entry["sale_target"]) if entry["sale_target"] is not None else None
-            collection_target = (
-                _decimal(entry["collection_target"]) if entry["collection_target"] is not None else None
+            sale_target = (
+                _decimal(entry["sale_target"])
+                if entry["sale_target"] is not None
+                else None
             )
-            sales_target_met = None if sale_target is None else bool(sales_mtd >= sale_target)
-            collection_mtd = collection_target_achieved_by_cost_center.get(str(entry["cost_center"]), Decimal("0"))
+            collection_target = (
+                _decimal(entry["collection_target"])
+                if entry["collection_target"] is not None
+                else None
+            )
+            sales_target_met = (
+                None if sale_target is None else bool(sales_mtd >= sale_target)
+            )
+            collection_mtd = collection_target_achieved_by_cost_center.get(
+                str(entry["cost_center"]), Decimal("0")
+            )
             collection_target_met = (
-                None if collection_target is None else bool(collection_mtd >= collection_target)
+                None
+                if collection_target is None
+                else bool(collection_mtd >= collection_target)
             )
             target_updates.append(
                 {
@@ -1518,15 +1751,39 @@ async def fetch_daily_sales_report(
                     delta=delta,
                     reqd_per_day=reqd_per_day,
                     orders_sync_time=orders_sync_time,
-                    pickup_new_conv_pct=_decimal(entry["pickup_new_conv_pct"]) if entry["pickup_new_conv_pct"] is not None else None,
-                    pickup_existing_conv_pct=_decimal(entry["pickup_existing_conv_pct"]) if entry["pickup_existing_conv_pct"] is not None else None,
-                    pickup_total_count=int(entry["pickup_total_count"]) if entry["pickup_total_count"] is not None else None,
-                    pickup_total_conv_pct=_decimal(entry["pickup_total_conv_pct"]) if entry["pickup_total_conv_pct"] is not None else None,
-                    delivery_tat_pct=_decimal(entry["delivery_tat_pct"]) if entry["delivery_tat_pct"] is not None else None,
+                    pickup_new_conv_pct=(
+                        _decimal(entry["pickup_new_conv_pct"])
+                        if entry["pickup_new_conv_pct"] is not None
+                        else None
+                    ),
+                    pickup_existing_conv_pct=(
+                        _decimal(entry["pickup_existing_conv_pct"])
+                        if entry["pickup_existing_conv_pct"] is not None
+                        else None
+                    ),
+                    pickup_total_count=(
+                        int(entry["pickup_total_count"])
+                        if entry["pickup_total_count"] is not None
+                        else None
+                    ),
+                    pickup_total_conv_pct=(
+                        _decimal(entry["pickup_total_conv_pct"])
+                        if entry["pickup_total_conv_pct"] is not None
+                        else None
+                    ),
+                    delivery_tat_pct=(
+                        _decimal(entry["delivery_tat_pct"])
+                        if entry["delivery_tat_pct"] is not None
+                        else None
+                    ),
                     kpi_snapshot_label=str(entry["kpi_snapshot_label"] or "--"),
                     last_successful_orders_refresh_at=last_successful_orders_refresh_at,
                     last_orders_sync_attempt_at=last_orders_sync_attempt_at,
-                    latest_orders_sync_outcome=str(latest_orders_sync_outcome) if latest_orders_sync_outcome else None,
+                    latest_orders_sync_outcome=(
+                        str(latest_orders_sync_outcome)
+                        if latest_orders_sync_outcome
+                        else None
+                    ),
                     orders_sync_warning=orders_sync_warning,
                 )
             )
@@ -1607,7 +1864,9 @@ async def fetch_daily_sales_report(
                 orders.c.recovery_status,
             )
             .select_from(
-                orders.join(cost_center, cost_center.c.cost_center == orders.c.cost_center).outerjoin(
+                orders.join(
+                    cost_center, cost_center.c.cost_center == orders.c.cost_center
+                ).outerjoin(
                     store_master_primary,
                     store_master_primary.c.cost_center == orders.c.cost_center,
                 )
@@ -1622,11 +1881,10 @@ async def fetch_daily_sales_report(
             to_be_compensated,
             to_be_recovered_total_order_value,
             to_be_compensated_total_order_value,
-        ) = (
-            _build_manual_recovery_sections(
+        ) = _build_manual_recovery_sections(
             manual_recovery_result.mappings(),
+            report_date=report_date,
             tz=tz,
-        )
         )
 
         records = await fetch_same_day_fulfillment_rows(
@@ -1644,7 +1902,9 @@ async def fetch_daily_sales_report(
             payment_dt = _parse_orders_sync_timestamp(record.payment_date, tz=tz)
             hours = None
             if order_dt and payment_dt:
-                hours = Decimal(str((payment_dt - order_dt).total_seconds() / 3600)).quantize(Decimal("0.01"))
+                hours = Decimal(
+                    str((payment_dt - order_dt).total_seconds() / 3600)
+                ).quantize(Decimal("0.01"))
             same_day_rows.append(
                 SameDayFulfillmentRow(
                     cost_center=str(record.cost_center or "").strip() or "--",
@@ -1656,8 +1916,16 @@ async def fetch_daily_sales_report(
                     line_items=summarize_line_items(record.line_item_rows),
                     delivery_or_payment_date=payment_dt,
                     payment_mode=str(record.payment_mode or ""),
-                    order_amount=_decimal(record.order_amount) if record.order_amount is not None else None,
-                    payment_received=_decimal(record.payment_received) if record.payment_received is not None else None,
+                    order_amount=(
+                        _decimal(record.order_amount)
+                        if record.order_amount is not None
+                        else None
+                    ),
+                    payment_received=(
+                        _decimal(record.payment_received)
+                        if record.payment_received is not None
+                        else None
+                    ),
                     hours=hours,
                 )
             )
@@ -1682,7 +1950,9 @@ async def fetch_daily_sales_report(
         )
 
     totals = _totals_row(rows)
-    totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
+    totals.ttd = _calculate_ttd(
+        totals.target, totals.achieved, day_of_month, days_in_month
+    )
     integrity_findings = _build_integrity_findings(
         rows=rows,
         totals=totals,
@@ -1700,15 +1970,21 @@ async def fetch_daily_sales_report(
                     "new_value": row.new_value,
                 }
                 continue
-            distinct_map[key]["orig_value"] = max(distinct_map[key]["orig_value"], row.original_value)
-            distinct_map[key]["new_value"] = min(distinct_map[key]["new_value"], row.new_value)
+            distinct_map[key]["orig_value"] = max(
+                distinct_map[key]["orig_value"], row.original_value
+            )
+            distinct_map[key]["new_value"] = min(
+                distinct_map[key]["new_value"], row.new_value
+            )
 
         per_store_counts: dict[str, int] = {}
         sum_orig_distinct = Decimal("0")
         sum_new_distinct = Decimal("0")
         net_loss_distinct = Decimal("0")
         for (cost_center_code, _order_number), values in distinct_map.items():
-            per_store_counts[cost_center_code] = per_store_counts.get(cost_center_code, 0) + 1
+            per_store_counts[cost_center_code] = (
+                per_store_counts.get(cost_center_code, 0) + 1
+            )
             sum_orig_distinct += values["orig_value"]
             sum_new_distinct += values["new_value"]
             net_loss_distinct += values["orig_value"] - values["new_value"]
@@ -1719,12 +1995,16 @@ async def fetch_daily_sales_report(
             sum_orig_distinct=sum_orig_distinct,
             sum_new_distinct=sum_new_distinct,
             net_loss_distinct=net_loss_distinct,
-            per_store_counts=[f"{store}: {count}" for store, count in sorted(per_store_counts.items())],
+            per_store_counts=[
+                f"{store}: {count}" for store, count in sorted(per_store_counts.items())
+            ],
         )
 
     report_month_start = report_date.replace(day=1)
     report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
-    monthly_lead_period_end = datetime.combine(report_next_month_start, time.min, tzinfo=tz)
+    monthly_lead_period_end = datetime.combine(
+        report_next_month_start, time.min, tzinfo=tz
+    )
     lead_period_start = datetime.combine(report_month_start, time.min, tzinfo=tz)
     lead_period_end = monthly_lead_period_end
 
@@ -1744,7 +2024,8 @@ async def fetch_daily_sales_report(
         crm_leads_columns = set(
             await connection.run_sync(
                 lambda sync_conn: {
-                    column["name"] for column in sa.inspect(sync_conn).get_columns("crm_leads_current")
+                    column["name"]
+                    for column in sa.inspect(sync_conn).get_columns("crm_leads_current")
                 }
             )
         )
@@ -1816,10 +2097,18 @@ async def fetch_daily_sales_report(
         td_leads_sync_metrics: Mapping[str, object] = {}
         td_leads_sync_lead_changes: Mapping[str, object] = {}
 
-        normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads_current.c.store_code))
-        normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
-        normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
-        normalized_cancelled_flag_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.cancelled_flag))
+        normalized_store_code_expr = sa.func.upper(
+            sa.func.trim(crm_leads_current.c.store_code)
+        )
+        normalized_status_bucket_expr = sa.func.lower(
+            sa.func.trim(crm_leads_current.c.status_bucket)
+        )
+        normalized_store_master_code_expr = sa.func.upper(
+            sa.func.trim(store_master_primary.c.store_code)
+        )
+        normalized_cancelled_flag_expr = sa.func.lower(
+            sa.func.trim(crm_leads_current.c.cancelled_flag)
+        )
         # Current-state KPI policy:
         # final_status_bucket comes only from crm_leads_current.status_bucket.
         # Historical events are transition analytics input and must not override
@@ -1868,8 +2157,7 @@ async def fetch_daily_sales_report(
             # Cancelled monthly table policy:
             # use current-cancelled cohort only (final status at report time),
             # not "ever hit cancelled" transition cohort.
-            .where(lead_base.c.final_status_bucket == "cancelled")
-            .order_by(
+            .where(lead_base.c.final_status_bucket == "cancelled").order_by(
                 lead_base.c.store_name,
                 lead_base.c.pickup_created_at,
                 lead_base.c.customer_name,
@@ -1889,9 +2177,13 @@ async def fetch_daily_sales_report(
                 },
             )
             group["total_cancelled_count"] = int(group["total_cancelled_count"]) + 1
-            cancelled_flag = resolve_cancelled_flag(cancelled_flag=entry["cancelled_flag"], reason=entry["reason"])
+            cancelled_flag = resolve_cancelled_flag(
+                cancelled_flag=entry["cancelled_flag"], reason=entry["reason"]
+            )
             if cancelled_flag == "customer":
-                group["customer_cancelled_count"] = int(group["customer_cancelled_count"]) + 1
+                group["customer_cancelled_count"] = (
+                    int(group["customer_cancelled_count"]) + 1
+                )
                 continue
             cast_rows = group["store_cancelled_rows"]
             if isinstance(cast_rows, list):
@@ -1901,12 +2193,14 @@ async def fetch_daily_sales_report(
                         "mobile": str(entry["mobile"] or "--"),
                         "reason": (str(entry["reason"] or "").strip() or "--"),
                         "is_existing_customer_cancelled": (
-                            str(entry["customer_type"] or "").strip().lower() == "existing"
+                            str(entry["customer_type"] or "").strip().lower()
+                            == "existing"
                         ),
                     }
                 )
         cancelled_leads_grouped = [
-            cancelled_grouped_map[store_name] for store_name in sorted(cancelled_grouped_map.keys())
+            cancelled_grouped_map[store_name]
+            for store_name in sorted(cancelled_grouped_map.keys())
         ]
 
         lead_agg = (
@@ -1928,7 +2222,11 @@ async def fetch_daily_sales_report(
                     0,
                 ).label("completed_leads"),
                 sa.func.coalesce(
-                    sa.func.sum(sa.case((lead_base.c.final_status_bucket == "cancelled", 1), else_=0)),
+                    sa.func.sum(
+                        sa.case(
+                            (lead_base.c.final_status_bucket == "cancelled", 1), else_=0
+                        )
+                    ),
                     0,
                 ).label("cancelled_leads"),
                 sa.func.coalesce(
@@ -1956,15 +2254,21 @@ async def fetch_daily_sales_report(
                 normalized_store_master_code_expr.label("store_code"),
                 store_master_primary.c.store_name.label("store_name"),
                 sa.func.coalesce(lead_agg.c.total_leads, 0).label("total_leads"),
-                sa.func.coalesce(lead_agg.c.completed_leads, 0).label("completed_leads"),
-                sa.func.coalesce(lead_agg.c.cancelled_leads, 0).label("cancelled_leads"),
+                sa.func.coalesce(lead_agg.c.completed_leads, 0).label(
+                    "completed_leads"
+                ),
+                sa.func.coalesce(lead_agg.c.cancelled_leads, 0).label(
+                    "cancelled_leads"
+                ),
                 sa.func.coalesce(lead_agg.c.pending_leads, 0).label("pending_leads"),
             )
             .select_from(
                 cost_center.join(
                     store_master_primary,
                     store_master_primary.c.cost_center == cost_center.c.cost_center,
-                ).outerjoin(lead_agg, lead_agg.c.store_code == normalized_store_master_code_expr)
+                ).outerjoin(
+                    lead_agg, lead_agg.c.store_code == normalized_store_master_code_expr
+                )
             )
             .where(cost_center.c.is_active.is_(True))
             .order_by(store_master_primary.c.store_name)
@@ -1984,9 +2288,15 @@ async def fetch_daily_sales_report(
                 pending_pct = Decimal("0")
             else:
                 total = Decimal(str(total_leads))
-                conversion_pct = _round_percentage((Decimal(str(completed_leads)) / total) * Decimal("100"))
-                cancelled_pct = _round_percentage((Decimal(str(cancelled_leads)) / total) * Decimal("100"))
-                pending_pct = _round_percentage((Decimal(str(pending_leads)) / total) * Decimal("100"))
+                conversion_pct = _round_percentage(
+                    (Decimal(str(completed_leads)) / total) * Decimal("100")
+                )
+                cancelled_pct = _round_percentage(
+                    (Decimal(str(cancelled_leads)) / total) * Decimal("100")
+                )
+                pending_pct = _round_percentage(
+                    (Decimal(str(pending_leads)) / total) * Decimal("100")
+                )
 
             lead_performance_summary.append(
                 {
@@ -1994,7 +2304,9 @@ async def fetch_daily_sales_report(
                     "store_name": str(entry["store_name"] or "--"),
                     "period_type": "MTD",
                     "period_start": report_month_start.isoformat(),
-                    "period_end": (report_next_month_start - timedelta(days=1)).isoformat(),
+                    "period_end": (
+                        report_next_month_start - timedelta(days=1)
+                    ).isoformat(),
                     "total_leads": total_leads,
                     "completed_leads": completed_leads,
                     "cancelled_leads": cancelled_leads,
@@ -2014,11 +2326,23 @@ async def fetch_daily_sales_report(
                         value=pending_pct,
                         total_leads=total_leads,
                     ),
-                    "conversion_gap": float(_round_percentage(conversion_pct - LEAD_BENCHMARKS["conversion_target"])),
-                    "cancelled_gap": float(_round_percentage(cancelled_pct - LEAD_BENCHMARKS["cancelled_target"])),
-                    "pending_gap": float(_round_percentage(pending_pct - LEAD_BENCHMARKS["pending_max"])),
+                    "conversion_gap": float(
+                        _round_percentage(
+                            conversion_pct - LEAD_BENCHMARKS["conversion_target"]
+                        )
+                    ),
+                    "cancelled_gap": float(
+                        _round_percentage(
+                            cancelled_pct - LEAD_BENCHMARKS["cancelled_target"]
+                        )
+                    ),
+                    "pending_gap": float(
+                        _round_percentage(pending_pct - LEAD_BENCHMARKS["pending_max"])
+                    ),
                     "benchmark": {
-                        "conversion_target": float(LEAD_BENCHMARKS["conversion_target"]),
+                        "conversion_target": float(
+                            LEAD_BENCHMARKS["conversion_target"]
+                        ),
                         "conversion_min": float(LEAD_BENCHMARKS["conversion_min"]),
                         "cancelled_target": float(LEAD_BENCHMARKS["cancelled_target"]),
                         "cancelled_max": float(LEAD_BENCHMARKS["cancelled_max"]),
@@ -2027,7 +2351,9 @@ async def fetch_daily_sales_report(
                 }
             )
 
-        normalized_event_status_expr = sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket))
+        normalized_event_status_expr = sa.func.lower(
+            sa.func.trim(crm_leads_status_events.c.status_bucket)
+        )
         completed_today_events = (
             sa.select(
                 crm_leads_status_events.c.lead_uid.label("lead_uid"),
@@ -2038,11 +2364,15 @@ async def fetch_daily_sales_report(
             .distinct()
             .subquery()
         )
-        normalized_lead_store_code_expr = sa.func.upper(sa.func.trim(crm_leads_current.c.store_code))
+        normalized_lead_store_code_expr = sa.func.upper(
+            sa.func.trim(crm_leads_current.c.store_code)
+        )
         normalized_lead_mobile_expr = _normalized_digits_expr(
             crm_leads_current.c.mobile, dialect_name=dialect_name
         )
-        normalized_order_store_code_expr = sa.func.upper(sa.func.trim(orders.c.cost_center))
+        normalized_order_store_code_expr = sa.func.upper(
+            sa.func.trim(orders.c.cost_center)
+        )
         normalized_order_mobile_expr = _normalized_digits_expr(
             orders.c.mobile_number, dialect_name=dialect_name
         )
@@ -2053,7 +2383,9 @@ async def fetch_daily_sales_report(
                 crm_leads_current.c.customer_name.label("customer_name"),
                 crm_leads_current.c.mobile.label("mobile"),
                 crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
-                sa.case((sa.func.count(orders.c.order_number) > 0, True), else_=False).label("order_match_found"),
+                sa.case(
+                    (sa.func.count(orders.c.order_number) > 0, True), else_=False
+                ).label("order_match_found"),
                 sa.func.count(orders.c.order_number).label("matched_order_count"),
                 string_list_agg(
                     dialect_name=dialect_name,
@@ -2075,7 +2407,8 @@ async def fetch_daily_sales_report(
                 ).outerjoin(
                     orders,
                     sa.and_(
-                        normalized_order_store_code_expr == normalized_lead_store_code_expr,
+                        normalized_order_store_code_expr
+                        == normalized_lead_store_code_expr,
                         normalized_order_mobile_expr == normalized_lead_mobile_expr,
                     ),
                 )
@@ -2089,8 +2422,12 @@ async def fetch_daily_sales_report(
             )
             .order_by(normalized_lead_store_code_expr, crm_leads_current.c.lead_uid)
         )
-        completed_today_leads_result = await session.execute(completed_reconciliation_stmt)
-        completed_today_leads = [dict(row) for row in completed_today_leads_result.mappings()]
+        completed_today_leads_result = await session.execute(
+            completed_reconciliation_stmt
+        )
+        completed_today_leads = [
+            dict(row) for row in completed_today_leads_result.mappings()
+        ]
 
     return DailySalesReportData(
         report_date=report_date,
