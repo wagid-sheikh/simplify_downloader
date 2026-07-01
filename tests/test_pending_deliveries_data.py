@@ -1039,7 +1039,7 @@ async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
+async def test_transition_age_31_marked_without_recovery_category(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_transition_age_31.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
