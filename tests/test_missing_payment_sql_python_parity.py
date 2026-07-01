@@ -681,3 +681,53 @@ def test_postgres_view_sql_documents_python_compatibility_contract() -> None:
     assert "bank_row_id" not in normalized_sql
     assert "payment_status" not in normalized_sql
     assert "payment_amount" not in normalized_sql
+
+
+def test_zero_value_sales_rows_are_not_apnf_or_short_payment_actions() -> None:
+    from app.reports.shared.payment_reconciliation import reconcile_payments
+
+    result = reconcile_payments(
+        order_rows=[
+            {
+                "cost_center": "CC1",
+                "order_number": "ZERO-SALE-NO-PROOF",
+                "order_amount": Decimal("0.00"),
+                "recovery_status": "NONE",
+            },
+            {
+                "cost_center": "CC1",
+                "order_number": "ZERO-SALE-ZERO-PROOF",
+                "order_amount": Decimal("0.00"),
+                "recovery_status": "NONE",
+            },
+            {
+                "cost_center": "CC1",
+                "order_number": "POSITIVE-MISSING",
+                "order_amount": Decimal("100.00"),
+                "recovery_status": "NONE",
+            },
+            {
+                "cost_center": "CC1",
+                "order_number": "POSITIVE-SHORT",
+                "order_amount": Decimal("100.00"),
+                "recovery_status": "NONE",
+            },
+        ],
+        sales_rows=[
+            {"cost_center": "CC1", "order_number": "ZERO-SALE-NO-PROOF", "payment_received": Decimal("0.00")},
+            {"cost_center": "CC1", "order_number": "ZERO-SALE-ZERO-PROOF", "payment_received": Decimal("0.00")},
+            {"cost_center": "CC1", "order_number": "POSITIVE-MISSING", "payment_received": Decimal("100.00")},
+            {"cost_center": "CC1", "order_number": "POSITIVE-SHORT", "payment_received": Decimal("80.00")},
+        ],
+        payment_evidence_rows=[
+            {"cost_center": "CC1", "order_number": "ZERO-SALE-ZERO-PROOF", "amount": Decimal("0.00"), "source_type": "google_sheet"},
+            {"cost_center": "CC1", "order_number": "POSITIVE-SHORT", "amount": Decimal("80.00"), "source_type": "google_sheet"},
+        ],
+    )
+
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "POSITIVE-MISSING"
+    ]
+    assert [order.order_number for order in result.short_payment_orders] == [
+        "POSITIVE-SHORT"
+    ]

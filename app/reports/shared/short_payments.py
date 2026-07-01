@@ -365,6 +365,9 @@ async def fetch_payment_rows_for_orders(
         return []
 
 
+_fetch_payment_rows_for_orders = fetch_payment_rows_for_orders
+
+
 async def _fetch_sales_rows_for_orders(
     *, session: Any, sales: Any, order_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -393,16 +396,16 @@ async def _fetch_sales_rows_for_orders(
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
                 "payment_received"
             ),
-            sales.c.payment_mode,
-            sales.c.id,
+            _optional_column(sales, "payment_mode"),
+            _optional_column(sales, "id"),
             _optional_column(sales, "payment_date"),
         )
         .where(sa.or_(*predicates))
         .group_by(
             sales.c.cost_center,
             sales.c.order_number,
-            sales.c.payment_mode,
-            sales.c.id,
+            _optional_column(sales, "payment_mode"),
+            _optional_column(sales, "id"),
             _optional_column(sales, "payment_date"),
         )
     )

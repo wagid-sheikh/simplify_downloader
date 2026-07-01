@@ -1615,3 +1615,66 @@ async def test_transition_repeated_run_does_not_duplicate_notes(
     assert rows["IDEMPOTENT"]["recovery_status"] == "TO_BE_RECOVERED"
     assert rows["IDEMPOTENT"]["recovery_notes"] == f"operator note\n{expected_note}"
     assert rows["IDEMPOTENT"]["recovery_notes"].count(expected_note) == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_value_no_sales_no_proof_age_four_transitions_to_recovered(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_zero_no_proof_transition.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="ZERO-AGE-4-NO-PROOF",
+        age_days=4,
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["ZERO-AGE-4-NO-PROOF"]["recovery_status"] == "TO_BE_RECOVERED"
+
+
+@pytest.mark.asyncio
+async def test_zero_value_no_sales_zero_proof_age_four_does_not_transition(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_zero_with_proof_transition.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="ZERO-AGE-4-WITH-PROOF",
+        age_days=4,
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" zero-age-4-with-proof ",
+        amount=Decimal("0.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 0
+    assert rows["ZERO-AGE-4-WITH-PROOF"]["recovery_status"] == "NONE"
