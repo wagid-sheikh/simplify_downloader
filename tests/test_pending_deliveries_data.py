@@ -453,10 +453,10 @@ async def test_fetch_pending_deliveries_excludes_sufficient_payment_collection_p
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_excludes_orders_older_than_30_days(
+async def test_fetch_pending_deliveries_excludes_orders_older_than_three_days(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "pending_deliveries_older_than_30.db"
+    db_path = tmp_path / "pending_deliveries_older_than_three.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
@@ -465,7 +465,7 @@ async def test_fetch_pending_deliveries_excludes_orders_older_than_30_days(
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
     report_date = date(2025, 5, 20)
     now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
-    old_due_date = datetime(2025, 4, 19, 10, 0, tzinfo=tz)
+    old_due_date = datetime(2025, 5, 16, 10, 0, tzinfo=tz)
 
     await _insert_order_and_sale(
         database_url=database_url,
@@ -473,7 +473,7 @@ async def test_fetch_pending_deliveries_excludes_orders_older_than_30_days(
         order_date=old_due_date,
         default_due_date=old_due_date,
         source_system="TumbleDry",
-        order_number="AGE-31-FETCH",
+        order_number="AGE-4-FETCH",
         gross_amount=Decimal("100.00"),
         net_amount=Decimal("100.00"),
         payment_received=Decimal("0.00"),
@@ -491,7 +491,7 @@ async def test_fetch_pending_deliveries_excludes_orders_older_than_30_days(
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_two_days_when_default_due_date_missing(
+async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_three_days_when_default_due_date_missing(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_deliveries_missing_due_date.db"
@@ -535,7 +535,7 @@ async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_two_days_w
         for row in bucket.rows
         if row.order_number == "NO-DUE-DATE"
     )
-    assert included_row.default_due_date == date(2025, 5, 20)
+    assert included_row.default_due_date == date(2025, 5, 21)
     assert included_row.age_days == 2
 
 
@@ -1478,7 +1478,7 @@ async def test_transition_existing_sales_row_not_marked(tmp_path, monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_transition_missing_default_due_date_uses_order_date_plus_two_days_fallback(
+async def test_transition_missing_default_due_date_uses_order_date_plus_three_days_fallback(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_transition_missing_due_date.db"

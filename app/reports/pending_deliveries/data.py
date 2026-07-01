@@ -478,7 +478,7 @@ async def fetch_pending_deliveries_report(
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
                 missing_default_due_date_count += 1
-                default_due_date = order_date + timedelta(days=2)
+                default_due_date = order_date + timedelta(days=3)
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - order_date_local).days)
