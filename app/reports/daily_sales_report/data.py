@@ -489,7 +489,12 @@ def _build_manual_recovery_sections(
             _to_be_recovered_age_bucket(age_days) if age_days is not None else None
         )
         order_value = _decimal(record.get("order_amount"))
-        if order_value <= 0:
+        if order_value < 0:
+            continue
+        if recovery_status == "TO_BE_COMPENSATED" and order_value == 0:
+            # Compensation is money-only: keep zero-value compensation rows out of
+            # the manual compensation section while preserving zero-value recovery
+            # rows for operator visibility.
             continue
         if recovery_status == "TO_BE_RECOVERED" and age_bucket is None:
             continue

@@ -834,6 +834,7 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                     "customer_name": "Persisted Store Flag",
                     "mobile": "9000000007",
                     "reason": "--",
+                    "is_existing_customer_cancelled": False,
                 }
             ],
         }
@@ -1819,6 +1820,7 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filte
         database_url=database_url, report_date=report_date
     )
     assert {row.order_number for row in report.same_day_fulfillment_rows} == {
+        "Ord2",
         "OX",
         "ORD3",
     }
@@ -1944,7 +1946,7 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                         mobile_number, net_amount, gross_amount, source_system,
                         recovery_status, recovery_category
                     ) VALUES (
-                        'CC1', :order_number, '2026-04-29T09:00:00+05:30',
+                        'CC1', :order_number, '2026-04-25T09:00:00+05:30',
                         'Customer', '9000000000', 500, 500, 'TumbleDry',
                         'TO_BE_RECOVERED', 'MISSING_PAYMENT'
                     )
@@ -2182,7 +2184,7 @@ async def test_zero_value_to_be_recovered_without_zero_amount_proof_stays_open(
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status, recovery_category
             ) VALUES (
-                'CC1', 'ZERO-NO-PROOF', '2026-04-29T09:00:00+05:30',
+                'CC1', 'ZERO-NO-PROOF', '2026-04-25T09:00:00+05:30',
                 'Customer', '9000000001', 0, 0, 'TumbleDry',
                 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
             )
@@ -2198,6 +2200,11 @@ async def test_zero_value_to_be_recovered_without_zero_amount_proof_stays_open(
     )
 
     assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["ZERO-NO-PROOF"]
+    assert report.to_be_recovered[0].order_value == Decimal("0")
+    assert report.to_be_recovered[0].age_days == 4
+    assert report.to_be_recovered[0].age_bucket == "4-10 days"
+    assert report.to_be_recovered_total_order_value == Decimal("0")
     async with session_scope(database_url) as session:
         status = (await session.execute(sa.text("""
             SELECT recovery_status, recovery_category, recovery_notes
@@ -2269,7 +2276,7 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
     assert status["recovery_notes"] is None
 
 
-def test_build_manual_recovery_sections_excludes_zero_value_orders() -> None:
+def test_build_manual_recovery_sections_includes_zero_value_recovery_orders() -> None:
     rows, compensated_rows, total, compensated_total = (
         _data_module._build_manual_recovery_sections(
             [
@@ -2306,10 +2313,52 @@ def test_build_manual_recovery_sections_excludes_zero_value_orders() -> None:
         )
     )
 
-    assert [row.order_number for row in rows] == ["RECOVERY-POSITIVE"]
+    assert {row.order_number for row in rows} == {"RECOVERY-ZERO", "RECOVERY-POSITIVE"}
+    assert {row.order_number: row.order_value for row in rows} == {
+        "RECOVERY-ZERO": Decimal("0"),
+        "RECOVERY-POSITIVE": Decimal("75"),
+    }
+    assert {row.order_number: row.age_bucket for row in rows} == {
+        "RECOVERY-ZERO": "4-10 days",
+        "RECOVERY-POSITIVE": "4-10 days",
+    }
     assert compensated_rows == []
     assert total == Decimal("75")
     assert compensated_total == Decimal("0")
+
+
+def test_build_manual_recovery_sections_excludes_zero_value_compensation_orders() -> None:
+    rows, compensated_rows, total, compensated_total = (
+        _data_module._build_manual_recovery_sections(
+            [
+                {
+                    "cost_center": "CC1",
+                    "order_number": "COMPENSATION-ZERO",
+                    "order_date": date(2026, 4, 29),
+                    "customer_name": "Comp Zero",
+                    "mobile_number": "333",
+                    "order_amount": Decimal("0"),
+                    "recovery_status": "TO_BE_COMPENSATED",
+                },
+                {
+                    "cost_center": "CC1",
+                    "order_number": "COMPENSATION-POSITIVE",
+                    "order_date": date(2026, 4, 29),
+                    "customer_name": "Comp Paid",
+                    "mobile_number": "444",
+                    "order_amount": Decimal("25"),
+                    "recovery_status": "TO_BE_COMPENSATED",
+                },
+            ],
+            report_date=date(2026, 5, 3),
+            tz=ZoneInfo("Asia/Kolkata"),
+        )
+    )
+
+    assert rows == []
+    assert [row.order_number for row in compensated_rows] == ["COMPENSATION-POSITIVE"]
+    assert total == Decimal("0")
+    assert compensated_total == Decimal("25")
 
 
 def test_build_manual_recovery_sections_assigns_exact_to_be_recovered_age_buckets() -> (
@@ -2588,7 +2637,7 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_insufficie
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status, recovery_category
             ) VALUES (
-                'CC1', 'SHORT-PROOF', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                'CC1', 'SHORT-PROOF', '2026-04-25T09:00:00+05:30', 'Customer', '9000000001',
                 500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
             )
         """))
@@ -2643,7 +2692,7 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_source_is_uns
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status, recovery_category
             ) VALUES (
-                'CC1', 'UNSUPPORTED-SOURCE', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                'CC1', 'UNSUPPORTED-SOURCE', '2026-04-25T09:00:00+05:30', 'Customer', '9000000001',
                 500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
             )
         """))
@@ -2704,7 +2753,7 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status, recovery_category
             ) VALUES (
-                'CC1', 'NO-PROOF', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                'CC1', 'NO-PROOF', '2026-04-25T09:00:00+05:30', 'Customer', '9000000001',
                 500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
             )
         """))
