@@ -15,6 +15,8 @@ from app.common.order_recovery import (
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.reports.shared.payment_reconciliation import (
     DEFAULT_PAYMENT_TOLERANCE,
+    normalize_order_number,
+    split_payment_order_numbers,
     reconcile_payments,
 )
 from app.reports.shared.short_payments import fetch_payment_rows_for_orders
@@ -30,6 +32,7 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
 )
 
 
+PENDING_DELIVERY_THRESHOLD_DAYS = 3
 AGED_PENDING_DELIVERY_RECOVERY_STATUS = "TO_BE_RECOVERED"
 AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
@@ -136,37 +139,17 @@ def _resolve_business_date(value: datetime, tz) -> date:
 
 
 def _bucket_age(age_days: int) -> str | None:
-    if age_days <= 5:
-        return "0-5"
-    if age_days <= 15:
-        return "6-15"
-    if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
-        return "16-30"
+    if age_days <= PENDING_DELIVERY_THRESHOLD_DAYS:
+        return "0-3"
     return None
 
 
 def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesBucket]:
     buckets_map = {
-        "0-5": PendingDeliveriesBucket(
-            label="0-5 days",
+        "0-3": PendingDeliveriesBucket(
+            label="0-3 days",
             min_days=0,
-            max_days=5,
-            rows=[],
-            total_count=0,
-            total_pending_amount=Decimal("0"),
-        ),
-        "6-15": PendingDeliveriesBucket(
-            label="6-15 days",
-            min_days=6,
-            max_days=15,
-            rows=[],
-            total_count=0,
-            total_pending_amount=Decimal("0"),
-        ),
-        "16-30": PendingDeliveriesBucket(
-            label="16-30 days",
-            min_days=16,
-            max_days=AGED_PENDING_DELIVERY_THRESHOLD_DAYS,
+            max_days=PENDING_DELIVERY_THRESHOLD_DAYS,
             rows=[],
             total_count=0,
             total_pending_amount=Decimal("0"),
@@ -188,7 +171,20 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
             (row.pending_amount for row in bucket.rows), Decimal("0")
         )
 
-    return [buckets_map["0-5"], buckets_map["6-15"], buckets_map["16-30"]]
+    return [buckets_map["0-3"]]
+
+
+def _zero_amount_payment_proof_keys(
+    payment_rows: Iterable[dict[str, object]],
+) -> set[tuple[str, str]]:
+    proof_keys: set[tuple[str, str]] = set()
+    for row in payment_rows:
+        if _decimal(row.get("amount")) != Decimal("0.00"):
+            continue
+        cost_center = str(row.get("cost_center") or "")
+        for token in split_payment_order_numbers(row.get("order_number")):
+            proof_keys.add((cost_center, normalize_order_number(token)))
+    return proof_keys
 
 
 def _build_summary_sections(
@@ -323,14 +319,19 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             if has_sale:
                 metrics.skipped_due_to_sales_row += 1
                 continue
-            if str(record.get("recovery_status") or "") != PENDING_DELIVERY_MAIN_RECOVERY_STATUS:
+            if (
+                str(record.get("recovery_status") or "")
+                != PENDING_DELIVERY_MAIN_RECOVERY_STATUS
+            ):
                 metrics.skipped_due_to_non_none_status += 1
                 continue
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
                 metrics.skipped_due_to_missing_due_date += 1
                 order_date = _coerce_datetime(record.get("order_date"))
-                default_due_date = order_date + timedelta(days=2) if order_date is not None else None
+                default_due_date = (
+                    order_date + timedelta(days=2) if order_date is not None else None
+                )
             if default_due_date is None:
                 metrics.skipped_due_to_age += 1
                 continue
@@ -461,7 +462,6 @@ async def fetch_pending_deliveries_report(
         .select_from(orders)
         .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
         .where(sa.not_(matching_sale_exists))
-        .where(amount_expr > 0)
     )
 
     tz = get_timezone()
@@ -482,8 +482,8 @@ async def fetch_pending_deliveries_report(
                 default_due_date = order_date + timedelta(days=2)
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
-            age_days = max(0, (report_date - default_due_date_local).days)
-            if age_days > AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+            age_days = max(0, (report_date - order_date_local).days)
+            if age_days > PENDING_DELIVERY_THRESHOLD_DAYS:
                 continue
 
             row = dict(record)
@@ -508,14 +508,21 @@ async def fetch_pending_deliveries_report(
             payment_evidence_rows=payment_rows,
         )
 
+        zero_amount_proof_keys = _zero_amount_payment_proof_keys(payment_rows)
+
         for order in reconciliation.orders:
-            if order.order_amount <= 0:
-                continue
-            if (
-                order.has_payment_proof
+            has_sufficient_positive_proof = (
+                order.order_amount > 0
+                and order.has_payment_proof
                 and order.allocated_payment_amount + DEFAULT_PAYMENT_TOLERANCE
                 >= order.order_amount
-            ):
+            )
+            has_zero_amount_proof = (
+                order.order_amount == 0
+                and (order.cost_center, order.normalized_order_number)
+                in zero_amount_proof_keys
+            )
+            if has_sufficient_positive_proof or has_zero_amount_proof:
                 continue
             record = prepared_rows.get((order.cost_center, order.order_number))
             if record is None:
