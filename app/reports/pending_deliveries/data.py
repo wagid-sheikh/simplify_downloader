@@ -31,7 +31,7 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
 
 
 AGED_PENDING_DELIVERY_RECOVERY_STATUS = "TO_BE_RECOVERED"
-AGED_PENDING_DELIVERY_RECOVERY_CATEGORY = "OTHER"
+AGED_PENDING_DELIVERY_RECOVERY_CATEGORY = "AGED_PENDING_DELIVERY"
 AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
 
@@ -306,7 +306,6 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             matching_sale_exists.label("has_sale"),
         )
         .select_from(orders)
-        .where(orders.c.order_status == "Pending")
         .where(amount_expr > 0)
         .order_by(orders.c.cost_center, orders.c.order_number)
     )
