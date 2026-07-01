@@ -31,7 +31,6 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
 
 
 AGED_PENDING_DELIVERY_RECOVERY_STATUS = "TO_BE_RECOVERED"
-AGED_PENDING_DELIVERY_RECOVERY_CATEGORY = "AGED_PENDING_DELIVERY"
 AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
 
@@ -384,7 +383,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
                 order_number=order_number,
                 from_status=PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
                 to_status=AGED_PENDING_DELIVERY_RECOVERY_STATUS,
-                recovery_category=AGED_PENDING_DELIVERY_RECOVERY_CATEGORY,
+                recovery_category=None,
                 recovery_note=note,
             )
 

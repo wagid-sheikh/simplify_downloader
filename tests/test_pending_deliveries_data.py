@@ -917,7 +917,7 @@ async def test_transition_aged_unresolved_non_pending_order_marked(
     assert metrics.eligible_count == 1
     assert metrics.transitioned_count == 1
     assert rows["READY-AGED"]["recovery_status"] == "TO_BE_RECOVERED"
-    assert rows["READY-AGED"]["recovery_category"] == "AGED_PENDING_DELIVERY"
+    assert rows["READY-AGED"]["recovery_category"] is None
 
 
 @pytest.mark.asyncio
@@ -1060,7 +1060,7 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
     rows = await _fetch_recovery_rows(database_url)
     assert transitioned_count == 1
     assert rows["AGE-31"]["recovery_status"] == "TO_BE_RECOVERED"
-    assert rows["AGE-31"]["recovery_category"] == "AGED_PENDING_DELIVERY"
+    assert rows["AGE-31"]["recovery_category"] is None
     assert (
         rows["AGE-31"]["recovery_notes"]
         == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
