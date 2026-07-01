@@ -851,6 +851,7 @@ async def _seed_transition_order(
     recovery_status: str | None = PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
     insert_sale: bool = False,
     recovery_notes: str | None = None,
+    order_status: str = "Pending",
 ) -> None:
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
@@ -873,6 +874,7 @@ async def _seed_transition_order(
         payment_received=Decimal("0.00"),
         adjustments=Decimal("0.00"),
         recovery_status=recovery_status,
+        order_status=order_status,
         insert_sale=insert_sale,
     )
     if recovery_notes is not None:
@@ -886,6 +888,129 @@ async def _seed_transition_order(
             )
             await session.commit()
 
+
+
+@pytest.mark.asyncio
+async def test_transition_aged_unresolved_non_pending_order_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_non_pending_status.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="READY-AGED",
+        age_days=31,
+        order_status="Ready",
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.scanned_count == 1
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 1
+    assert rows["READY-AGED"]["recovery_status"] == "TO_BE_RECOVERED"
+    assert rows["READY-AGED"]["recovery_category"] == "AGED_PENDING_DELIVERY"
+
+
+@pytest.mark.asyncio
+async def test_transition_aged_order_with_sufficient_payment_proof_not_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_sufficient_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="AGED-PAID",
+        age_days=31,
+    )
+    await _insert_payment_collection(
+        database_url=database_url,
+        order_number=" aged-paid ",
+        amount=Decimal("100.00"),
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.eligible_count == 1
+    assert metrics.transitioned_count == 0
+    assert rows["AGED-PAID"]["recovery_status"] == "NONE"
+    assert rows["AGED-PAID"]["recovery_category"] is None
+
+
+@pytest.mark.asyncio
+async def test_transition_aged_order_with_matching_sales_row_not_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_matching_sale.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="AGED-HAS-SALE",
+        age_days=31,
+        insert_sale=True,
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.scanned_count == 1
+    assert metrics.skipped_due_to_sales_row == 1
+    assert metrics.transitioned_count == 0
+    assert rows["AGED-HAS-SALE"]["recovery_status"] == "NONE"
+    assert rows["AGED-HAS-SALE"]["recovery_category"] is None
+
+
+@pytest.mark.asyncio
+async def test_transition_age_at_or_below_threshold_not_marked(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_age_threshold.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    for age_days in (29, 30):
+        await _seed_transition_order(
+            database_url=database_url,
+            monkeypatch=monkeypatch,
+            order_number=f"AGE-{age_days}-THRESHOLD",
+            age_days=age_days,
+        )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.scanned_count == 2
+    assert metrics.skipped_due_to_age == 2
+    assert metrics.transitioned_count == 0
+    assert {row["recovery_status"] for row in rows.values()} == {"NONE"}
+    assert {row["recovery_category"] for row in rows.values()} == {None}
 
 @pytest.mark.asyncio
 async def test_transition_age_30_not_marked(tmp_path, monkeypatch) -> None:
@@ -935,7 +1060,7 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
     rows = await _fetch_recovery_rows(database_url)
     assert transitioned_count == 1
     assert rows["AGE-31"]["recovery_status"] == "TO_BE_RECOVERED"
-    assert rows["AGE-31"]["recovery_category"] == "OTHER"
+    assert rows["AGE-31"]["recovery_category"] == "AGED_PENDING_DELIVERY"
     assert (
         rows["AGE-31"]["recovery_notes"]
         == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
