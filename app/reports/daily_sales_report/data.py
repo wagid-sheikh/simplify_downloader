@@ -354,6 +354,9 @@ async def _clear_resolved_to_be_recovered_orders(
         if (order.cost_center, order.order_number) in candidate_keys
         and order.has_recovery_auto_clear_proof
         and groups_by_order_key.get((order.cost_center, order.order_number)) is not None
+        and not groups_by_order_key[
+            (order.cost_center, order.order_number)
+        ].data_quality_exception
     ]
     if not auto_clear_candidates:
         return []

@@ -117,6 +117,8 @@ class ReconciledOrderPayment:
         if self.recovery_status.strip().upper() != "TO_BE_RECOVERED":
             return False
         if self.order_amount == 0:
+            # Zero-value recovery rows still require explicit matching proof;
+            # tolerance math or package sales must not clear them implicitly.
             return self.has_zero_amount_payment_proof
         return self.order_amount > 0 and (
             (
@@ -137,7 +139,10 @@ class ReconciledOrderPayment:
     def has_sufficient_package_sales_proof(
         self, tolerance: Decimal = DEFAULT_PAYMENT_TOLERANCE
     ) -> bool:
-        return self.order_amount > 0 and self.package_sales_total + tolerance >= self.order_amount
+        return (
+            self.order_amount > 0
+            and self.package_sales_total + tolerance >= self.order_amount
+        )
 
     @property
     def has_recovery_auto_clear_proof(self) -> bool:
@@ -695,13 +700,15 @@ def _reconcile_group(
                 status=order_status,
                 has_payment_proof=(
                     (
-                        bool(evidence_rows)
-                        and (not data_quality_exception or recovery_auto_clear_can_allocate)
+                        _has_explicit_zero_amount_evidence(evidence_rows)
+                        if order.order_amount == 0
+                        else bool(evidence_rows)
                     )
-                    or (
-                        order.order_amount > 0
-                        and order_package_sales_total + tolerance >= order.order_amount
-                    )
+                    and (not data_quality_exception or recovery_auto_clear_can_allocate)
+                )
+                or (
+                    order.order_amount > 0
+                    and order_package_sales_total + tolerance >= order.order_amount
                 ),
                 data_quality_exception=data_quality_exception
                 and not recovery_auto_clear_can_allocate,
@@ -770,7 +777,6 @@ def _reconcile_group(
     )
 
 
-
 def _has_explicit_zero_amount_evidence(
     evidence_rows: Sequence[ReconciliationPaymentEvidence],
 ) -> bool:
@@ -804,6 +810,7 @@ def _group_has_sufficient_payment_proof(
     if all(order.order_amount == 0 for order in orders):
         return _has_explicit_zero_amount_evidence(evidence_rows)
     return expected_amount > 0 and allocated_amount + tolerance >= expected_amount
+
 
 def _is_recovery_excluded_status(status: str) -> bool:
     return status.strip().upper() in RECOVERY_EXCLUDED_STATUSES
