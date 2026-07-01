@@ -300,6 +300,19 @@ def test_proof_missing_report_includes_sales_payments_without_valid_collection_p
     assert result.actual_payments_not_found[0].order_number == "TD-1"
 
 
+def test_zero_value_sales_row_without_proof_is_not_apnf_or_short_payment() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ZERO-SALE-NO-PROOF", "0")],
+        sales_rows=[_sale("ZERO-SALE-NO-PROOF", "0")],
+        payment_evidence_rows=[],
+    )
+
+    assert result.groups[0].status == "proof_missing"
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == ()
+    assert result.recovery_auto_clear_orders == ()
+
+
 def test_overlapping_group_and_single_top_up_reconcile_consistently() -> None:
     result = reconcile_payments(
         order_rows=[

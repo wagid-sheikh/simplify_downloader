@@ -110,10 +110,10 @@
 - **Context:** Operators need stable queue semantics that distinguish unreconciled payment/recovery work from terminal recovery outcomes, without reintroducing resolved rows into normal pending queues.
 - **Evidence:** `docs/architecture.md`, `docs/feature-map.md`, and payment/recovery report contract tests around short-payment and pending-delivery eligibility.
 - **Implications:**
-  - Pending Deliveries (normal buckets/details) means `vw_orders.recovery_status = 'NONE'` and no matching `sales` row.
+  - Define `T = vw_orders.order_date`; `default_due_date = T + 3`. Pending Deliveries (normal buckets/details) means no matching `sales` row, no valid actual payment proof, `vw_orders.recovery_status = 'NONE'`, and `age_days <= 3`; it includes zero-value orders and does not depend on `order_status == "Pending"`.
   - Short Payments is all-date current/open and requires clean reconciliation: sales exists, qualifying payment proof exists, sales/proof match within ₹1, and proof is short vs `vw_orders.order_amount` by more than ₹1.
   - Actual Payments Not Found is all-date current/open and requires sales exists + no valid qualifying payment proof.
-  - To Be Recovered is all-date current/open for rows currently in recovery workflow statuses (for example `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`).
+  - To Be Recovered starts at `age_days >= 4` for delivery orders with no `sales` row and no valid actual payment proof; the aged transition persists `TO_BE_RECOVERED` with `recovery_category = NULL`, and the report buckets are `4-10 days`, `11-30 days`, `31-85 days`, `86-90 days`, and `>90 days`. Manual recovery/compensation visibility remains all-date current/open for rows currently in recovery workflow statuses (for example `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`).
   - `NONE` means no active or terminal recovery workflow. Resolved recovery rows must move to terminal statuses such as `RECOVERED` or `COMPENSATED` (or other explicit terminal outcomes), not back to `NONE`.
 - **Follow-up:** Keep canonical docs, SQL views, and report eligibility logic aligned whenever recovery-status enums or operator buckets change.
 
@@ -123,7 +123,7 @@
 - **Decision:** `Actual Payments Not Found` uses valid-proof semantics: it means no qualifying payment proof exists for normalized `(cost_center, order_number)`, not that no physical `payment_collections` row exists.
 - **Context:** Operators need missing-payment output to distinguish true missing qualifying proof from rows that exist but are unsupported, malformed, unmatched, or amount-short.
 - **Evidence:** `app/reports/shared/short_payments.py`, `app/reports/shared/payment_reconciliation.py`, `tests/test_missing_payment_sql_python_parity.py`, `docs/architecture.md`, and `docs/feature-map.md`.
-- **Implications:** Qualifying proof requires `source_type` `google_sheet` or `legacy_sales`, same `cost_center`, and a whole normalized order token split from `payment_collections.order_number` on comma or slash with whitespace removed and case ignored. Unsupported source types, blank/malformed/unmatched tokens, and different-cost-center rows do not satisfy proof and stay visible through audit diagnostics. A valid qualifying proof with an amount mismatch is Short Payment/audit reconciliation, not `Actual Payments Not Found`.
+- **Implications:** Qualifying proof requires `source_type` `google_sheet` or `legacy_sales`, same `cost_center`, and a whole normalized order token split from `payment_collections.order_number` on comma or slash with whitespace removed and case ignored. For positive orders, allocated proof plus the ₹1 tolerance must cover `vw_orders.order_amount`; for zero-value orders, proof requires a valid matching zero-amount `payment_collections` row. Unsupported source types, blank/malformed/unmatched tokens, and different-cost-center rows do not satisfy proof and stay visible through audit diagnostics. A valid qualifying proof with an amount mismatch is Short Payment/audit reconciliation, not `Actual Payments Not Found`.
 - **Follow-up:** Keep SQL compatibility views and Python reconciliation tests aligned whenever payment source types or token rules change.
 
 ### DL-018
@@ -153,7 +153,7 @@
   - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`; it is intentionally current/open across all order dates and is not restricted by Daily/MTD report windows.
   - `To Be Recovered` is current/open by `TO_BE_RECOVERED` recovery status across all order dates rather than constrained by Daily/MTD report windows.
   - Daily Sales `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.
-  - Daily Sales `Short Payment` still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
+  - Daily Sales `Short Payment` still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders. Zero-value no-sales/no-proof delivery orders remain valid Pending Delivery / To Be Recovered rows by age; zero-value orders with a `sales` row and no proof are not APNF, not Short Payment, and not money recovery.
   - Daily Sales `Short Payment` requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
   - Payment Evidence Review is an audit-only reconciliation surface. Its `reconciliation_result` may show raw classifications alongside recovery statuses for diagnostics, but rows with recovery workflow statuses must be marked non-actionable via `operator_actionable_payment_status` and must not be described as Daily Sales Short Payments actions.
   - `source_type` should appear in audit/reconciliation reports, not every normal business report.
